@@ -1,0 +1,10 @@
+[package]
+name = "rustation-ng"
+version = "0.1.0"
+authors = ["Lionel Flandrin <lionel@svkt.org>"]
+edition = "2018"
+description = "A PlayStation emulator"
+license = "GPL-2.0+"
+keywords = ["emulator", "playstation"]
+
+[dependencies]
