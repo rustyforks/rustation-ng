@@ -21,6 +21,11 @@ impl Cpu {
         }
     }
 
+    /// Return the current value of register `index`
+    fn reg(&self, index: RegisterIndex) -> u32 {
+        self.regs[index.0 as usize]
+    }
+
     /// Put `val` into register `index`. If `index` is 0 nothing happens as R0 always contains 0.
     fn set_reg(&mut self, index: RegisterIndex, val: u32) {
         self.regs[index.0 as usize] = val;
@@ -69,6 +74,17 @@ pub fn run_next_instruction(psx: &mut Psx) {
     handler(psx, instruction);
 }
 
+/// Bitwise Or Immediate
+fn op_ori(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let v = psx.cpu.reg(s) | i;
+
+    psx.cpu.set_reg(t, v);
+}
+
 /// Load Upper Immediate
 fn op_lui(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm();
@@ -97,6 +113,13 @@ impl Instruction {
         let Instruction(op) = self;
 
         op & 0xffff
+    }
+
+    /// Return register index in bits [25:21]
+    fn s(self) -> RegisterIndex {
+        let Instruction(op) = self;
+
+        RegisterIndex((op >> 21) & 0x1f)
     }
 
     /// Return register index in bits [20:16]
@@ -143,7 +166,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
+    op_ori,
     op_unimplemented,
     op_lui,
     // 0x10
