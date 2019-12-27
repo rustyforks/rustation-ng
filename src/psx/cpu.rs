@@ -5,15 +5,20 @@ use std::fmt;
 pub struct Cpu {
     /// The Program Counter register: points to the next instruction
     pc: u32,
+    /// Next value for the PC, used to emulate the branch delay slot
+    next_pc: u32,
     /// General Purpose Registers. The first entry (R0) must always contain 0
     regs: [u32; 32],
 }
 
 impl Cpu {
     pub fn new() -> Cpu {
+        // Reset value for the PC: beginning of BIOS ROM
+        let reset_pc = 0xbfc0_0000;
+
         Cpu {
-            // Reset value for the PC: beginning of BIOS ROM
-            pc: 0xbfc0_0000,
+            pc: reset_pc,
+            next_pc: reset_pc.wrapping_add(4),
             // Not sure what the reset values of the general purpose registers is but it shouldn't
             // matter since the BIOS doesn't read them. R0 is always 0 however, so that shoudn't be
             // changed.
@@ -56,17 +61,35 @@ impl fmt::Debug for Cpu {
 }
 
 pub fn run_next_instruction(psx: &mut Psx) {
-    let pc = psx.cpu.pc;
+    println!("{:?}", psx.cpu);
 
-    // Point to the next instruction. MIPS instructions are always exactly 4bytes long.
-    psx.cpu.pc += 4;
+    // Explanation of the various *pc variables:
+    //
+    // * `current_pc`: Pointer to the instruction about to be executed.
+    //
+    // * `psx.cpu.pc`: Pointer to the next instruction to be executed. It's possible for this value
+    //                 to change before the next instruction is reached if an exception occurs
+    //                 (exceptions have no delay slot).
+    //
+    // * `psx.cpu.next_pc`: Value `psx.cpu.pc` will take on the *next* cycle, so effectively a
+    //                      pointer to the next next instruction being executed. It's possible for
+    //                      this value to change before the next instruction is reached if an
+    //                      exception *or* a branch/jump occurs. We can't change `psx.cpu.pc`
+    //                      directly in case of a branch because we need to emulate the branch
+    //                      delay slot.
+    //
+    // So basically when a branch/jump is executed only `psx.cpu.next_pc` is modified, which means
+    // that the value of the next instruction to be executed (pointed at by `psx.cpu.pc`) remains
+    // in the pipeline. Thus the branch delay slot is emulated accurately.
+    let current_pc = psx.cpu.pc;
+    psx.cpu.pc = psx.cpu.next_pc;
+    psx.cpu.next_pc = psx.cpu.pc.wrapping_add(4);
 
     // Unaligned PC should trigger an exception
-    assert!(pc % 4 == 0);
+    assert!(current_pc % 4 == 0);
 
-    let instruction = Instruction(psx.load(pc));
+    let instruction = Instruction(psx.load(current_pc));
 
-    println!("{:?}", psx.cpu);
     println!("About to execute {}...", instruction);
 
     let handler = OPCODE_HANDLERS[instruction.opcode()];
@@ -93,6 +116,19 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
     let v = psx.cpu.reg(t) << i;
 
     psx.cpu.set_reg(d, v);
+}
+
+/// Jump
+fn op_j(psx: &mut Psx, instruction: Instruction) {
+    let target = instruction.imm_jump();
+
+    // In order to fit the immediate target in the instruction the bottom two bits are stripped
+    // (see the implementation of `imm_jump`) but that still only leaves 26 bits to store 30 bits.
+    // As a workaround the 4 MSBs are simply copied from the PC. That means that the effective
+    // range of this instruction is limited and it can't reach any location in memory, in
+    // particular it can't be used to switch from one area to an other (like, say, from KUSEG to
+    // KSEG0).
+    psx.cpu.next_pc = (psx.cpu.pc & 0xf000_0000) | target;
 }
 
 /// Add Immediate Unsigned
@@ -172,6 +208,14 @@ impl Instruction {
         op & 0xffff
     }
 
+    /// Jump target stored in bits [25:0].
+    fn imm_jump(self) -> u32 {
+        let Instruction(op) = self;
+
+        // The two LSBs aren't stored since (due to alignment constraints) they're assumed to be 0.
+        (op & 0x3ff_ffff) << 2
+    }
+
     /// Return immediate value in bits [16:0] as a sign-extended 32bit
     /// value
     fn imm_se(self) -> u32 {
@@ -236,7 +280,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     // 0x00
     op_function,
     op_unimplemented,
-    op_unimplemented,
+    op_j,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
