@@ -39,6 +39,16 @@ impl Psx {
 
         panic!("Unhandled load at address {:08x}", abs_addr);
     }
+
+    pub fn store<T: Addressable>(&mut self, address: u32, val: T) {
+        let abs_addr = map::mask_region(address);
+
+        panic!(
+            "Unhandled store at address {:08x} (val=0x{:08x})",
+            abs_addr,
+            val.as_u32()
+        );
+    }
 }
 
 /// Types of access supported by the PlayStation architecture

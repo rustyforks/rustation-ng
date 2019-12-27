@@ -96,6 +96,24 @@ fn op_lui(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(t, v);
 }
 
+/// Store Word
+fn op_sw(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+    let v = psx.cpu.reg(t);
+
+    // Address must be 32bit aligned
+    if addr % 4 == 0 {
+        psx.store(addr, v);
+    } else {
+        // XXX Should trigger an exception
+        panic!("Misaligned sw!");
+    }
+}
+
 /// A single MIPS instruction wrapper to make decoding easier
 #[derive(Clone, Copy)]
 pub struct Instruction(u32);
@@ -113,6 +131,16 @@ impl Instruction {
         let Instruction(op) = self;
 
         op & 0xffff
+    }
+
+    /// Return immediate value in bits [16:0] as a sign-extended 32bit
+    /// value
+    fn imm_se(self) -> u32 {
+        let Instruction(op) = self;
+
+        let v = (op & 0xffff) as i16;
+
+        v as u32
     }
 
     /// Return register index in bits [25:21]
@@ -198,7 +226,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
+    op_sw,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
