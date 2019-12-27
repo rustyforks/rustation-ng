@@ -14,6 +14,9 @@ pub struct Psx {
     bios: Bios,
     /// Memory control registers
     mem_control: [u32; 9],
+    /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
+    /// controller.
+    ram_size: u32,
 }
 
 impl Psx {
@@ -22,6 +25,7 @@ impl Psx {
             cpu: Cpu::new(),
             bios: Bios::new(bios_path)?,
             mem_control: [0; 9],
+            ram_size: 0,
         };
 
         Ok(psx)
@@ -48,6 +52,14 @@ impl Psx {
             let index = (offset >> 2) as usize;
 
             return Addressable::from_u32(self.mem_control[index]);
+        }
+
+        if map::RAM_SIZE.contains(abs_addr).is_some() {
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled RAM_SIZE access");
+            }
+
+            return Addressable::from_u32(self.ram_size);
         }
 
         panic!("Unhandled load at address {:08x}", abs_addr);
@@ -88,6 +100,15 @@ impl Psx {
 
             let index = (offset >> 2) as usize;
             self.mem_control[index] = val;
+            return;
+        }
+
+        if map::RAM_SIZE.contains(abs_addr).is_some() {
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled RAM_SIZE access");
+            }
+
+            self.ram_size = val.as_u32();
             return;
         }
 
@@ -219,4 +240,7 @@ mod map {
 
     /// Memory latency and expansion mapping
     pub const MEM_CONTROL: Range = Range(0x1f80_1000, 36);
+
+    /// Register that has something to do with RAM configuration, configured by the BIOS
+    pub const RAM_SIZE: Range = Range(0x1f80_1060, 4);
 }
