@@ -118,6 +118,17 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v);
 }
 
+/// Bitwise Or
+fn op_or(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let v = psx.cpu.reg(s) | psx.cpu.reg(t);
+
+    psx.cpu.set_reg(d, v);
+}
+
 /// Jump
 fn op_j(psx: &mut Psx, instruction: Instruction) {
     let target = instruction.imm_jump();
@@ -398,7 +409,7 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
-    op_unimplemented_function,
+    op_or,
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
