@@ -17,6 +17,8 @@ pub struct Psx {
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
     /// controller.
     ram_size: u32,
+    /// Contents of the CACHE_CONTROL register
+    cache_control: u32,
 }
 
 impl Psx {
@@ -26,6 +28,7 @@ impl Psx {
             bios: Bios::new(bios_path)?,
             mem_control: [0; 9],
             ram_size: 0,
+            cache_control: 0,
         };
 
         Ok(psx)
@@ -42,6 +45,14 @@ impl Psx {
 
         if let Some(offset) = map::BIOS.contains(abs_addr) {
             return self.bios.load(offset);
+        }
+
+        if map::CACHE_CONTROL.contains(abs_addr).is_some() {
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled cache control access");
+            }
+
+            return Addressable::from_u32(self.cache_control);
         }
 
         if let Some(offset) = map::MEM_CONTROL.contains(abs_addr) {
@@ -100,6 +111,16 @@ impl Psx {
 
             let index = (offset >> 2) as usize;
             self.mem_control[index] = val;
+            return;
+        }
+
+        if map::CACHE_CONTROL.contains(abs_addr).is_some() {
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled cache control access");
+            }
+
+            self.cache_control = val.as_u32();
+
             return;
         }
 
@@ -243,4 +264,7 @@ mod map {
 
     /// Register that has something to do with RAM configuration, configured by the BIOS
     pub const RAM_SIZE: Range = Range(0x1f80_1060, 4);
+
+    /// Cache control register. Full address since it's in KSEG2
+    pub const CACHE_CONTROL: Range = Range(0xfffe_0130, 4);
 }
