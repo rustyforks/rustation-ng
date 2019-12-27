@@ -12,6 +12,8 @@ use self::error::Result;
 pub struct Psx {
     cpu: Cpu,
     bios: Bios,
+    /// Memory control registers
+    mem_control: [u32; 9],
 }
 
 impl Psx {
@@ -19,6 +21,7 @@ impl Psx {
         let psx = Psx {
             cpu: Cpu::new(),
             bios: Bios::new(bios_path)?,
+            mem_control: [0; 9],
         };
 
         Ok(psx)
@@ -37,11 +40,56 @@ impl Psx {
             return self.bios.load(offset);
         }
 
+        if let Some(offset) = map::MEM_CONTROL.contains(abs_addr) {
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled MEM_CONTROL {:?} access", T::width());
+            }
+
+            let index = (offset >> 2) as usize;
+
+            return Addressable::from_u32(self.mem_control[index]);
+        }
+
         panic!("Unhandled load at address {:08x}", abs_addr);
     }
 
     pub fn store<T: Addressable>(&mut self, address: u32, val: T) {
         let abs_addr = map::mask_region(address);
+
+        if let Some(offset) = map::MEM_CONTROL.contains(abs_addr) {
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled MEM_CONTROL {:?} access", T::width());
+            }
+
+            let val = val.as_u32();
+
+            // We don't actually implement those registers, we assume that all BIOSes and games are
+            // going to use the default memory configuration. I'm not aware of any game that breaks
+            // this assumption. Still, we can catch any attempt at using a non-standard
+            // configuration and report an error.
+            match offset {
+                // Expansion 1 base address
+                0 => {
+                    if val != 0x1f00_0000 {
+                        panic!("Bad expansion 1 base address: 0x{:08x}", val);
+                    }
+                }
+                // Expansion 2 base address
+                4 => {
+                    if val != 0x1f80_2000 {
+                        panic!("Bad expansion 2 base address: 0x{:08x}", val);
+                    }
+                }
+                _ => eprintln!(
+                    "Unhandled write to MEM_CONTROL register {:x}: 0x{:08x}",
+                    offset, val
+                ),
+            }
+
+            let index = (offset >> 2) as usize;
+            self.mem_control[index] = val;
+            return;
+        }
 
         panic!(
             "Unhandled store at address {:08x} (val=0x{:08x})",
@@ -168,4 +216,7 @@ mod map {
 
     /// BIOS ROM. Read-only, significantly slower to access than system RAM
     pub const BIOS: Range = Range(0x1fc0_0000, 512 * 1024);
+
+    /// Memory latency and expansion mapping
+    pub const MEM_CONTROL: Range = Range(0x1f80_1000, 36);
 }
