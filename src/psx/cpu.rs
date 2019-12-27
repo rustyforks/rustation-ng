@@ -95,6 +95,17 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v);
 }
 
+/// Add Immediate Unsigned
+fn op_addiu(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let v = psx.cpu.reg(s).wrapping_add(i);
+
+    psx.cpu.set_reg(t, v);
+}
+
 /// Bitwise Or Immediate
 fn op_ori(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm();
@@ -232,7 +243,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
+    op_addiu,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
