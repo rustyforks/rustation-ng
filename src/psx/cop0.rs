@@ -11,6 +11,34 @@
 use super::cpu::RegisterIndex;
 use super::Psx;
 
-pub fn mtc0(_psx: &mut Psx, cop0_r: RegisterIndex, v: u32) {
-    panic!("Unhandled MTC0 {} <- 0x{:x}", cop0_r.0, v);
+/// Coprocessor 0: System control
+pub struct Cop0 {
+    /// Cop0 register 12: Status register
+    sr: u32,
+}
+
+impl Cop0 {
+    pub fn new() -> Cop0 {
+        Cop0 { sr: 0 }
+    }
+}
+
+/// Move To Coprocessor 0
+pub fn mtc0(psx: &mut Psx, cop_r: RegisterIndex, v: u32) {
+    match cop_r.0 {
+        // Breakpoints registers
+        3 | 5 | 6 | 7 | 9 | 11 => {
+            if v != 0 {
+                panic!("Unhandled write to cop0r{}: {:08x}", cop_r.0, v)
+            }
+        }
+        12 => psx.cop0.sr = v,
+        // Cause register
+        13 => {
+            if v != 0 {
+                panic!("Unhandled write to CAUSE register: {:08x}", v)
+            }
+        }
+        _ => panic!("Unhandled COP0 register {}", cop_r.0),
+    }
 }

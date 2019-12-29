@@ -13,6 +13,7 @@ use self::error::Result;
 /// Current state of the emulator
 pub struct Psx {
     cpu: Cpu,
+    cop0: cop0::Cop0,
     bios: Bios,
     /// Memory control registers
     mem_control: [u32; 9],
@@ -27,6 +28,7 @@ impl Psx {
     pub fn new(bios_path: &Path) -> Result<Psx> {
         let psx = Psx {
             cpu: Cpu::new(),
+            cop0: cop0::Cop0::new(),
             bios: Bios::new(bios_path)?,
             mem_control: [0; 9],
             ram_size: 0,
