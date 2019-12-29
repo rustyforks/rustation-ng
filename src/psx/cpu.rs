@@ -182,6 +182,30 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v);
 }
 
+/// Jump Register
+fn op_jr(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+
+    psx.cpu.next_pc = psx.cpu.reg(s);
+
+    psx.cpu.delayed_load();
+}
+
+/// Jump And Link Register
+fn op_jalr(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let d = instruction.d();
+
+    let ra = psx.cpu.next_pc;
+
+    psx.cpu.next_pc = psx.cpu.reg(s);
+
+    psx.cpu.delayed_load();
+
+    // Store return address in `d`
+    psx.cpu.set_reg(d, ra);
+}
+
 /// Add Unsigned
 fn op_addu(psx: &mut Psx, instruction: Instruction) {
     let s = instruction.s();
@@ -629,8 +653,8 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_jr,
+    op_jalr,
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
