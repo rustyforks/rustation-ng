@@ -276,6 +276,46 @@ fn op_jalr(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, ra);
 }
 
+/// Move From HI
+fn op_mfhi(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+
+    let hi = psx.cpu.hi;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, hi);
+}
+
+/// Move to HI
+fn op_mthi(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+
+    psx.cpu.hi = psx.cpu.reg(s);
+
+    psx.cpu.delayed_load();
+}
+
+/// Move From LO
+fn op_mflo(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+
+    let lo = psx.cpu.lo;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, lo);
+}
+
+/// Move to LO
+fn op_mtlo(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+
+    psx.cpu.lo = psx.cpu.reg(s);
+
+    psx.cpu.delayed_load();
+}
+
 /// Multiply (signed)
 fn op_mult(psx: &mut Psx, instruction: Instruction) {
     let s = instruction.s();
@@ -1101,10 +1141,10 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented_function,
     op_unimplemented_function,
     // 0x10
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_mfhi,
+    op_mthi,
+    op_mflo,
+    op_mtlo,
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
