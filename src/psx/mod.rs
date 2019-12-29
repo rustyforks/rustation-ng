@@ -3,6 +3,7 @@ mod cop0;
 mod cpu;
 mod irq;
 mod spu;
+mod timers;
 
 pub mod error;
 
@@ -21,6 +22,7 @@ pub struct Psx {
     ram: Ram,
     bios: Bios,
     spu: Spu,
+    timers: timers::Timers,
     /// Memory control registers
     mem_control: [u32; 9],
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
@@ -39,6 +41,7 @@ impl Psx {
             ram: Ram::new(),
             bios: Bios::new(bios_path)?,
             spu: Spu::new(),
+            timers: timers::Timers::new(),
             mem_control: [0; 9],
             ram_size: 0,
             cache_control: 0,
@@ -66,6 +69,10 @@ impl Psx {
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
             return spu::load(self, offset);
+        }
+
+        if let Some(offset) = map::TIMERS.contains(abs_addr) {
+            return timers::load(self, offset);
         }
 
         if let Some(off) = map::IRQ_CONTROL.contains(abs_addr) {
@@ -123,6 +130,11 @@ impl Psx {
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
             spu::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::TIMERS.contains(abs_addr) {
+            timers::store(self, offset, val);
             return;
         }
 
@@ -387,6 +399,9 @@ mod map {
 
     /// Interrupt Control registers (status and mask)
     pub const IRQ_CONTROL: Range = Range(0x1f80_1070, 8);
+
+    /// Timer registers
+    pub const TIMERS: Range = Range(0x1f80_1100, 0x30);
 
     /// SPU registers
     pub const SPU: Range = Range(0x1f80_1c00, 640);
