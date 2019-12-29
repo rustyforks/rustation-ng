@@ -38,6 +38,16 @@ impl Cpu {
         // R0 always contains 0
         self.regs[0] = 0;
     }
+
+    /// Branch to immediate value `offset`.
+    fn branch(&mut self, offset: u32) {
+        // Offset immediates are always shifted two places to the
+        // right since `PC` addresses have to be aligned on 32bits at
+        // all times.
+        let offset = offset << 2;
+
+        self.next_pc = self.pc.wrapping_add(offset);
+    }
 }
 
 impl fmt::Debug for Cpu {
@@ -152,6 +162,17 @@ fn op_j(psx: &mut Psx, instruction: Instruction) {
     // particular it can't be used to switch from one area to an other (like, say, from KUSEG to
     // KSEG0).
     psx.cpu.next_pc = (psx.cpu.pc & 0xf000_0000) | target;
+}
+
+/// Branch if Not Equal
+fn op_bne(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    if psx.cpu.reg(s) != psx.cpu.reg(t) {
+        psx.cpu.branch(i);
+    }
 }
 
 /// Add Immediate Unsigned
@@ -333,7 +354,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_j,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
+    op_bne,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
