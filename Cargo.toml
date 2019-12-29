@@ -7,4 +7,22 @@ description = "A PlayStation emulator"
 license = "GPL-2.0+"
 keywords = ["emulator", "playstation"]
 
+[profile.dev]
+debug = true
+# The emulator is not really usable without optims so we force them even for
+# debug builds
+opt-level = 3
+incremental = true
+overflow-checks = true
+
+[profile.release]
+debug = false
+# Disable parallel code generation. Increases build time but can improve
+# performance
+codegen-units = 1
+lto = true
+panic = 'abort'
+incremental = false
+overflow-checks = false
+
 [dependencies]
