@@ -206,6 +206,23 @@ fn op_jalr(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, ra);
 }
 
+/// Add and check for signed overflow
+fn op_add(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+    let d = instruction.d();
+
+    let s = psx.cpu.reg(s) as i32;
+    let t = psx.cpu.reg(t) as i32;
+
+    psx.cpu.delayed_load();
+
+    match s.checked_add(t) {
+        Some(v) => psx.cpu.set_reg(d, v as u32),
+        None => panic!("add overflowed!"),
+    }
+}
+
 /// Add Unsigned
 fn op_addu(psx: &mut Psx, instruction: Instruction) {
     let s = instruction.s();
@@ -213,6 +230,36 @@ fn op_addu(psx: &mut Psx, instruction: Instruction) {
     let d = instruction.d();
 
     let v = psx.cpu.reg(s).wrapping_add(psx.cpu.reg(t));
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
+/// Subtract and check for signed overflow
+fn op_sub(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+    let d = instruction.d();
+
+    let s = psx.cpu.reg(s) as i32;
+    let t = psx.cpu.reg(t) as i32;
+
+    psx.cpu.delayed_load();
+
+    match s.checked_sub(t) {
+        Some(v) => psx.cpu.set_reg(d, v as u32),
+        None => panic!("sub overflowed!"),
+    }
+}
+
+/// Subtract Unsigned
+fn op_subu(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+    let d = instruction.d();
+
+    let v = psx.cpu.reg(s).wrapping_sub(psx.cpu.reg(t));
 
     psx.cpu.delayed_load();
 
@@ -838,10 +885,10 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented_function,
     op_unimplemented_function,
     // 0x20
-    op_unimplemented_function,
+    op_add,
     op_addu,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_sub,
+    op_subu,
     op_and,
     op_or,
     op_xor,
