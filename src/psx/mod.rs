@@ -1,6 +1,7 @@
 mod bios;
 mod cop0;
 mod cpu;
+mod spu;
 
 pub mod error;
 
@@ -9,6 +10,7 @@ use std::path::Path;
 use self::bios::Bios;
 use self::cpu::Cpu;
 use self::error::Result;
+use self::spu::Spu;
 
 /// Current state of the emulator
 pub struct Psx {
@@ -16,6 +18,7 @@ pub struct Psx {
     cop0: cop0::Cop0,
     ram: Ram,
     bios: Bios,
+    spu: Spu,
     /// Memory control registers
     mem_control: [u32; 9],
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
@@ -32,6 +35,7 @@ impl Psx {
             cop0: cop0::Cop0::new(),
             ram: Ram::new(),
             bios: Bios::new(bios_path)?,
+            spu: Spu::new(),
             mem_control: [0; 9],
             ram_size: 0,
             cache_control: 0,
@@ -55,6 +59,10 @@ impl Psx {
 
         if let Some(offset) = map::BIOS.contains(abs_addr) {
             return self.bios.load(offset);
+        }
+
+        if let Some(offset) = map::SPU.contains(abs_addr) {
+            return spu::load(self, offset);
         }
 
         if map::CACHE_CONTROL.contains(abs_addr).is_some() {
@@ -91,6 +99,11 @@ impl Psx {
 
         if let Some(offset) = map::RAM.contains(abs_addr) {
             self.ram.store(offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::SPU.contains(abs_addr) {
+            spu::store(self, offset, val);
             return;
         }
 
@@ -329,6 +342,9 @@ mod map {
 
     /// Register that has something to do with RAM configuration, configured by the BIOS
     pub const RAM_SIZE: Range = Range(0x1f80_1060, 4);
+
+    /// SPU registers
+    pub const SPU: Range = Range(0x1f80_1c00, 640);
 
     /// Cache control register. Full address since it's in KSEG2
     pub const CACHE_CONTROL: Range = Range(0xfffe_0130, 4);
