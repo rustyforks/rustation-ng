@@ -21,6 +21,11 @@ impl Cop0 {
     pub fn new() -> Cop0 {
         Cop0 { sr: 0 }
     }
+
+    /// Returns true if the cache is isolated.
+    pub fn cache_isolated(&self) -> bool {
+        self.sr & 0x10000 != 0
+    }
 }
 
 /// Move To Coprocessor 0

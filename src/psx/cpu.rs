@@ -1,4 +1,4 @@
-use super::{cop0, Psx};
+use super::{cop0, Addressable, Psx};
 
 use std::fmt;
 
@@ -95,6 +95,18 @@ pub fn run_next_instruction(psx: &mut Psx) {
     let handler = OPCODE_HANDLERS[instruction.opcode()];
 
     handler(psx, instruction);
+}
+
+/// Execute a memory write
+fn store<T: Addressable>(psx: &mut Psx, addr: u32, v: T) {
+    if psx.cop0.cache_isolated() {
+        // If the cache is isolated then the write should go to cache maintenance instead of going
+        // to the other modules. Since we don't yet implement the instruction cache we can just
+        // ignore it and return.
+        return;
+    }
+
+    psx.store(addr, v);
 }
 
 /// When the main opcode is 0 we need to dispatch through a secondary table based on bits [5:0] of
@@ -206,7 +218,7 @@ fn op_sw(psx: &mut Psx, instruction: Instruction) {
 
     // Address must be 32bit aligned
     if addr % 4 == 0 {
-        psx.store(addr, v);
+        store(psx, addr, v);
     } else {
         // XXX Should trigger an exception
         panic!("Misaligned sw!");
