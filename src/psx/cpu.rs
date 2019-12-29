@@ -314,6 +314,22 @@ fn op_nor(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v);
 }
 
+/// Set on Less Than (signed)
+fn op_slt(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let s = psx.cpu.reg(s) as i32;
+    let t = psx.cpu.reg(t) as i32;
+
+    let v = s < t;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v as u32);
+}
+
 /// Set on Less Than Unsigned
 fn op_sltu(psx: &mut Psx, instruction: Instruction) {
     let d = instruction.d();
@@ -476,6 +492,32 @@ fn op_addiu(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.delayed_load();
 
     psx.cpu.set_reg(t, v);
+}
+
+/// Set if Less Than Immediate (signed)
+fn op_slti(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se() as i32;
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let v = (psx.cpu.reg(s) as i32) < i;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(t, v as u32);
+}
+
+/// Set if Less Than Immediate Unsigned
+fn op_sltiu(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let v = psx.cpu.reg(s) < i;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(t, v as u32);
 }
 
 /// Bitwise And Immediate
@@ -816,8 +858,8 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_bgtz,
     op_addi,
     op_addiu,
-    op_unimplemented,
-    op_unimplemented,
+    op_slti,
+    op_sltiu,
     op_andi,
     op_ori,
     op_xori,
@@ -931,7 +973,7 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_nor,
     op_unimplemented_function,
     op_unimplemented_function,
-    op_unimplemented_function,
+    op_slt,
     op_sltu,
     op_unimplemented_function,
     op_unimplemented_function,
