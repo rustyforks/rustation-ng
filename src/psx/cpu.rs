@@ -345,6 +345,39 @@ fn op_lw(psx: &mut Psx, instruction: Instruction) {
     }
 }
 
+/// Store Byte
+fn op_sb(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+    let v = psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
+
+    store(psx, addr, v as u8);
+}
+
+/// Store Halfword
+fn op_sh(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+    let v = psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
+
+    // Address must be 16bit aligned
+    if addr % 2 == 0 {
+        store(psx, addr, v as u16);
+    } else {
+        panic!("Misaligned sh!");
+    }
+}
+
 /// Store Word
 fn op_sw(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -510,8 +543,8 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
+    op_sb,
+    op_sh,
     op_unimplemented,
     op_sw,
     op_unimplemented,
