@@ -65,6 +65,12 @@ impl Psx {
             return spu::load(self, offset);
         }
 
+        if map::EXPANSION_1.contains(abs_addr).is_some() {
+            // No expansion implemented. Returns full ones when no
+            // expansion is present
+            return Addressable::from_u32(!0);
+        }
+
         if map::CACHE_CONTROL.contains(abs_addr).is_some() {
             if T::width() != AccessWidth::Word {
                 panic!("Unhandled cache control access");
@@ -104,6 +110,11 @@ impl Psx {
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
             spu::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::EXPANSION_1.contains(abs_addr) {
+            eprintln!("Unhandled write to expansion 1 register {:x}", offset);
             return;
         }
 
@@ -338,6 +349,9 @@ mod map {
 
     /// Main RAM: 2MB mirrored four times over the first 8MB
     pub const RAM: Range = Range(0x0000_0000, 8 * 1024 * 1024);
+
+    /// Expansion region 1
+    pub const EXPANSION_1: Range = Range(0x1f00_0000, 512 * 1024);
 
     /// BIOS ROM. Read-only, significantly slower to access than system RAM
     pub const BIOS: Range = Range(0x1fc0_0000, 512 * 1024);
