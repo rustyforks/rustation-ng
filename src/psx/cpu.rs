@@ -219,6 +219,19 @@ fn op_addu(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v);
 }
 
+/// Bitwise And
+fn op_and(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let v = psx.cpu.reg(s) & psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
 /// Bitwise Or
 fn op_or(psx: &mut Psx, instruction: Instruction) {
     let d = instruction.d();
@@ -226,6 +239,32 @@ fn op_or(psx: &mut Psx, instruction: Instruction) {
     let t = instruction.t();
 
     let v = psx.cpu.reg(s) | psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
+/// Bitwise Exclusive Or
+fn op_xor(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let v = psx.cpu.reg(s) ^ psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
+/// Bitwise Not Or
+fn op_nor(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let v = !(psx.cpu.reg(s) | psx.cpu.reg(t));
 
     psx.cpu.delayed_load();
 
@@ -803,10 +842,10 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_addu,
     op_unimplemented_function,
     op_unimplemented_function,
-    op_unimplemented_function,
+    op_and,
     op_or,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_xor,
+    op_nor,
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
