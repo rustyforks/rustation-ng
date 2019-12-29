@@ -9,6 +9,10 @@ pub struct Cpu {
     next_pc: u32,
     /// General Purpose Registers. The first entry (R0) must always contain 0
     regs: [u32; 32],
+    /// HI register for division remainder and multiplication MSBs
+    hi: u32,
+    /// LO register for division quotient and multiplication LSBs
+    lo: u32,
     /// Load initiated by the current instruction (will take effect after the load delay slot)
     load: (RegisterIndex, u32),
 }
@@ -25,6 +29,8 @@ impl Cpu {
             // matter since the BIOS doesn't read them. R0 is always 0 however, so that shoudn't be
             // changed.
             regs: [0; 32],
+            hi: 0,
+            lo: 0,
             load: (RegisterIndex(0), 0),
         }
     }
@@ -268,6 +274,87 @@ fn op_jalr(psx: &mut Psx, instruction: Instruction) {
 
     // Store return address in `d`
     psx.cpu.set_reg(d, ra);
+}
+
+/// Multiply (signed)
+fn op_mult(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let a = i64::from(psx.cpu.reg(s) as i32);
+    let b = i64::from(psx.cpu.reg(t) as i32);
+
+    let res = (a * b) as u64;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.hi = (res >> 32) as u32;
+    psx.cpu.lo = res as u32;
+}
+
+/// Multiply Unsigned
+fn op_multu(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let a = u64::from(psx.cpu.reg(s));
+    let b = u64::from(psx.cpu.reg(t));
+
+    let res = a * b;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.hi = (res >> 32) as u32;
+    psx.cpu.lo = res as u32;
+}
+
+/// Divide (signed)
+fn op_div(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let n = psx.cpu.reg(s) as i32;
+    let d = psx.cpu.reg(t) as i32;
+
+    psx.cpu.delayed_load();
+
+    if d == 0 {
+        // Division by zero, results are bogus
+        psx.cpu.hi = n as u32;
+
+        if n >= 0 {
+            psx.cpu.lo = 0xffff_ffff;
+        } else {
+            psx.cpu.lo = 1;
+        }
+    } else if n as u32 == 0x8000_0000 && d == -1 {
+        // Result is not representable in a 32bit signed integer
+        psx.cpu.hi = 0;
+        psx.cpu.lo = 0x8000_0000;
+    } else {
+        psx.cpu.hi = (n % d) as u32;
+        psx.cpu.lo = (n / d) as u32;
+    }
+}
+
+/// Divide Unsigned
+fn op_divu(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+
+    let n = psx.cpu.reg(s);
+    let d = psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
+
+    if d == 0 {
+        // Division by zero, results are bogus
+        psx.cpu.hi = n;
+        psx.cpu.lo = 0xffff_ffff;
+    } else {
+        psx.cpu.hi = n % d;
+        psx.cpu.lo = n / d;
+    }
 }
 
 /// Add and check for signed overflow
@@ -1022,10 +1109,10 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_mult,
+    op_multu,
+    op_div,
+    op_divu,
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
