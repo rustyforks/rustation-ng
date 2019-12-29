@@ -389,6 +389,41 @@ fn op_mtc0(psx: &mut Psx, instruction: Instruction) {
     cop0::mtc0(psx, cop_r, v);
 }
 
+/// Load Byte (signed)
+fn op_lb(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    // Cast as i8 to force sign extension
+    let v = psx.load::<u8>(addr) as i8;
+
+    // Put the load in the delay slot
+    psx.cpu.delayed_load_chain(t, v as u32);
+}
+
+/// Load Halfword (signed)
+fn op_lh(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    if addr % 2 == 0 {
+        // Cast as i16 to force sign extension
+        let v = psx.load::<u16>(addr) as i16;
+
+        // Put the load in the delay slot
+        psx.cpu.delayed_load_chain(t, v as u32);
+    } else {
+        psx.cpu.delayed_load();
+        panic!("Misaligned lh!");
+    }
+}
+
 /// Load Word
 fn op_lw(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -405,6 +440,40 @@ fn op_lw(psx: &mut Psx, instruction: Instruction) {
     } else {
         psx.cpu.delayed_load();
         panic!("Misaligned lw!");
+    }
+}
+
+/// Load Byte Unsigned
+fn op_lbu(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    let v = psx.load::<u8>(addr);
+
+    // Put the load in the delay slot
+    psx.cpu.delayed_load_chain(t, u32::from(v));
+}
+
+/// Load Halfword Unsigned
+fn op_lhu(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    // Address must be 16bit aligned
+    if addr % 2 == 0 {
+        let v = psx.load::<u16>(addr);
+
+        // Put the load in the delay slot
+        psx.cpu.delayed_load_chain(t, u32::from(v));
+    } else {
+        psx.cpu.delayed_load();
+        panic!("Misaligned lhu!");
     }
 }
 
@@ -598,12 +667,12 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_unimplemented,
     // 0x20
-    op_unimplemented,
-    op_unimplemented,
+    op_lb,
+    op_lh,
     op_unimplemented,
     op_lw,
-    op_unimplemented,
-    op_unimplemented,
+    op_lbu,
+    op_lhu,
     op_unimplemented,
     op_unimplemented,
     op_sb,
