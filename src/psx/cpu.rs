@@ -175,6 +175,20 @@ fn op_bne(psx: &mut Psx, instruction: Instruction) {
     }
 }
 
+/// Add Immediate and check for signed overflow
+fn op_addi(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se() as i32;
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let s = psx.cpu.reg(s) as i32;
+
+    match s.checked_add(i) {
+        Some(v) => psx.cpu.set_reg(t, v as u32),
+        None => panic!("ADDI overflowed!"),
+    }
+}
+
 /// Add Immediate Unsigned
 fn op_addiu(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -357,7 +371,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_bne,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
+    op_addi,
     op_addiu,
     op_unimplemented,
     op_unimplemented,
