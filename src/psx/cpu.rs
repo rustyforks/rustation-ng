@@ -291,6 +291,19 @@ fn op_addiu(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(t, v);
 }
 
+/// Bitwise And Immediate
+fn op_andi(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let v = psx.cpu.reg(s) & i;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(t, v);
+}
+
 /// Bitwise Or Immediate
 fn op_ori(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm();
@@ -298,6 +311,19 @@ fn op_ori(psx: &mut Psx, instruction: Instruction) {
     let s = instruction.s();
 
     let v = psx.cpu.reg(s) | i;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(t, v);
+}
+
+/// Bitwise eXclusive Or Immediate
+fn op_xori(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let v = psx.cpu.reg(s) ^ i;
 
     psx.cpu.delayed_load();
 
@@ -526,9 +552,9 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_addiu,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
+    op_andi,
     op_ori,
-    op_unimplemented,
+    op_xori,
     op_lui,
     // 0x10
     op_cop0,
