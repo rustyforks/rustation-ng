@@ -161,6 +161,11 @@ impl Psx {
             return;
         }
 
+        if let Some(offset) = map::EXPANSION_2.contains(abs_addr) {
+            eprintln!("Unhandled write to expansion 2 register {:x}", offset);
+            return;
+        }
+
         panic!(
             "Unhandled store at address {:08x} (val=0x{:08x})",
             abs_addr,
@@ -345,6 +350,9 @@ mod map {
 
     /// SPU registers
     pub const SPU: Range = Range(0x1f80_1c00, 640);
+
+    /// Expansion region 2
+    pub const EXPANSION_2: Range = Range(0x1f80_2000, 66);
 
     /// Cache control register. Full address since it's in KSEG2
     pub const CACHE_CONTROL: Range = Range(0xfffe_0130, 4);
