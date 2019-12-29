@@ -47,3 +47,11 @@ pub fn mtc0(psx: &mut Psx, cop_r: RegisterIndex, v: u32) {
         _ => panic!("Unhandled COP0 register {}", cop_r.0),
     }
 }
+
+/// Move From Coprocessor 0
+pub fn mfc0(psx: &mut Psx, cop_r: RegisterIndex) -> u32 {
+    match cop_r.0 {
+        12 => psx.cop0.sr,
+        _ => panic!("Unhandled read from COP0 register {}", cop_r.0),
+    }
+}

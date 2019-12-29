@@ -411,7 +411,7 @@ fn op_lui(psx: &mut Psx, instruction: Instruction) {
 /// Coprocessor 0 opcode
 fn op_cop0(psx: &mut Psx, instruction: Instruction) {
     match instruction.cop_opcode() {
-        0b00000 => panic!("Implement MFC0"),
+        0b00000 => op_mfc0(psx, instruction),
         0b00100 => op_mtc0(psx, instruction),
         0b10000 => panic!("Implement RFE"),
         _ => panic!("Unhandled cop0 instruction {}", instruction),
@@ -428,6 +428,16 @@ fn op_mtc0(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.delayed_load();
 
     cop0::mtc0(psx, cop_r, v);
+}
+
+/// Move From Coprocessor 0
+fn op_mfc0(psx: &mut Psx, instruction: Instruction) {
+    let cpu_r = instruction.t();
+    let cop_r = instruction.d();
+
+    let v = cop0::mfc0(psx, cop_r);
+
+    psx.cpu.delayed_load_chain(cpu_r, v);
 }
 
 /// Load Byte (signed)
