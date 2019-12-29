@@ -273,6 +273,19 @@ fn op_jal(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(RegisterIndex(31), ra);
 }
 
+/// Branch if Equal
+fn op_beq(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    if psx.cpu.reg(s) == psx.cpu.reg(t) {
+        psx.cpu.branch(i);
+    }
+
+    psx.cpu.delayed_load();
+}
+
 /// Branch if Not Equal
 fn op_bne(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -280,6 +293,34 @@ fn op_bne(psx: &mut Psx, instruction: Instruction) {
     let t = instruction.t();
 
     if psx.cpu.reg(s) != psx.cpu.reg(t) {
+        psx.cpu.branch(i);
+    }
+
+    psx.cpu.delayed_load();
+}
+
+/// Branch if Less than or Equal to Zero
+fn op_blez(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let s = instruction.s();
+
+    let v = psx.cpu.reg(s) as i32;
+
+    if v <= 0 {
+        psx.cpu.branch(i);
+    }
+
+    psx.cpu.delayed_load();
+}
+
+/// Branch if Greater Than Zero
+fn op_bgtz(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let s = instruction.s();
+
+    let v = psx.cpu.reg(s) as i32;
+
+    if v > 0 {
         psx.cpu.branch(i);
     }
 
@@ -637,10 +678,10 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_j,
     op_jal,
-    op_unimplemented,
+    op_beq,
     op_bne,
-    op_unimplemented,
-    op_unimplemented,
+    op_blez,
+    op_bgtz,
     op_addi,
     op_addiu,
     op_unimplemented,
