@@ -1,4 +1,4 @@
-use super::Psx;
+use super::{cop0, Psx};
 
 use std::fmt;
 
@@ -175,6 +175,26 @@ fn op_lui(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(t, v);
 }
 
+/// Coprocessor 0 opcode
+fn op_cop0(psx: &mut Psx, instruction: Instruction) {
+    match instruction.cop_opcode() {
+        0b00000 => panic!("Implement MFC0"),
+        0b00100 => op_mtc0(psx, instruction),
+        0b10000 => panic!("Implement RFE"),
+        _ => panic!("Unhandled cop0 instruction {}", instruction),
+    }
+}
+
+/// Move To Coprocessor 0
+fn op_mtc0(psx: &mut Psx, instruction: Instruction) {
+    let cpu_r = instruction.t();
+    let cop_r = instruction.d();
+
+    let v = psx.cpu.reg(cpu_r);
+
+    cop0::mtc0(psx, cop_r, v);
+}
+
 /// Store Word
 fn op_sw(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -210,6 +230,13 @@ impl Instruction {
         let Instruction(op) = self;
 
         (op & 0x3f) as usize
+    }
+
+    /// Return coprocessor opcode in bits [25:21]
+    fn cop_opcode(self) -> u32 {
+        let Instruction(op) = self;
+
+        (op >> 21) & 0x1f
     }
 
     /// Return immediate value in bits [16:0]
@@ -275,7 +302,7 @@ impl fmt::Display for Instruction {
 /// A simple wrapper around a register index to avoid coding errors where the register index could
 /// be used instead of its value
 #[derive(Clone, Copy)]
-struct RegisterIndex(u32);
+pub struct RegisterIndex(pub u32);
 
 /// Placeholder while we haven't implemented all opcodes
 fn op_unimplemented(_psx: &mut Psx, instruction: Instruction) {
@@ -306,7 +333,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_lui,
     // 0x10
-    op_unimplemented,
+    op_cop0,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,

@@ -1,5 +1,7 @@
 mod bios;
+mod cop0;
 mod cpu;
+
 pub mod error;
 
 use std::path::Path;
