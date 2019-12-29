@@ -111,8 +111,6 @@ impl fmt::Debug for Cpu {
 }
 
 pub fn run_next_instruction(psx: &mut Psx) {
-    println!("{:?}", psx.cpu);
-
     // Explanation of the various *pc variables:
     //
     // * `current_pc`: Pointer to the instruction about to be executed.
@@ -139,8 +137,6 @@ pub fn run_next_instruction(psx: &mut Psx) {
     assert!(current_pc % 4 == 0);
 
     let instruction = Instruction(psx.load(current_pc));
-
-    println!("About to execute {}...", instruction);
 
     let handler = OPCODE_HANDLERS[instruction.opcode()];
 
