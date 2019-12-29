@@ -14,6 +14,7 @@ use self::error::Result;
 pub struct Psx {
     cpu: Cpu,
     cop0: cop0::Cop0,
+    ram: Ram,
     bios: Bios,
     /// Memory control registers
     mem_control: [u32; 9],
@@ -29,6 +30,7 @@ impl Psx {
         let psx = Psx {
             cpu: Cpu::new(),
             cop0: cop0::Cop0::new(),
+            ram: Ram::new(),
             bios: Bios::new(bios_path)?,
             mem_control: [0; 9],
             ram_size: 0,
@@ -46,6 +48,10 @@ impl Psx {
 
     pub fn load<T: Addressable>(&mut self, address: u32) -> T {
         let abs_addr = map::mask_region(address);
+
+        if let Some(offset) = map::RAM.contains(abs_addr) {
+            return self.ram.load(offset);
+        }
 
         if let Some(offset) = map::BIOS.contains(abs_addr) {
             return self.bios.load(offset);
@@ -82,6 +88,11 @@ impl Psx {
 
     pub fn store<T: Addressable>(&mut self, address: u32, val: T) {
         let abs_addr = map::mask_region(address);
+
+        if let Some(offset) = map::RAM.contains(abs_addr) {
+            self.ram.store(offset, val);
+            return;
+        }
 
         if let Some(offset) = map::MEM_CONTROL.contains(abs_addr) {
             if T::width() != AccessWidth::Word {
@@ -218,6 +229,53 @@ impl Addressable for u32 {
     }
 }
 
+/// RAM
+pub struct Ram {
+    data: Box<[u8; RAM_SIZE]>,
+}
+
+impl Ram {
+    /// Instantiate main RAM
+    pub fn new() -> Ram {
+        Ram {
+            data: Box::new([0; RAM_SIZE]),
+        }
+    }
+
+    /// Fetch the little endian value at `offset`
+    pub fn load<T: Addressable>(&self, offset: u32) -> T {
+        // The two MSBs are ignored, the 2MB RAM is mirrored four times over the first 8MB of
+        // address space
+        let offset = (offset & 0x1f_ffff) as usize;
+
+        let mut v = 0;
+
+        for i in 0..T::width() as usize {
+            let b = u32::from(self.data[offset + i]);
+
+            v |= b << (i * 8)
+        }
+
+        Addressable::from_u32(v)
+    }
+
+    /// Store the 32bit little endian word `val` into `offset`
+    pub fn store<T: Addressable>(&mut self, offset: u32, val: T) {
+        // The two MSBs are ignored, the 2MB RAM is mirrored four times over the first 8MB of
+        // address space
+        let offset = (offset & 0x1f_ffff) as usize;
+
+        let val = val.as_u32();
+
+        for i in 0..T::width() as usize {
+            self.data[offset + i] = (val >> (i * 8)) as u8;
+        }
+    }
+}
+
+/// System RAM: 2MB
+const RAM_SIZE: usize = 2 * 1024 * 1024;
+
 mod map {
     /// Mask array used to strip the region bits of the address. The mask is selected using the 3
     /// MSBs of the address so each entry effectively matches 512kB of the address space. KSEG2 is
@@ -259,6 +317,9 @@ mod map {
             }
         }
     }
+
+    /// Main RAM: 2MB mirrored four times over the first 8MB
+    pub const RAM: Range = Range(0x0000_0000, 8 * 1024 * 1024);
 
     /// BIOS ROM. Read-only, significantly slower to access than system RAM
     pub const BIOS: Range = Range(0x1fc0_0000, 512 * 1024);
