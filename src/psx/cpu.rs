@@ -182,6 +182,19 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v);
 }
 
+/// Add Unsigned
+fn op_addu(psx: &mut Psx, instruction: Instruction) {
+    let s = instruction.s();
+    let t = instruction.t();
+    let d = instruction.d();
+
+    let v = psx.cpu.reg(s).wrapping_add(psx.cpu.reg(t));
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
 /// Bitwise Or
 fn op_or(psx: &mut Psx, instruction: Instruction) {
     let d = instruction.d();
@@ -571,7 +584,7 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented_function,
     // 0x20
     op_unimplemented_function,
-    op_unimplemented_function,
+    op_addu,
     op_unimplemented_function,
     op_unimplemented_function,
     op_unimplemented_function,
