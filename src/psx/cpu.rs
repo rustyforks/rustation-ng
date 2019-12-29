@@ -236,6 +236,19 @@ fn op_j(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.delayed_load();
 }
 
+/// Jump And Link
+fn op_jal(psx: &mut Psx, instruction: Instruction) {
+    let ra = psx.cpu.next_pc;
+    let target = instruction.imm_jump();
+
+    psx.cpu.next_pc = (psx.cpu.pc & 0xf000_0000) | target;
+
+    psx.cpu.delayed_load();
+
+    // Store return address in R31
+    psx.cpu.set_reg(RegisterIndex(31), ra);
+}
+
 /// Branch if Not Equal
 fn op_bne(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -504,7 +517,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_function,
     op_unimplemented,
     op_j,
-    op_unimplemented,
+    op_jal,
     op_unimplemented,
     op_bne,
     op_unimplemented,
