@@ -331,6 +331,46 @@ fn op_sltu(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v as u32);
 }
 
+/// Various branch instructions: BGEZ, BLTZ, BGEZAL, BLTZAL. Bits [20:16] are used to figure out
+/// which one to use
+fn op_bxx(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let s = instruction.s();
+
+    let instruction = instruction.0;
+
+    let is_bgez = (instruction >> 16) & 1;
+    // It's not enough to test for bit 20 to see if we're supposed
+    // to link, if any bit in the range [19:17] is set the link
+    // doesn't take place and RA is left untouched.
+    let is_link = (instruction >> 17) & 0xf == 0x8;
+
+    let v = psx.cpu.reg(s) as i32;
+
+    // Test "less than zero"
+    let test = (v < 0) as u32;
+
+    // If the test is "greater than or equal to zero" we need to
+    // negate the comparison above ("a >= 0" <=> "!(a < 0)"). The
+    // xor takes care of that.
+    let test = test ^ is_bgez;
+
+    psx.cpu.delayed_load();
+
+    // If linking is requested it occurs unconditionally, even if
+    // the branch is not taken
+    if is_link {
+        let ra = psx.cpu.next_pc;
+
+        // Store return address in R31
+        psx.cpu.set_reg(RegisterIndex(31), ra);
+    }
+
+    if test != 0 {
+        psx.cpu.branch(i);
+    }
+}
+
 /// Jump
 fn op_j(psx: &mut Psx, instruction: Instruction) {
     let target = instruction.imm_jump();
@@ -771,7 +811,7 @@ fn op_unimplemented(_psx: &mut Psx, instruction: Instruction) {
 const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     // 0x00
     op_function,
-    op_unimplemented,
+    op_bxx,
     op_j,
     op_jal,
     op_beq,
