@@ -1,6 +1,7 @@
 mod bios;
 mod cop0;
 mod cpu;
+mod irq;
 mod spu;
 
 pub mod error;
@@ -16,6 +17,7 @@ use self::spu::Spu;
 pub struct Psx {
     cpu: Cpu,
     cop0: cop0::Cop0,
+    irq: irq::InterruptState,
     ram: Ram,
     bios: Bios,
     spu: Spu,
@@ -33,6 +35,7 @@ impl Psx {
         let psx = Psx {
             cpu: Cpu::new(),
             cop0: cop0::Cop0::new(),
+            irq: irq::InterruptState::new(),
             ram: Ram::new(),
             bios: Bios::new(bios_path)?,
             spu: Spu::new(),
@@ -63,6 +66,16 @@ impl Psx {
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
             return spu::load(self, offset);
+        }
+
+        if let Some(off) = map::IRQ_CONTROL.contains(abs_addr) {
+            let v = match off {
+                0 => Addressable::from_u32(u32::from(irq::status(self))),
+                4 => Addressable::from_u32(u32::from(irq::mask(self))),
+                _ => panic!("Unhandled IRQ load at address {:08x}", abs_addr),
+            };
+
+            return v;
         }
 
         if map::EXPANSION_1.contains(abs_addr).is_some() {
@@ -110,6 +123,16 @@ impl Psx {
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
             spu::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::IRQ_CONTROL.contains(abs_addr) {
+            match offset {
+                0 => irq::ack(self, val.as_u32() as u16),
+                4 => irq::set_mask(self, val.as_u32() as u16),
+                _ => panic!("Unhandled IRQ store at address {:08x}", abs_addr),
+            }
+
             return;
         }
 
@@ -361,6 +384,9 @@ mod map {
 
     /// Register that has something to do with RAM configuration, configured by the BIOS
     pub const RAM_SIZE: Range = Range(0x1f80_1060, 4);
+
+    /// Interrupt Control registers (status and mask)
+    pub const IRQ_CONTROL: Range = Range(0x1f80_1070, 8);
 
     /// SPU registers
     pub const SPU: Range = Range(0x1f80_1c00, 640);
