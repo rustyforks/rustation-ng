@@ -178,6 +178,74 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.set_reg(d, v);
 }
 
+/// Shift Right Logical
+fn op_srl(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.shift();
+    let t = instruction.t();
+    let d = instruction.d();
+
+    let v = psx.cpu.reg(t) >> i;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
+/// Shift Right Arithmetic
+fn op_sra(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.shift();
+    let t = instruction.t();
+    let d = instruction.d();
+
+    let v = (psx.cpu.reg(t) as i32) >> i;
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v as u32);
+}
+
+/// Shift Left Logical Variable
+fn op_sllv(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    // Shift amount is truncated to 5 bits
+    let v = psx.cpu.reg(t) << (psx.cpu.reg(s) & 0x1f);
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
+/// Shift Right Logical Variable
+fn op_srlv(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    // Shift amount is truncated to 5 bits
+    let v = psx.cpu.reg(t) >> (psx.cpu.reg(s) & 0x1f);
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v);
+}
+
+/// Shift Right Arithmetic Variable
+fn op_srav(psx: &mut Psx, instruction: Instruction) {
+    let d = instruction.d();
+    let s = instruction.s();
+    let t = instruction.t();
+
+    // Shift amount is truncated to 5 bits
+    let v = (psx.cpu.reg(t) as i32) >> (psx.cpu.reg(s) & 0x1f);
+
+    psx.cpu.delayed_load();
+
+    psx.cpu.set_reg(d, v as u32);
+}
+
 /// Jump Register
 fn op_jr(psx: &mut Psx, instruction: Instruction) {
     let s = instruction.s();
@@ -931,12 +999,12 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     // 0x00
     op_sll,
     op_unimplemented_function,
+    op_srl,
+    op_sra,
+    op_sllv,
     op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_srlv,
+    op_srav,
     op_jr,
     op_jalr,
     op_unimplemented_function,
