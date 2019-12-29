@@ -9,6 +9,8 @@ pub struct Cpu {
     next_pc: u32,
     /// General Purpose Registers. The first entry (R0) must always contain 0
     regs: [u32; 32],
+    /// Load initiated by the current instruction (will take effect after the load delay slot)
+    load: (RegisterIndex, u32),
 }
 
 impl Cpu {
@@ -23,6 +25,7 @@ impl Cpu {
             // matter since the BIOS doesn't read them. R0 is always 0 however, so that shoudn't be
             // changed.
             regs: [0; 32],
+            load: (RegisterIndex(0), 0),
         }
     }
 
@@ -47,6 +50,43 @@ impl Cpu {
         let offset = offset << 2;
 
         self.next_pc = self.pc.wrapping_add(offset);
+    }
+
+    /// Execute and clear any pending load
+    fn delayed_load(&mut self) {
+        // Execute the pending load (if any, otherwise it will load `R0` which is a NOP).
+        let (reg, val) = self.load;
+
+        self.set_reg(reg, val);
+
+        // We reset the load to target register 0 for the next instruction
+        self.load = (RegisterIndex(0), 0);
+    }
+
+    /// Execute the pending delayed and setup the next one. If the new load targets the same
+    /// register as the current one then the older one is cancelled (i.e. it never makes it to the
+    /// register).
+    ///
+    /// This method should be used instead of `delayed_load` for instructions that setup a delayed
+    /// load.
+    fn delayed_load_chain(&mut self, reg: RegisterIndex, val: u32) {
+        let (pending_reg, pending_val) = self.load;
+
+        // This takes care of the following situation:
+        //
+        //    lw   $t0, 0($s0)
+        //    lw   $t0, 0($s1)
+        //    move $t0, $s1
+        //
+        // In this situation the 2nd LW targets the same register an the one just before. In this
+        // scenario the first load never completes and the value of T0 in the move won't have been
+        // modified by either LW (the first one being interrupted by the second one, and the second
+        // one not having yet finished since we're in the delay slot).
+        if pending_reg != reg {
+            self.set_reg(pending_reg, pending_val);
+        }
+
+        self.load = (reg, val);
     }
 }
 
@@ -137,6 +177,8 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
 
     let v = psx.cpu.reg(t) << i;
 
+    psx.cpu.delayed_load();
+
     psx.cpu.set_reg(d, v);
 }
 
@@ -147,6 +189,8 @@ fn op_or(psx: &mut Psx, instruction: Instruction) {
     let t = instruction.t();
 
     let v = psx.cpu.reg(s) | psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
 
     psx.cpu.set_reg(d, v);
 }
@@ -162,6 +206,8 @@ fn op_j(psx: &mut Psx, instruction: Instruction) {
     // particular it can't be used to switch from one area to an other (like, say, from KUSEG to
     // KSEG0).
     psx.cpu.next_pc = (psx.cpu.pc & 0xf000_0000) | target;
+
+    psx.cpu.delayed_load();
 }
 
 /// Branch if Not Equal
@@ -173,6 +219,8 @@ fn op_bne(psx: &mut Psx, instruction: Instruction) {
     if psx.cpu.reg(s) != psx.cpu.reg(t) {
         psx.cpu.branch(i);
     }
+
+    psx.cpu.delayed_load();
 }
 
 /// Add Immediate and check for signed overflow
@@ -182,6 +230,8 @@ fn op_addi(psx: &mut Psx, instruction: Instruction) {
     let s = instruction.s();
 
     let s = psx.cpu.reg(s) as i32;
+
+    psx.cpu.delayed_load();
 
     match s.checked_add(i) {
         Some(v) => psx.cpu.set_reg(t, v as u32),
@@ -197,6 +247,8 @@ fn op_addiu(psx: &mut Psx, instruction: Instruction) {
 
     let v = psx.cpu.reg(s).wrapping_add(i);
 
+    psx.cpu.delayed_load();
+
     psx.cpu.set_reg(t, v);
 }
 
@@ -208,6 +260,8 @@ fn op_ori(psx: &mut Psx, instruction: Instruction) {
 
     let v = psx.cpu.reg(s) | i;
 
+    psx.cpu.delayed_load();
+
     psx.cpu.set_reg(t, v);
 }
 
@@ -218,6 +272,8 @@ fn op_lui(psx: &mut Psx, instruction: Instruction) {
 
     // Low 16bits are set to 0
     let v = i << 16;
+
+    psx.cpu.delayed_load();
 
     psx.cpu.set_reg(t, v);
 }
@@ -239,7 +295,28 @@ fn op_mtc0(psx: &mut Psx, instruction: Instruction) {
 
     let v = psx.cpu.reg(cpu_r);
 
+    psx.cpu.delayed_load();
+
     cop0::mtc0(psx, cop_r, v);
+}
+
+/// Load Word
+fn op_lw(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    // Address must be 32bit aligned
+    if addr % 4 == 0 {
+        let v = psx.load(addr);
+
+        psx.cpu.delayed_load_chain(t, v);
+    } else {
+        psx.cpu.delayed_load();
+        panic!("Misaligned lw!");
+    }
 }
 
 /// Store Word
@@ -250,6 +327,8 @@ fn op_sw(psx: &mut Psx, instruction: Instruction) {
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
     let v = psx.cpu.reg(t);
+
+    psx.cpu.delayed_load();
 
     // Address must be 32bit aligned
     if addr % 4 == 0 {
@@ -348,7 +427,7 @@ impl fmt::Display for Instruction {
 
 /// A simple wrapper around a register index to avoid coding errors where the register index could
 /// be used instead of its value
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RegisterIndex(pub u32);
 
 /// Placeholder while we haven't implemented all opcodes
@@ -400,7 +479,7 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
+    op_lw,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
