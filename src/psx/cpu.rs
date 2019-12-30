@@ -166,8 +166,11 @@ pub fn run_next_instruction(psx: &mut Psx) {
     psx.cpu.delay_slot = psx.cpu.branch;
     psx.cpu.branch = false;
 
-    // Unaligned PC should trigger an exception
-    assert!(psx.cpu.current_pc % 4 == 0);
+    if psx.cpu.current_pc % 4 != 0 {
+        // PC is not correctly aligned!
+        exception(psx, Exception::LoadAddressError);
+        return;
+    }
 
     let instruction = Instruction(psx.load(psx.cpu.current_pc));
 
@@ -460,7 +463,7 @@ fn op_add(psx: &mut Psx, instruction: Instruction) {
 
     match s.checked_add(t) {
         Some(v) => psx.cpu.set_reg(d, v as u32),
-        None => panic!("add overflowed!"),
+        None => exception(psx, Exception::Overflow),
     }
 }
 
@@ -490,7 +493,7 @@ fn op_sub(psx: &mut Psx, instruction: Instruction) {
 
     match s.checked_sub(t) {
         Some(v) => psx.cpu.set_reg(d, v as u32),
-        None => panic!("sub overflowed!"),
+        None => exception(psx, Exception::Overflow),
     }
 }
 
@@ -724,7 +727,7 @@ fn op_addi(psx: &mut Psx, instruction: Instruction) {
 
     match s.checked_add(i) {
         Some(v) => psx.cpu.set_reg(t, v as u32),
-        None => panic!("ADDI overflowed!"),
+        None => exception(psx, Exception::Overflow),
     }
 }
 
@@ -882,7 +885,7 @@ fn op_lh(psx: &mut Psx, instruction: Instruction) {
         psx.cpu.delayed_load_chain(t, v as u32);
     } else {
         psx.cpu.delayed_load();
-        panic!("Misaligned lh!");
+        exception(psx, Exception::LoadAddressError);
     }
 }
 
@@ -901,7 +904,7 @@ fn op_lw(psx: &mut Psx, instruction: Instruction) {
         psx.cpu.delayed_load_chain(t, v);
     } else {
         psx.cpu.delayed_load();
-        panic!("Misaligned lw!");
+        exception(psx, Exception::LoadAddressError);
     }
 }
 
@@ -935,7 +938,7 @@ fn op_lhu(psx: &mut Psx, instruction: Instruction) {
         psx.cpu.delayed_load_chain(t, u32::from(v));
     } else {
         psx.cpu.delayed_load();
-        panic!("Misaligned lhu!");
+        exception(psx, Exception::LoadAddressError);
     }
 }
 
@@ -968,7 +971,7 @@ fn op_sh(psx: &mut Psx, instruction: Instruction) {
     if addr % 2 == 0 {
         store(psx, addr, v as u16);
     } else {
-        panic!("Misaligned sh!");
+        exception(psx, Exception::StoreAddressError);
     }
 }
 
@@ -987,8 +990,7 @@ fn op_sw(psx: &mut Psx, instruction: Instruction) {
     if addr % 4 == 0 {
         store(psx, addr, v);
     } else {
-        // XXX Should trigger an exception
-        panic!("Misaligned sw!");
+        exception(psx, Exception::StoreAddressError);
     }
 }
 
