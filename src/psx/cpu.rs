@@ -1,5 +1,5 @@
 use super::cop0::Exception;
-use super::{cop0, Addressable, Psx};
+use super::{cop0, debugger, Addressable, Psx};
 
 use std::fmt;
 
@@ -24,6 +24,8 @@ pub struct Cpu {
     branch: bool,
     /// Set if the current instruction executes in the delay slot
     delay_slot: bool,
+    /// If true BREAK instructions trigged the debugger instead of generating an exception
+    debug_on_break: bool,
 }
 
 impl Cpu {
@@ -44,6 +46,7 @@ impl Cpu {
             load: (RegisterIndex(0), 0),
             branch: false,
             delay_slot: false,
+            debug_on_break: false,
         }
     }
 
@@ -166,6 +169,9 @@ pub fn run_next_instruction(psx: &mut Psx) {
     psx.cpu.delay_slot = psx.cpu.branch;
     psx.cpu.branch = false;
 
+    // Debugger entrypoint: used for code breakpoints and stepping
+    debugger::pc_change(psx);
+
     if psx.cpu.current_pc % 4 != 0 {
         // PC is not correctly aligned!
         exception(psx, Exception::LoadAddressError);
@@ -199,7 +205,16 @@ fn store<T: Addressable>(psx: &mut Psx, addr: u32, v: T) {
         return;
     }
 
+    debugger::memory_write(psx, addr);
+
     psx.store(addr, v);
+}
+
+/// Execute a memory read
+fn load<T: Addressable>(psx: &mut Psx, addr: u32) -> T {
+    debugger::memory_read(psx, addr);
+
+    psx.load(addr)
 }
 
 /// When the main opcode is 0 we need to dispatch through a secondary table based on bits [5:0] of
@@ -326,7 +341,11 @@ fn op_syscall(psx: &mut Psx, _: Instruction) {
 
 /// Break
 fn op_break(psx: &mut Psx, _: Instruction) {
-    exception(psx, Exception::Break);
+    if psx.cpu.debug_on_break {
+        debugger::trigger_break(psx);
+    } else {
+        exception(psx, Exception::Break);
+    }
 }
 
 /// Move From HI
@@ -863,7 +882,7 @@ fn op_lb(psx: &mut Psx, instruction: Instruction) {
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
     // Cast as i8 to force sign extension
-    let v = psx.load::<u8>(addr) as i8;
+    let v = load::<u8>(psx, addr) as i8;
 
     // Put the load in the delay slot
     psx.cpu.delayed_load_chain(t, v as u32);
@@ -879,7 +898,7 @@ fn op_lh(psx: &mut Psx, instruction: Instruction) {
 
     if addr % 2 == 0 {
         // Cast as i16 to force sign extension
-        let v = psx.load::<u16>(addr) as i16;
+        let v = load::<u16>(psx, addr) as i16;
 
         // Put the load in the delay slot
         psx.cpu.delayed_load_chain(t, v as u32);
@@ -899,7 +918,7 @@ fn op_lw(psx: &mut Psx, instruction: Instruction) {
 
     // Address must be 32bit aligned
     if addr % 4 == 0 {
-        let v = psx.load(addr);
+        let v = load(psx, addr);
 
         psx.cpu.delayed_load_chain(t, v);
     } else {
@@ -916,7 +935,7 @@ fn op_lbu(psx: &mut Psx, instruction: Instruction) {
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
-    let v = psx.load::<u8>(addr);
+    let v = load::<u8>(psx, addr);
 
     // Put the load in the delay slot
     psx.cpu.delayed_load_chain(t, u32::from(v));
@@ -932,7 +951,7 @@ fn op_lhu(psx: &mut Psx, instruction: Instruction) {
 
     // Address must be 16bit aligned
     if addr % 2 == 0 {
-        let v = psx.load::<u16>(addr);
+        let v = load::<u16>(psx, addr);
 
         // Put the load in the delay slot
         psx.cpu.delayed_load_chain(t, u32::from(v));

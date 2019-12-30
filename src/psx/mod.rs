@@ -1,11 +1,11 @@
 mod bios;
 mod cop0;
 mod cpu;
+pub mod debugger;
+pub mod error;
 mod irq;
 mod spu;
 mod timers;
-
-pub mod error;
 
 use std::path::Path;
 

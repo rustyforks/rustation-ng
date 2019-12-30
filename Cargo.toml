@@ -7,6 +7,10 @@ description = "A PlayStation emulator"
 license = "GPL-2.0+"
 keywords = ["emulator", "playstation"]
 
+[features]
+# Enable debugger support
+debugger = []
+
 [profile.dev]
 debug = true
 # The emulator is not really usable without optims so we force them even for

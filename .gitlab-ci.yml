@@ -11,6 +11,7 @@ cache:
   script:
   - rustc --version && cargo --version
   - cargo build
+  - cargo build --features "debugger"
   - cargo test --verbose
 
 # Set any required environment variables here
