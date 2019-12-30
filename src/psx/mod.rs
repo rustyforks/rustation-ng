@@ -149,7 +149,7 @@ impl Psx {
         }
 
         if let Some(offset) = map::EXPANSION_1.contains(abs_addr) {
-            eprintln!("Unhandled write to expansion 1 register {:x}", offset);
+            warn!("Unhandled write to expansion 1 register {:x}", offset);
             return;
         }
 
@@ -177,7 +177,7 @@ impl Psx {
                         panic!("Bad expansion 2 base address: 0x{:08x}", val);
                     }
                 }
-                _ => eprintln!(
+                _ => warn!(
                     "Unhandled write to MEM_CONTROL register {:x}: 0x{:08x}",
                     offset, val
                 ),
@@ -208,7 +208,7 @@ impl Psx {
         }
 
         if let Some(offset) = map::EXPANSION_2.contains(abs_addr) {
-            eprintln!("Unhandled write to expansion 2 register {:x}", offset);
+            warn!("Unhandled write to expansion 2 register {:x}", offset);
             return;
         }
 

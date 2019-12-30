@@ -342,6 +342,7 @@ fn op_syscall(psx: &mut Psx, _: Instruction) {
 /// Break
 fn op_break(psx: &mut Psx, _: Instruction) {
     if psx.cpu.debug_on_break {
+        info!("BREAK instruction while debug_on_break is active");
         debugger::trigger_break(psx);
     } else {
         exception(psx, Exception::Break);

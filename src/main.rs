@@ -1,3 +1,7 @@
+#[macro_use]
+extern crate log;
+extern crate simple_logger;
+
 mod psx;
 
 use std::path::Path;
@@ -5,12 +9,14 @@ use std::path::Path;
 use psx::error::{Error, Result};
 
 fn main() -> Result<()> {
+    simple_logger::init().unwrap();
+
     let args: Vec<_> = std::env::args().collect();
 
     let bios_path = match args.get(1) {
         Some(b) => b,
         None => {
-            eprintln!("Usage: rustation-ng <BIOS file>");
+            error!("Usage: rustation-ng <BIOS file>");
             return Err(Error::LogicError("Missing BIOS".into()));
         }
     };
