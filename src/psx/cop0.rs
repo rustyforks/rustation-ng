@@ -15,11 +15,19 @@ use super::Psx;
 pub struct Cop0 {
     /// Cop0 register 12: Status register
     sr: u32,
+    /// Cop0 register 13: Cause register
+    cause: u32,
+    /// Cop0 register 14: Exception PC
+    epc: u32,
 }
 
 impl Cop0 {
     pub fn new() -> Cop0 {
-        Cop0 { sr: 0 }
+        Cop0 {
+            sr: 0,
+            cause: 0,
+            epc: 0,
+        }
     }
 
     /// Returns true if the cache is isolated.
@@ -54,4 +62,68 @@ pub fn mfc0(psx: &mut Psx, cop_r: RegisterIndex) -> u32 {
         12 => psx.cop0.sr,
         _ => panic!("Unhandled read from COP0 register {}", cop_r.0),
     }
+}
+
+/// Called when the CPU is about to enter an exception handler. Returns the address of the handler
+/// that should be used.
+pub fn enter_exception(psx: &mut Psx, cause: Exception) -> u32 {
+    // Shift bits [5:0] of `SR` two places to the left. Those bits
+    // are three pairs of Interrupt Enable/User Mode bits behaving
+    // like a stack 3 entries deep. Entering an exception pushes a
+    // pair of zeroes by left shifting the stack which disables
+    // interrupts and puts the CPU in kernel mode. The original
+    // third entry is discarded (it's up to the kernel to handle
+    // more than two recursive exception levels).
+    let cop0 = &mut psx.cop0;
+    let pc = psx.cpu.current_pc();
+
+    let mode = cop0.sr & 0x3f;
+
+    cop0.sr &= !0x3f;
+    cop0.sr |= (mode << 2) & 0x3f;
+
+    // Update `CAUSE` register with the exception code (bits
+    // [6:2])
+    cop0.cause &= !0x7c;
+    cop0.cause |= (cause as u32) << 2;
+
+    if psx.cpu.in_delay_slot() {
+        // When an exception occurs in a delay slot `EPC` points
+        // to the branch instruction and bit 31 of `CAUSE` is set.
+        cop0.epc = pc.wrapping_sub(4);
+        cop0.cause |= 1 << 31;
+    } else {
+        cop0.epc = pc;
+        cop0.cause &= !(1 << 31);
+    }
+
+    // The address of the exception handler address depends on the
+    // value of the BEV bit in SR
+    if (cop0.sr & (1 << 22)) != 0 {
+        0xbfc0_0180
+    } else {
+        0x8000_0080
+    }
+}
+
+/// Exception types (as stored in the `CAUSE` register)
+#[derive(Clone, Copy, Debug)]
+#[allow(unused)]
+pub enum Exception {
+    /// Interrupt Request
+    Interrupt = 0x0,
+    /// Address error on load
+    LoadAddressError = 0x4,
+    /// Address error on store
+    StoreAddressError = 0x5,
+    /// System call (caused by the SYSCALL opcode)
+    SysCall = 0x8,
+    /// Breakpoint (caused by the BREAK opcode)
+    Break = 0x9,
+    /// CPU encountered an unknown instruction
+    IllegalInstruction = 0xa,
+    /// Unsupported coprocessor operation
+    CoprocessorError = 0xb,
+    /// Arithmetic overflow
+    Overflow = 0xc,
 }

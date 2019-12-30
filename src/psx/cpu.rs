@@ -1,8 +1,12 @@
+use super::cop0::Exception;
 use super::{cop0, Addressable, Psx};
 
 use std::fmt;
 
 pub struct Cpu {
+    /// Address of the instruction currently being executed. Used for
+    /// setting the EPC in exceptions.
+    current_pc: u32,
     /// The Program Counter register: points to the next instruction
     pc: u32,
     /// Next value for the PC, used to emulate the branch delay slot
@@ -15,6 +19,11 @@ pub struct Cpu {
     lo: u32,
     /// Load initiated by the current instruction (will take effect after the load delay slot)
     load: (RegisterIndex, u32),
+    /// Set by the current instruction if a branch occurred and the next instruction will be in the
+    /// delay slot.
+    branch: bool,
+    /// Set if the current instruction executes in the delay slot
+    delay_slot: bool,
 }
 
 impl Cpu {
@@ -23,6 +32,7 @@ impl Cpu {
         let reset_pc = 0xbfc0_0000;
 
         Cpu {
+            current_pc: reset_pc,
             pc: reset_pc,
             next_pc: reset_pc.wrapping_add(4),
             // Not sure what the reset values of the general purpose registers is but it shouldn't
@@ -32,7 +42,19 @@ impl Cpu {
             hi: 0,
             lo: 0,
             load: (RegisterIndex(0), 0),
+            branch: false,
+            delay_slot: false,
         }
+    }
+
+    /// Returns the address of the instruction currently being executed
+    pub fn current_pc(&self) -> u32 {
+        self.current_pc
+    }
+
+    /// Returns true if the instruction currently being executed is in a delay slot
+    pub fn in_delay_slot(&self) -> bool {
+        self.delay_slot
     }
 
     /// Return the current value of register `index`
@@ -56,6 +78,7 @@ impl Cpu {
         let offset = offset << 2;
 
         self.next_pc = self.pc.wrapping_add(offset);
+        self.branch = true;
     }
 
     /// Execute and clear any pending load
@@ -119,7 +142,7 @@ impl fmt::Debug for Cpu {
 pub fn run_next_instruction(psx: &mut Psx) {
     // Explanation of the various *pc variables:
     //
-    // * `current_pc`: Pointer to the instruction about to be executed.
+    // * `psx.cpucurrent_pc`: Pointer to the instruction about to be executed.
     //
     // * `psx.cpu.pc`: Pointer to the next instruction to be executed. It's possible for this value
     //                 to change before the next instruction is reached if an exception occurs
@@ -135,18 +158,33 @@ pub fn run_next_instruction(psx: &mut Psx) {
     // So basically when a branch/jump is executed only `psx.cpu.next_pc` is modified, which means
     // that the value of the next instruction to be executed (pointed at by `psx.cpu.pc`) remains
     // in the pipeline. Thus the branch delay slot is emulated accurately.
-    let current_pc = psx.cpu.pc;
+    psx.cpu.current_pc = psx.cpu.pc;
     psx.cpu.pc = psx.cpu.next_pc;
     psx.cpu.next_pc = psx.cpu.pc.wrapping_add(4);
 
-    // Unaligned PC should trigger an exception
-    assert!(current_pc % 4 == 0);
+    // If the last instruction was a branch then we're in the delay slot
+    psx.cpu.delay_slot = psx.cpu.branch;
+    psx.cpu.branch = false;
 
-    let instruction = Instruction(psx.load(current_pc));
+    // Unaligned PC should trigger an exception
+    assert!(psx.cpu.current_pc % 4 == 0);
+
+    let instruction = Instruction(psx.load(psx.cpu.current_pc));
 
     let handler = OPCODE_HANDLERS[instruction.opcode()];
 
     handler(psx, instruction);
+}
+
+/// Trigger an exception
+fn exception(psx: &mut Psx, cause: Exception) {
+    // Update the status register
+    let handler_addr = cop0::enter_exception(psx, cause);
+
+    // Exceptions don't have a branch delay, we jump directly into
+    // the handler
+    psx.cpu.pc = handler_addr;
+    psx.cpu.next_pc = handler_addr.wrapping_add(4);
 }
 
 /// Execute a memory write
@@ -257,6 +295,7 @@ fn op_jr(psx: &mut Psx, instruction: Instruction) {
     let s = instruction.s();
 
     psx.cpu.next_pc = psx.cpu.reg(s);
+    psx.cpu.branch = true;
 
     psx.cpu.delayed_load();
 }
@@ -269,11 +308,22 @@ fn op_jalr(psx: &mut Psx, instruction: Instruction) {
     let ra = psx.cpu.next_pc;
 
     psx.cpu.next_pc = psx.cpu.reg(s);
+    psx.cpu.branch = true;
 
     psx.cpu.delayed_load();
 
     // Store return address in `d`
     psx.cpu.set_reg(d, ra);
+}
+
+/// System Call
+fn op_syscall(psx: &mut Psx, _: Instruction) {
+    exception(psx, Exception::SysCall);
+}
+
+/// Break
+fn op_break(psx: &mut Psx, _: Instruction) {
+    exception(psx, Exception::Break);
 }
 
 /// Move From HI
@@ -589,6 +639,7 @@ fn op_j(psx: &mut Psx, instruction: Instruction) {
     // particular it can't be used to switch from one area to an other (like, say, from KUSEG to
     // KSEG0).
     psx.cpu.next_pc = (psx.cpu.pc & 0xf000_0000) | target;
+    psx.cpu.branch = true;
 
     psx.cpu.delayed_load();
 }
@@ -599,6 +650,7 @@ fn op_jal(psx: &mut Psx, instruction: Instruction) {
     let target = instruction.imm_jump();
 
     psx.cpu.next_pc = (psx.cpu.pc & 0xf000_0000) | target;
+    psx.cpu.branch = true;
 
     psx.cpu.delayed_load();
 
@@ -1136,8 +1188,8 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_jalr,
     op_unimplemented_function,
     op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_syscall,
+    op_break,
     op_unimplemented_function,
     op_unimplemented_function,
     // 0x10
