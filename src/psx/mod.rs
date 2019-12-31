@@ -82,12 +82,21 @@ impl Psx {
 
         if let Some(off) = map::IRQ_CONTROL.contains(abs_addr) {
             let v = match off {
-                0 => Addressable::from_u32(u32::from(irq::status(self))),
-                4 => Addressable::from_u32(u32::from(irq::mask(self))),
+                0 => u32::from(irq::status(self)),
+                4 => u32::from(irq::mask(self)),
                 _ => panic!("Unhandled IRQ load at address {:08x}", abs_addr),
             };
 
-            return v;
+            // Since the IRQ registers are only 16bit wide the high 32bits are undefined. In
+            // practice the high bits appear to maintain the value of the previous load.
+            //
+            // We could try to emulate this behaviour by keeping track of the previously loaded
+            // value and use that but it's unclear if any game relies on this edge case.
+            //
+            // Mednafen sets the high bits to 0x1f80_0000. It's unclear where that comes from, I
+            // assume that some game relies on this value somehow? Let's err on the side of caution
+            // and do the same thing.
+            return Addressable::from_u32(v | 0x1f80_0000);
         }
 
         if map::EXPANSION_1.contains(abs_addr).is_some() {
