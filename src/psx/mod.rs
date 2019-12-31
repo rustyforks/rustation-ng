@@ -58,7 +58,17 @@ impl Psx {
 
     /// Like load, but tries to minimizes side-effects. Used for debugging.
     pub fn examine<T: Addressable>(&mut self, address: u32) -> T {
-        self.load(address)
+        // A bit heavy handed but that shouldn't pose much of a problem since this function should
+        // only be used for debugging. Catching unwinds means that it will be harder for the
+        // debugger to crash the emulator if it triggers an unhandled edge case (in particular if
+        // it attempts to read from some unimplemented memory location).
+        use ::std::panic;
+
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| self.load(address)));
+
+        let bad_value = Addressable::from_u32(0xfbad_c0de);
+
+        result.unwrap_or(bad_value)
     }
 
     pub fn load<T: Addressable>(&mut self, address: u32) -> T {
