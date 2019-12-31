@@ -1,5 +1,5 @@
 mod bios;
-mod cop0;
+pub mod cop0;
 mod cpu;
 pub mod debugger;
 pub mod error;
@@ -16,20 +16,20 @@ use self::spu::Spu;
 
 /// Current state of the emulator
 pub struct Psx {
-    cpu: Cpu,
-    cop0: cop0::Cop0,
-    irq: irq::InterruptState,
-    ram: Ram,
-    bios: Bios,
-    spu: Spu,
-    timers: timers::Timers,
+    pub cpu: Cpu,
+    pub cop0: cop0::Cop0,
+    pub irq: irq::InterruptState,
+    pub ram: Ram,
+    pub bios: Bios,
+    pub spu: Spu,
+    pub timers: timers::Timers,
     /// Memory control registers
-    mem_control: [u32; 9],
+    pub mem_control: [u32; 9],
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
     /// controller.
-    ram_size: u32,
+    pub ram_size: u32,
     /// Contents of the CACHE_CONTROL register
-    cache_control: u32,
+    pub cache_control: u32,
 }
 
 impl Psx {
@@ -54,6 +54,11 @@ impl Psx {
         loop {
             cpu::run_next_instruction(self);
         }
+    }
+
+    /// Like load, but tries to minimizes side-effects. Used for debugging.
+    pub fn examine<T: Addressable>(&mut self, address: u32) -> T {
+        self.load(address)
     }
 
     pub fn load<T: Addressable>(&mut self, address: u32) -> T {
@@ -340,7 +345,7 @@ impl Ram {
 /// System RAM: 2MB
 const RAM_SIZE: usize = 2 * 1024 * 1024;
 
-mod map {
+pub mod map {
     /// Mask array used to strip the region bits of the address. The mask is selected using the 3
     /// MSBs of the address so each entry effectively matches 512kB of the address space. KSEG2 is
     /// not touched since it doesn't share anything with the other regions.

@@ -30,9 +30,21 @@ impl Cop0 {
         }
     }
 
+    /// Return the value of the SR register
+    pub fn sr(&self) -> u32 {
+        self.sr
+    }
+
     /// Returns true if the cache is isolated.
     pub fn cache_isolated(&self) -> bool {
         self.sr & 0x10000 != 0
+    }
+
+    /// Return the value of the BAD register
+    pub fn bad(&self) -> u32 {
+        // XXX we don't emulate the "BAD" cop0 register yet. It's almost useless in the PSX anyway
+        // since there's no MMU.
+        0
     }
 }
 
@@ -104,6 +116,10 @@ pub fn enter_exception(psx: &mut Psx, cause: Exception) -> u32 {
     } else {
         0x8000_0080
     }
+}
+
+pub fn cause(psx: &mut Psx) -> u32 {
+    psx.cop0.cause
 }
 
 /// Exception types (as stored in the `CAUSE` register)

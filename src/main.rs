@@ -2,6 +2,7 @@
 extern crate log;
 extern crate simple_logger;
 
+mod debugger;
 mod psx;
 
 use std::path::Path;
@@ -22,6 +23,16 @@ fn main() -> Result<()> {
     };
 
     let mut psx = psx::Psx::new(Path::new(bios_path))?;
+
+    if cfg!(feature = "debugger") {
+        let mut debugger = Box::new(debugger::Debugger::new());
+
+        debugger.set_log_bios_calls(true);
+        psx::debugger::swap_debugger(debugger);
+
+        // Force a break to pause the execution until a client connected
+        psx::debugger::trigger_break();
+    }
 
     psx.run();
 

@@ -37,14 +37,24 @@ thread_local! {
 }
 
 #[cfg(feature = "debugger")]
-pub fn trigger_break(psx: &mut Psx) {
+pub fn swap_debugger(new_debugger: Box<dyn Debugger>) {
     DEBUGGER.with(|d| {
-        d.borrow_mut().pc_change(psx);
+        d.replace(new_debugger);
     });
 }
 
 #[cfg(not(feature = "debugger"))]
-pub fn trigger_break(_: &mut Psx) {}
+pub fn swap_debugger(_: Box<dyn Debugger>) {}
+
+#[cfg(feature = "debugger")]
+pub fn trigger_break() {
+    DEBUGGER.with(|d| {
+        d.borrow_mut().trigger_break();
+    });
+}
+
+#[cfg(not(feature = "debugger"))]
+pub fn trigger_break() {}
 
 #[cfg(feature = "debugger")]
 pub fn pc_change(psx: &mut Psx) {
