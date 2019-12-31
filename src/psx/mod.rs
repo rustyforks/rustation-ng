@@ -1,6 +1,6 @@
 mod bios;
 pub mod cop0;
-mod cpu;
+pub mod cpu;
 pub mod debugger;
 pub mod error;
 mod irq;

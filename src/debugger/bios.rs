@@ -3,7 +3,7 @@ use crate::psx::Psx;
 
 /// Called every time the PC changes when BIOS call logging is enabled
 pub fn check_bios_call(psx: &mut Psx) {
-    let pc = mask_region(psx.cpu.pc());
+    let pc = mask_region(psx.cpu.current_pc());
 
     if BIOS_VECTOR_ADDR.contains(&pc) {
         // We're in a BIOS vector call

@@ -28,10 +28,10 @@ fn main() -> Result<()> {
         let mut debugger = Box::new(debugger::Debugger::new());
 
         debugger.set_log_bios_calls(true);
+        // Force a break to pause the execution until a client connected
         psx::debugger::swap_debugger(debugger);
 
-        // Force a break to pause the execution until a client connected
-        psx::debugger::trigger_break();
+        psx::debugger::trigger_break(&mut psx);
     }
 
     psx.run();

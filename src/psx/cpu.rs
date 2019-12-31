@@ -55,12 +55,7 @@ impl Cpu {
         self.current_pc
     }
 
-    pub fn pc(&self) -> u32 {
-        self.pc
-    }
-
-    /// Force PC address. Meant to be used from the debugger. Use at
-    /// your own risk.
+    /// Force PC address. Meant to be used from the debugger. Use at your own risk.
     pub fn force_pc(&mut self, pc: u32) {
         self.pc = pc;
         self.next_pc = self.pc.wrapping_add(4);
@@ -170,9 +165,6 @@ impl fmt::Debug for Cpu {
 }
 
 pub fn run_next_instruction(psx: &mut Psx) {
-    // Debugger entrypoint: used for code breakpoints and stepping
-    debugger::pc_change(psx);
-
     // Explanation of the various *pc variables:
     //
     // * `psx.cpucurrent_pc`: Pointer to the instruction about to be executed.
@@ -198,6 +190,9 @@ pub fn run_next_instruction(psx: &mut Psx) {
     // If the last instruction was a branch then we're in the delay slot
     psx.cpu.delay_slot = psx.cpu.branch;
     psx.cpu.branch = false;
+
+    // Debugger entrypoint: used for code breakpoints and stepping
+    debugger::pc_change(psx);
 
     if psx.cpu.current_pc % 4 != 0 {
         // PC is not correctly aligned!
@@ -370,7 +365,7 @@ fn op_syscall(psx: &mut Psx, _: Instruction) {
 fn op_break(psx: &mut Psx, _: Instruction) {
     if psx.cpu.debug_on_break {
         info!("BREAK instruction while debug_on_break is active");
-        debugger::trigger_break();
+        debugger::trigger_break(psx);
     } else {
         exception(psx, Exception::Break);
     }

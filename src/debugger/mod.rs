@@ -152,15 +152,15 @@ impl Debugger {
 }
 
 impl DebuggerInterface for Debugger {
-    /// Signal a "break" which will put the emulator in debug mode at the next instruction
-    fn trigger_break(&mut self) {
-        self.set_step();
+    /// Signal a "break" which will trigger the debugger
+    fn trigger_break(&mut self, psx: &mut Psx) {
+        self.debug(psx);
     }
 
     /// Called by the psx when it's about to execute a new instruction. This function is called
     /// before *all* PSX instructions so it needs to be as fast as possible.
     fn pc_change(&mut self, psx: &mut Psx) {
-        let pc = mask_region(psx.cpu.pc());
+        let pc = mask_region(psx.cpu.current_pc());
 
         if self.log_bios_calls {
             bios::check_bios_call(psx);
@@ -180,7 +180,11 @@ impl DebuggerInterface for Debugger {
         // address 1 and the psx executes a `load32 at` address 0, should we break? Also, should we
         // mask the region?
         if self.read_watchpoints.contains(&addr) {
-            info!("Read watchpoint triggered at 0x{:08x}", addr);
+            info!(
+                "Read watchpoint triggered at 0x{:08x} [PC=0x{:x}]",
+                addr,
+                psx.cpu.current_pc()
+            );
             self.debug(psx);
         }
     }
@@ -191,7 +195,11 @@ impl DebuggerInterface for Debugger {
 
         // XXX: same remark as memory_read for unaligned stores
         if self.write_watchpoints.contains(&addr) {
-            info!("Write watchpoint triggered at 0x{:08x}", addr);
+            info!(
+                "Write watchpoint triggered at 0x{:08x} [PC=0x{:x}]",
+                addr,
+                psx.cpu.current_pc()
+            );
             self.debug(psx);
         }
     }

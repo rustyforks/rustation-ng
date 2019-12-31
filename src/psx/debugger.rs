@@ -7,7 +7,7 @@ use std::cell::RefCell;
 /// Trait defining the debugger interface
 pub trait Debugger {
     /// Signal a "break" which will put the emulator in debug mode at the next instruction
-    fn trigger_break(&mut self);
+    fn trigger_break(&mut self, psx: &mut Psx);
 
     /// Called by the CPU when it's about to execute a new instruction. This function is called
     /// before *all* CPU instructions so it needs to be as fast as possible.
@@ -22,7 +22,7 @@ pub trait Debugger {
 
 /// Dummy debugger implementation that does nothing. Can be used when debugging is disabled.
 impl Debugger for () {
-    fn trigger_break(&mut self) {}
+    fn trigger_break(&mut self, _: &mut Psx) {}
 
     fn pc_change(&mut self, _: &mut Psx) {}
 
@@ -47,14 +47,14 @@ pub fn swap_debugger(new_debugger: Box<dyn Debugger>) {
 pub fn swap_debugger(_: Box<dyn Debugger>) {}
 
 #[cfg(feature = "debugger")]
-pub fn trigger_break() {
+pub fn trigger_break(psx: &mut Psx) {
     DEBUGGER.with(|d| {
-        d.borrow_mut().trigger_break();
+        d.borrow_mut().trigger_break(psx);
     });
 }
 
 #[cfg(not(feature = "debugger"))]
-pub fn trigger_break() {}
+pub fn trigger_break(_: &mut Psx) {}
 
 #[cfg(feature = "debugger")]
 pub fn pc_change(psx: &mut Psx) {

@@ -71,8 +71,33 @@ pub fn mtc0(psx: &mut Psx, cop_r: RegisterIndex, v: u32) {
 /// Move From Coprocessor 0
 pub fn mfc0(psx: &mut Psx, cop_r: RegisterIndex) -> u32 {
     match cop_r.0 {
+        6 => {
+            // No$ says this register "randomly" memorizes a jump target after certain exceptions
+            // occur. Doesn't seem very useful and would require a lot more testing to implement
+            // accurately.
+            warn!("Unhandled read from JUMP_DEST (cop0r6)");
+            0
+        }
+        7 => {
+            // DCIC: breakpoint control
+            warn!("Unhandled read from DCIC (cop0r7)");
+            0
+        }
+        8 => {
+            // This register should be mostly useless on the PlayStation since it doesn't have
+            // virtual memory, however some exceptions do write to this register so maybe it's
+            // worth implementing better
+            warn!("Unhandled read from BAD_VADDR (cop0r8)");
+            0
+        }
         12 => psx.cop0.sr,
-        _ => panic!("Unhandled read from COP0 register {}", cop_r.0),
+        13 => cause(psx),
+        14 => psx.cop0.epc,
+        15 => PROCESSOR_ID,
+        _ => {
+            warn!("Unhandled read from COP0 register {}", cop_r.0);
+            0
+        }
     }
 }
 
@@ -143,3 +168,7 @@ pub enum Exception {
     /// Arithmetic overflow
     Overflow = 0xc,
 }
+
+/// Value of the "Processor ID" register (Cop0r15). This is the value
+/// returned by my SCPH-7502.
+pub const PROCESSOR_ID: u32 = 0x0000_0002;

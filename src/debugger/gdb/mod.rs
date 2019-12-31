@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 use crate::psx::cop0;
+use crate::psx::cpu::RegisterIndex;
 use crate::psx::Psx;
 
 use crate::debugger::Debugger;
@@ -228,7 +229,7 @@ impl GdbRemote {
             psx.cpu.hi(),
             psx.cop0.bad(),
             cop0::cause(psx),
-            psx.cpu.pc(),
+            psx.cpu.current_pc(),
         ] {
             reply.push_u32(r);
         }
@@ -245,6 +246,21 @@ impl GdbRemote {
         }
 
         self.send_reply(reply)
+    }
+
+    /// When dumping 32bit values we reserve an unused memory range to dump values that can't be
+    /// accessed otherwise with GDB, such as coprocessor registers
+    fn examine_word(&mut self, psx: &mut Psx, addr: u32) -> u32 {
+        if addr >= 0xbad0_0000 && addr <= 0xbad0_ffff {
+            let off = (addr - 0xbad0_0000) / 4;
+
+            match off {
+                0..=31 => cop0::mfc0(psx, RegisterIndex(off)),
+                _ => 0x0bad_0bad,
+            }
+        } else {
+            psx.examine(addr)
+        }
     }
 
     /// Read a region of memory. The packet format should be
@@ -303,7 +319,8 @@ impl GdbRemote {
         let nwords = len / 4;
 
         for i in 0..nwords {
-            reply.push_u32(psx.examine(addr + i * 4));
+            let w = self.examine_word(psx, addr + i * 4);
+            reply.push_u32(w);
         }
 
         // See if we have anything remaining
