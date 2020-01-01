@@ -1126,6 +1126,32 @@ fn op_sh(psx: &mut Psx, instruction: Instruction) {
     }
 }
 
+/// Store Word Left
+fn op_swl(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+    let v = psx.cpu.reg(t);
+
+    let aligned_addr = addr & !3;
+    // Load the current value for the aligned word at the target address
+    let cur: u32 = load(psx, aligned_addr);
+
+    let new = match addr & 3 {
+        0 => (cur & 0xffff_ff00) | (v >> 24),
+        1 => (cur & 0xffff_0000) | (v >> 16),
+        2 => (cur & 0xff00_0000) | (v >> 8),
+        3 => v,
+        _ => unreachable!(),
+    };
+
+    psx.cpu.delayed_load();
+
+    store(psx, aligned_addr, new);
+}
+
 /// Store Word
 fn op_sw(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -1143,6 +1169,32 @@ fn op_sw(psx: &mut Psx, instruction: Instruction) {
     } else {
         exception(psx, Exception::StoreAddressError);
     }
+}
+
+/// Store Word Right
+fn op_swr(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+    let v = psx.cpu.reg(t);
+
+    let aligned_addr = addr & !3;
+    // Load the current value for the aligned word at the target address
+    let cur: u32 = load(psx, aligned_addr);
+
+    let new = match addr & 3 {
+        0 => v,
+        1 => (cur & 0x0000_00ff) | (v << 8),
+        2 => (cur & 0x0000_ffff) | (v << 16),
+        3 => (cur & 0x00ff_ffff) | (v << 24),
+        _ => unreachable!(),
+    };
+
+    psx.cpu.delayed_load();
+
+    store(psx, aligned_addr, new);
 }
 
 /// Illegal instruction
@@ -1304,11 +1356,11 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_illegal,
     op_sb,
     op_sh,
-    op_unimplemented,
+    op_swl,
     op_sw,
     op_illegal,
     op_illegal,
-    op_unimplemented,
+    op_swr,
     op_illegal,
     // 0x30
     op_unimplemented,
