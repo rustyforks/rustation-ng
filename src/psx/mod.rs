@@ -2,6 +2,7 @@ mod bios;
 pub mod cop0;
 pub mod cpu;
 pub mod debugger;
+mod dma;
 pub mod error;
 mod irq;
 mod spu;
@@ -9,19 +10,17 @@ mod timers;
 
 use std::path::Path;
 
-use self::bios::Bios;
-use self::cpu::Cpu;
 use self::error::Result;
-use self::spu::Spu;
 
 /// Current state of the emulator
 pub struct Psx {
-    pub cpu: Cpu,
+    pub cpu: cpu::Cpu,
     pub cop0: cop0::Cop0,
     pub irq: irq::InterruptState,
     pub ram: Ram,
-    pub bios: Bios,
-    pub spu: Spu,
+    pub bios: bios::Bios,
+    pub spu: spu::Spu,
+    pub dma: dma::Dma,
     pub timers: timers::Timers,
     /// Memory control registers
     pub mem_control: [u32; 9],
@@ -35,12 +34,13 @@ pub struct Psx {
 impl Psx {
     pub fn new(bios_path: &Path) -> Result<Psx> {
         let psx = Psx {
-            cpu: Cpu::new(),
+            cpu: cpu::Cpu::new(),
             cop0: cop0::Cop0::new(),
             irq: irq::InterruptState::new(),
             ram: Ram::new(),
-            bios: Bios::new(bios_path)?,
-            spu: Spu::new(),
+            bios: bios::Bios::new(bios_path)?,
+            spu: spu::Spu::new(),
+            dma: dma::Dma::new(),
             timers: timers::Timers::new(),
             mem_control: [0; 9],
             ram_size: 0,
@@ -84,6 +84,10 @@ impl Psx {
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
             return spu::load(self, offset);
+        }
+
+        if let Some(offset) = map::DMA.contains(abs_addr) {
+            return dma::load(self, offset);
         }
 
         if let Some(offset) = map::TIMERS.contains(abs_addr) {
@@ -154,6 +158,11 @@ impl Psx {
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
             spu::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::DMA.contains(abs_addr) {
+            dma::store(self, offset, val);
             return;
         }
 
@@ -423,6 +432,9 @@ pub mod map {
 
     /// Interrupt Control registers (status and mask)
     pub const IRQ_CONTROL: Range = Range(0x1f80_1070, 8);
+
+    /// Direct Memory Access registers
+    pub const DMA: Range = Range(0x1f80_1080, 0x80);
 
     /// Timer registers
     pub const TIMERS: Range = Range(0x1f80_1100, 0x30);
