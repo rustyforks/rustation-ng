@@ -1197,6 +1197,56 @@ fn op_swr(psx: &mut Psx, instruction: Instruction) {
     store(psx, aligned_addr, new);
 }
 
+/// Load Word in Coprocessor 0
+fn op_lwc0(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered LWC0 instruction");
+
+    // Not supported by this coprocessor
+    exception(psx, Exception::CoprocessorError);
+}
+
+/// Load Word in Coprocessor 1
+fn op_lwc1(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered LWC1 instruction");
+
+    // Not supported by this coprocessor
+    exception(psx, Exception::CoprocessorError);
+}
+
+/// Load Word in Coprocessor 2
+fn op_lwc2(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let cop_r = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    psx.cpu.delayed_load();
+
+    // Address must be 32bit aligned
+    if addr % 4 == 0 {
+        let v: u32 = load(psx, addr);
+
+        panic!("Implement LWC2 0x{:x} to Cop2 R{}", v, cop_r.0);
+    } else {
+        exception(psx, Exception::LoadAddressError);
+    }
+}
+
+/// Load Word in Coprocessor 3
+fn op_lwc3(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered LWC3 instruction");
+
+    // Not supported by this coprocessor
+    exception(psx, Exception::CoprocessorError);
+}
+
 /// Illegal instruction
 fn op_illegal(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.delayed_load();
@@ -1363,10 +1413,10 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_swr,
     op_illegal,
     // 0x30
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
+    op_lwc0,
+    op_lwc1,
+    op_lwc2,
+    op_lwc3,
     op_illegal,
     op_illegal,
     op_illegal,
