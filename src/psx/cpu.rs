@@ -912,6 +912,29 @@ fn op_rfe(psx: &mut Psx, instruction: Instruction) {
     cop0::return_from_exception(psx);
 }
 
+/// Coprocessor 1 opcode (does not exist on the PlayStation)
+fn op_cop1(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered Cop1 instruction");
+
+    exception(psx, Exception::CoprocessorError);
+}
+
+/// Coprocessor 2 opcode (GTE)
+fn op_cop2(_psx: &mut Psx, _instruction: Instruction) {
+    panic!("Encountered GTE instruction");
+}
+
+/// Coprocessor 3 opcode (does not exist on the PlayStation)
+fn op_cop3(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered Cop3 instruction");
+
+    exception(psx, Exception::CoprocessorError);
+}
+
 /// Load Byte (signed)
 fn op_lb(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -1173,9 +1196,9 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_lui,
     // 0x10
     op_cop0,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
+    op_cop1,
+    op_cop2,
+    op_cop3,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
