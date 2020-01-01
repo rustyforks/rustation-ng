@@ -1247,6 +1247,59 @@ fn op_lwc3(psx: &mut Psx, _: Instruction) {
     exception(psx, Exception::CoprocessorError);
 }
 
+/// Store Word in Coprocessor 0
+fn op_swc0(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered SWC0 instruction");
+
+    // Not supported by this coprocessor
+    exception(psx, Exception::CoprocessorError);
+}
+
+/// Store Word in Coprocessor 1
+fn op_swc1(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered SWC1 instruction");
+
+    // Not supported by this coprocessor
+    exception(psx, Exception::CoprocessorError);
+}
+
+/// Store Word in Coprocessor 2
+fn op_swc2(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let cop_r = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    // XXX read from GTE
+    let v: u32 = 0xbad;
+
+    psx.cpu.delayed_load();
+
+    // Address must be 32bit aligned
+    if addr % 4 == 0 {
+        store(psx, addr, v);
+    } else {
+        exception(psx, Exception::LoadAddressError);
+    }
+
+    panic!("Implement SWC2 from Cop2 R{}", cop_r.0);
+}
+
+/// Store Word in Coprocessor 3
+fn op_swc3(psx: &mut Psx, _: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!("Encountered SWC3 instruction");
+
+    // Not supported by this coprocessor
+    exception(psx, Exception::CoprocessorError);
+}
+
 /// Illegal instruction
 fn op_illegal(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.delayed_load();
@@ -1350,15 +1403,6 @@ impl fmt::Display for Instruction {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RegisterIndex(pub u32);
 
-/// Placeholder while we haven't implemented all opcodes
-fn op_unimplemented(_psx: &mut Psx, instruction: Instruction) {
-    panic!(
-        "Encountered unimplemented instruction {} (opcode: 0x{:x})",
-        instruction,
-        instruction.opcode()
-    );
-}
-
 /// Handler table for the main opcodes (instruction bits [31:26])
 const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     // 0x00
@@ -1421,10 +1465,10 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_illegal,
     op_illegal,
     op_illegal,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
+    op_swc0,
+    op_swc1,
+    op_swc2,
+    op_swc3,
     op_illegal,
     op_illegal,
     op_illegal,
