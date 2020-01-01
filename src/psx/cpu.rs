@@ -1,5 +1,5 @@
 use super::cop0::Exception;
-use super::{cop0, debugger, Addressable, Psx};
+use super::{cop0, debugger, AccessWidth, Addressable, Psx};
 
 use std::fmt;
 
@@ -22,6 +22,8 @@ pub struct Cpu {
     /// Set by the current instruction if a branch occurred and the next instruction will be in the
     /// delay slot.
     branch: bool,
+    /// Instruction cache (256 4-word cachelines, for a total of 4KiB)
+    icache: [ICacheLine; 0x100],
     /// Set if the current instruction executes in the delay slot
     delay_slot: bool,
     /// If true BREAK instructions trigged the debugger instead of generating an exception
@@ -45,6 +47,7 @@ impl Cpu {
             lo: 0,
             load: (RegisterIndex(0), 0),
             branch: false,
+            icache: [ICacheLine::new(); 0x100],
             delay_slot: false,
             debug_on_break: false,
         }
@@ -200,11 +203,101 @@ pub fn run_next_instruction(psx: &mut Psx) {
         return;
     }
 
-    let instruction = Instruction(psx.load(psx.cpu.current_pc));
+    // Fetch instruction at PC
+    let instruction = fetch_instruction(psx);
 
     let handler = OPCODE_HANDLERS[instruction.opcode()];
 
     handler(psx, instruction);
+}
+
+/// Fetch the instruction at `current_pc` through the instruction cache
+fn fetch_instruction(psx: &mut Psx) -> Instruction {
+    let pc = psx.cpu.current_pc;
+
+    // KUSEG and KSEG0 regions are cached. KSEG1 is uncached and
+    // KSEG2 doesn't contain any code
+    let cached = pc < 0xa000_0000;
+
+    if cached && psx.icache_enabled() {
+        // The MSB is ignored: running from KUSEG or KSEG0 hits the same cachelines. So for
+        // instance addresses 0x00000000 and 0x80000000 have the same tag and you can jump from one
+        // to the other without having to reload the cache.
+
+        // Cache tag: bits [30:12]
+        let tag = pc & 0x7fff_f000;
+        // Cache line "bucket": bits [11:4]
+        let line_off = ((pc >> 4) & 0xff) as usize;
+        // Index in the cache line: bits [3:2]
+        let index = (pc >> 2) & 3;
+
+        // Fetch the cacheline for this address
+        let mut line = psx.cpu.icache[line_off];
+
+        // Check the tag and validity
+        if line.tag() != tag || line.valid_index() > index {
+            // Cache miss. Fetch the cacheline starting at the current index. If the index is not 0
+            // then some words are going to remain invalid in the cacheline.
+            let mut cpc = pc;
+
+            for i in index..4 {
+                let instruction = psx.load_instruction(cpc);
+
+                line.set_instruction(i, instruction);
+                cpc += 4;
+            }
+
+            // Set the tag and valid bits
+            line.set_tag_valid(pc);
+
+            // Store updated cacheline
+            psx.cpu.icache[line_off] = line;
+        }
+
+        // Cache line is now guaranteed to be valid
+        line.instruction(index)
+    } else {
+        // XXX Apparently pointing the PC to KSEG2 causes a bus error no matter what, even if you
+        // point it at some valid register address (like the "cache control" register). Not like it
+        // should happen anyway, there's nowhere to put code in KSEG2, only a bunch of registers.
+
+        psx.load_instruction(pc)
+    }
+}
+
+/// Handle writes when the cache is isolated
+pub fn cache_store<T: Addressable>(psx: &mut Psx, addr: u32, val: T) {
+    // Implementing full cache emulation requires handling many corner cases. For now I'm just
+    // going to add support for cache invalidation which is the only use case for cache isolation
+    // as far as I know.
+    let val = val.as_u32();
+
+    if !psx.icache_enabled() {
+        panic!("Cache maintenance while instruction cache is disabled");
+    }
+
+    if T::width() != AccessWidth::Word || val != 0 {
+        panic!("Unsupported write while cache is isolated: {:08x}", val);
+    }
+
+    let line_off = ((addr >> 4) & 0xff) as usize;
+
+    // Fetch the cacheline for this address
+    let mut line = psx.cpu.icache[line_off];
+
+    if psx.tag_test_mode() {
+        // In tag test mode the write invalidates the entire targeted cacheline
+        line.invalidate();
+    } else {
+        // Otherwise the write ends up directly in the cache.
+        let index = (addr >> 2) & 3;
+
+        let instruction = Instruction(val);
+
+        line.set_instruction(index, instruction);
+    }
+
+    psx.cpu.icache[line_off] = line;
 }
 
 /// Trigger an exception
@@ -221,9 +314,9 @@ fn exception(psx: &mut Psx, cause: Exception) {
 /// Execute a memory write
 fn store<T: Addressable>(psx: &mut Psx, addr: u32, v: T) {
     if psx.cop0.cache_isolated() {
-        // If the cache is isolated then the write should go to cache maintenance instead of going
-        // to the other modules. Since we don't yet implement the instruction cache we can just
-        // ignore it and return.
+        // When the cache is isolated the CPU writes don't reach the system bus, instead they end
+        // up in the cache.
+        cache_store(psx, addr, v);
         return;
     }
 
@@ -1317,6 +1410,10 @@ fn op_illegal(psx: &mut Psx, instruction: Instruction) {
 pub struct Instruction(u32);
 
 impl Instruction {
+    pub fn new(machine_code: u32) -> Instruction {
+        Instruction(machine_code)
+    }
+
     /// Return bits [31:26] of the instruction
     fn opcode(self) -> usize {
         let Instruction(op) = self;
@@ -1468,3 +1565,59 @@ const REGISTER_NAMES: [&str; 32] = [
     "fp", // Frame Pointer
     "ra", // Return address
 ];
+
+/// Instruction cache line
+#[derive(Clone, Copy)]
+struct ICacheLine {
+    /// Tag: high 22bits of the address associated with this cacheline Valid bits: 3 bit index of
+    /// the first valid word in line.
+    tag_valid: u32,
+    /// Four words per line
+    line: [Instruction; 4],
+}
+
+impl ICacheLine {
+    fn new() -> ICacheLine {
+        // The cache starts in a random state. In order to catch missbehaving software we fill them
+        // with "trap" values
+        ICacheLine {
+            // Tag is 0, all line valid
+            tag_valid: 0x0,
+            // BREAK opcode to catch misbehaving code
+            line: [Instruction(0xbadc_0de5); 4],
+        }
+    }
+
+    /// Return the cacheline's tag
+    fn tag(&self) -> u32 {
+        self.tag_valid & 0xffff_f000
+    }
+
+    /// Return the cacheline's first valid word
+    fn valid_index(&self) -> u32 {
+        // We store the valid bits in bits [4:2], this way we can just mask the PC value in
+        // `set_tag_valid` without having to shuffle the bits around
+        (self.tag_valid >> 2) & 0x7
+    }
+
+    /// Set the cacheline's tag and valid bits. `pc` is the first valid PC in the cacheline.
+    fn set_tag_valid(&mut self, pc: u32) {
+        self.tag_valid = pc & 0x7fff_f00c;
+    }
+
+    /// Invalidate the entire cacheline by pushing the index out of range. Doesn't change the tag
+    /// or contents of the line.
+    fn invalidate(&mut self) {
+        // Setting bit 4 means that the value returned by valid_index will be in the range [4, 7]
+        // which is outside the valid cacheline index range [0, 3].
+        self.tag_valid |= 0x10;
+    }
+
+    fn instruction(&self, index: u32) -> Instruction {
+        self.line[index as usize]
+    }
+
+    fn set_instruction(&mut self, index: u32, instruction: Instruction) {
+        self.line[index as usize] = instruction;
+    }
+}

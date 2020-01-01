@@ -71,6 +71,25 @@ impl Psx {
         result.unwrap_or(bad_value)
     }
 
+    /// Specialized version of load made specifically to fetch CPU instructions. This is supposed
+    /// to be a more streamlined version of `load` for performance reasons.
+    pub fn load_instruction(&mut self, address: u32) -> cpu::Instruction {
+        let abs_addr = map::mask_region(address);
+
+        let i = {
+            if let Some(offset) = map::RAM.contains(abs_addr) {
+                self.ram.load(offset)
+            } else if let Some(offset) = map::BIOS.contains(abs_addr) {
+                self.bios.load(offset)
+            } else {
+                panic!("Unimplemented instruction fetch from 0x{:x}", address);
+            }
+        };
+
+        cpu::Instruction::new(i)
+    }
+
+    /// Decode `address` and perform the load from the target module
     pub fn load<T: Addressable>(&mut self, address: u32) -> T {
         let abs_addr = map::mask_region(address);
 
@@ -148,6 +167,7 @@ impl Psx {
         panic!("Unhandled load at address {:08x}", abs_addr);
     }
 
+    /// Decode `address` and perform the store to the target module
     pub fn store<T: Addressable>(&mut self, address: u32, val: T) {
         let abs_addr = map::mask_region(address);
 
@@ -250,6 +270,16 @@ impl Psx {
             abs_addr,
             val.as_u32()
         );
+    }
+
+    /// Returns true if the instruction cache is enabled in the CACHE_CONTROL register
+    pub fn icache_enabled(&self) -> bool {
+        self.cache_control & 0x800 != 0
+    }
+
+    /// Returns true if the cache is in "tag test mode"
+    pub fn tag_test_mode(&self) -> bool {
+        self.cache_control & 4 != 0
     }
 }
 
