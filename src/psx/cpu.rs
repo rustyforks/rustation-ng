@@ -1145,6 +1145,18 @@ fn op_sw(psx: &mut Psx, instruction: Instruction) {
     }
 }
 
+/// Illegal instruction
+fn op_illegal(psx: &mut Psx, instruction: Instruction) {
+    psx.cpu.delayed_load();
+
+    warn!(
+        "Illegal instruction {} at PC 0x{:08x}!",
+        instruction, psx.cpu.current_pc
+    );
+
+    exception(psx, Exception::IllegalInstruction);
+}
+
 /// A single MIPS instruction wrapper to make decoding easier
 #[derive(Clone, Copy)]
 pub struct Instruction(u32);
@@ -1269,18 +1281,18 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_cop1,
     op_cop2,
     op_cop3,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
     // 0x20
     op_lb,
     op_lh,
@@ -1289,113 +1301,44 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_lbu,
     op_lhu,
     op_lwr,
-    op_unimplemented,
+    op_illegal,
     op_sb,
     op_sh,
     op_unimplemented,
     op_sw,
+    op_illegal,
+    op_illegal,
     op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
+    op_illegal,
     // 0x30
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
     op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
-    op_unimplemented,
+    op_illegal,
+    op_illegal,
+    op_illegal,
+    op_illegal,
 ];
-
-/// Placeholder while we haven't implemented all opcodes
-fn op_unimplemented_function(_psx: &mut Psx, instruction: Instruction) {
-    panic!(
-        "Encountered unimplemented instruction {} (function: 0x{:x})",
-        instruction,
-        instruction.function()
-    );
-}
 
 /// Handler table for the function codes (instruction bits [31:26] when opcode is 0)
 const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
-    // 0x00
-    op_sll,
-    op_unimplemented_function,
-    op_srl,
-    op_sra,
-    op_sllv,
-    op_unimplemented_function,
-    op_srlv,
-    op_srav,
-    op_jr,
-    op_jalr,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_syscall,
-    op_break,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    // 0x10
-    op_mfhi,
-    op_mthi,
-    op_mflo,
-    op_mtlo,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_mult,
-    op_multu,
-    op_div,
-    op_divu,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    // 0x20
-    op_add,
-    op_addu,
-    op_sub,
-    op_subu,
-    op_and,
-    op_or,
-    op_xor,
-    op_nor,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_slt,
-    op_sltu,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    // 0x30
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
-    op_unimplemented_function,
+    op_sll, op_illegal, op_srl, op_sra, op_sllv, op_illegal, op_srlv, op_srav, op_jr, op_jalr,
+    op_illegal, op_illegal, op_syscall, op_break, op_illegal, op_illegal, op_mfhi, op_mthi,
+    op_mflo, op_mtlo, op_illegal, op_illegal, op_illegal, op_illegal, op_mult, op_multu, op_div,
+    op_divu, op_illegal, op_illegal, op_illegal, op_illegal, op_add, op_addu, op_sub, op_subu,
+    op_and, op_or, op_xor, op_nor, op_illegal, op_illegal, op_slt, op_sltu, op_illegal, op_illegal,
+    op_illegal, op_illegal, op_illegal, op_illegal, op_illegal, op_illegal, op_illegal, op_illegal,
+    op_illegal, op_illegal, op_illegal, op_illegal, op_illegal, op_illegal, op_illegal, op_illegal,
+    op_illegal, op_illegal,
 ];
 
 /// Conventional names given to the MIPS registers
