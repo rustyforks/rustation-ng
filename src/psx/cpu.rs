@@ -869,7 +869,7 @@ fn op_cop0(psx: &mut Psx, instruction: Instruction) {
     match instruction.cop_opcode() {
         0b00000 => op_mfc0(psx, instruction),
         0b00100 => op_mtc0(psx, instruction),
-        0b10000 => panic!("Implement RFE"),
+        0b10000 => op_rfe(psx, instruction),
         _ => panic!("Unhandled cop0 instruction {}", instruction),
     }
 }
@@ -894,6 +894,22 @@ fn op_mfc0(psx: &mut Psx, instruction: Instruction) {
     let v = cop0::mfc0(psx, cop_r);
 
     psx.cpu.delayed_load_chain(cpu_r, v);
+}
+
+/// Return From Exception. Doesn't actually jump anywhere but tells the coprocessor to return to
+/// the mode it was in when the exception occurred.
+fn op_rfe(psx: &mut Psx, instruction: Instruction) {
+    psx.cpu.delayed_load();
+
+    // There are other instructions with the same encoding but all
+    // are virtual memory related and the PlayStation doesn't
+    // implement them. Still, let's make sure we're not running
+    // buggy code.
+    if instruction.0 & 0x3f != 0b01_0000 {
+        panic!("Invalid cop0 instruction: {}", instruction);
+    }
+
+    cop0::return_from_exception(psx);
 }
 
 /// Load Byte (signed)

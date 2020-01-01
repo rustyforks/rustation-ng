@@ -143,6 +143,19 @@ pub fn enter_exception(psx: &mut Psx, cause: Exception) -> u32 {
     }
 }
 
+/// The counterpart to "enter_exception": shift SR's mode back into place. Doesn't touch CAUSE or
+/// EPC however.
+pub fn return_from_exception(psx: &mut Psx) {
+    let cop0 = &mut psx.cop0;
+
+    let mode = cop0.sr & 0x3f;
+
+    // Bits [5:4] (the third and last mode in the stack) remains untouched and is therefore
+    // a copy of the 2nd entry.
+    cop0.sr &= !0xf;
+    cop0.sr |= mode >> 2;
+}
+
 pub fn cause(psx: &mut Psx) -> u32 {
     psx.cop0.cause
 }
