@@ -901,10 +901,8 @@ fn op_mfc0(psx: &mut Psx, instruction: Instruction) {
 fn op_rfe(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.delayed_load();
 
-    // There are other instructions with the same encoding but all
-    // are virtual memory related and the PlayStation doesn't
-    // implement them. Still, let's make sure we're not running
-    // buggy code.
+    // There are other instructions with the same encoding but all are virtual memory related and
+    // the PlayStation doesn't implement them. Still, let's make sure we're not running buggy code.
     if instruction.0 & 0x3f != 0b01_0000 {
         panic!("Invalid cop0 instruction: {}", instruction);
     }
@@ -970,6 +968,42 @@ fn op_lh(psx: &mut Psx, instruction: Instruction) {
     }
 }
 
+/// Load Word Left
+fn op_lwl(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    // This instruction bypasses the load delay restriction: this instruction will merge the new
+    // contents with the value currently being loaded if need be.
+    let (pending_reg, pending_value) = psx.cpu.load;
+
+    let cur_v = if pending_reg == t {
+        pending_value
+    } else {
+        psx.cpu.reg(t)
+    };
+
+    // Next we load the *aligned* word containing the first addressed byte
+    let aligned_addr = addr & !3;
+    let aligned_word: u32 = load(psx, aligned_addr);
+
+    // Depending on the address alignment we fetch the 1, 2, 3 or 4 *most* significant bytes and
+    // put them in the target register.
+    let v = match addr & 3 {
+        0 => (cur_v & 0x00ff_ffff) | (aligned_word << 24),
+        1 => (cur_v & 0x0000_ffff) | (aligned_word << 16),
+        2 => (cur_v & 0x0000_00ff) | (aligned_word << 8),
+        3 => aligned_word,
+        _ => unreachable!(),
+    };
+
+    // Put the load in the delay slot
+    psx.cpu.delayed_load_chain(t, v);
+}
+
 /// Load Word
 fn op_lw(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
@@ -1021,6 +1055,42 @@ fn op_lhu(psx: &mut Psx, instruction: Instruction) {
         psx.cpu.delayed_load();
         exception(psx, Exception::LoadAddressError);
     }
+}
+
+/// Load Word Right
+fn op_lwr(psx: &mut Psx, instruction: Instruction) {
+    let i = instruction.imm_se();
+    let t = instruction.t();
+    let s = instruction.s();
+
+    let addr = psx.cpu.reg(s).wrapping_add(i);
+
+    // This instruction bypasses the load delay restriction: this instruction will merge the new
+    // contents with the value currently being loaded if need be.
+    let (pending_reg, pending_value) = psx.cpu.load;
+
+    let cur_v = if pending_reg == t {
+        pending_value
+    } else {
+        psx.cpu.reg(t)
+    };
+
+    // Next we load the *aligned* word containing the first addressed byte
+    let aligned_addr = addr & !3;
+    let aligned_word: u32 = load(psx, aligned_addr);
+
+    // Depending on the address alignment we fetch the 1, 2, 3 or 4 *least* significant bytes and
+    // put them in the target register.
+    let v = match addr & 3 {
+        0 => aligned_word,
+        1 => (cur_v & 0xff00_0000) | (aligned_word >> 8),
+        2 => (cur_v & 0xffff_0000) | (aligned_word >> 16),
+        3 => (cur_v & 0xffff_ff00) | (aligned_word >> 24),
+        _ => unreachable!(),
+    };
+
+    // Put the load in the delay slot
+    psx.cpu.delayed_load_chain(t, v);
 }
 
 /// Store Byte
@@ -1214,11 +1284,11 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     // 0x20
     op_lb,
     op_lh,
-    op_unimplemented,
+    op_lwl,
     op_lw,
     op_lbu,
     op_lhu,
-    op_unimplemented,
+    op_lwr,
     op_unimplemented,
     op_sb,
     op_sh,
