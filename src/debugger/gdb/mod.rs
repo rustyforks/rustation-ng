@@ -255,7 +255,7 @@ impl GdbRemote {
             let off = (addr - 0xbad0_0000) / 4;
 
             match off {
-                0..=31 => cop0::mfc0(psx, RegisterIndex(off)),
+                0..=31 => cop0::mfc0(psx, RegisterIndex(off as u8)),
                 _ => 0x0bad_0bad,
             }
         } else {

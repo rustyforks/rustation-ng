@@ -1,3 +1,7 @@
+//! PSX MIPS CPU implementation, including instruction cache
+//!
+//! The timings code is copied from mednafen
+
 use super::cop0::Exception;
 use super::{cop0, debugger, AccessWidth, Addressable, Psx};
 
@@ -17,8 +21,17 @@ pub struct Cpu {
     hi: u32,
     /// LO register for division quotient and multiplication LSBs
     lo: u32,
-    /// Load initiated by the current instruction (will take effect after the load delay slot)
-    load: (RegisterIndex, u32),
+    /// Load initiated by the current instruction (will take effect after the load delay slot). The
+    /// values in the triplet are: target register, value, number of cycles taken by the load
+    load: Option<(RegisterIndex, u32, u8)>,
+    /// If a load is taking place this is the register being targetted
+    free_cycles_reg: RegisterIndex,
+    /// `free_cycles[free_cycles_reg]` contains the number of cycles left before the last load (if
+    /// any) completes. That means that at any given moment only one cell of this array is
+    /// effectively in use but laying things out that way lets us avoid a bunch of branching in
+    /// `reg_dep` which is executed once *per CPU register* for *every* instruction, so it gives us
+    /// a significant speedup.
+    free_cycles: [u8; 32],
     /// Set by the current instruction if a branch occurred and the next instruction will be in the
     /// delay slot.
     branch: bool,
@@ -40,12 +53,14 @@ impl Cpu {
             pc: reset_pc,
             next_pc: reset_pc.wrapping_add(4),
             // Not sure what the reset values of the general purpose registers is but it shouldn't
-            // matter since the BIOS doesn't read them. R0 is always 0 however, so that shoudn't be
-            // changed.
+            // matter since the BIOS doesn't read them. R0 is always 0 however, so that shouldn't
+            // be changed.
             regs: [0; 32],
             hi: 0,
             lo: 0,
-            load: (RegisterIndex(0), 0),
+            load: None,
+            free_cycles_reg: RegisterIndex(0),
+            free_cycles: [0; 32],
             branch: false,
             icache: [ICacheLine::new(); 0x100],
             delay_slot: false,
@@ -111,13 +126,20 @@ impl Cpu {
 
     /// Execute and clear any pending load
     fn delayed_load(&mut self) {
-        // Execute the pending load (if any, otherwise it will load `R0` which is a NOP).
-        let (reg, val) = self.load;
+        if let Some((reg, val, duration)) = self.load {
+            self.set_reg(reg, val);
 
-        self.set_reg(reg, val);
+            self.free_cycles[reg.0 as usize] = duration;
+            self.free_cycles_reg = reg;
 
-        // We reset the load to target register 0 for the next instruction
-        self.load = (RegisterIndex(0), 0);
+            // We clear the load now that it's been executed
+            self.load = None;
+        }
+    }
+
+    /// Called when any currently-executing load needs to be synced
+    fn load_sync(&mut self) {
+        self.free_cycles[self.free_cycles_reg.0 as usize] = 0;
     }
 
     /// Execute the pending delayed and setup the next one. If the new load targets the same
@@ -126,24 +148,34 @@ impl Cpu {
     ///
     /// This method should be used instead of `delayed_load` for instructions that setup a delayed
     /// load.
-    fn delayed_load_chain(&mut self, reg: RegisterIndex, val: u32) {
-        let (pending_reg, pending_val) = self.load;
+    fn delayed_load_chain(&mut self, reg: RegisterIndex, val: u32, duration: u8, sync: bool) {
+        if let Some((pending_reg, pending_val, duration)) = self.load {
+            // This takes care of the following situation:
+            //
+            //    lw   $t0, 0($s0)
+            //    lw   $t0, 0($s1)
+            //    move $t0, $s1
+            //
+            // In this situation the 2nd LW targets the same register an the one just before.
+            // In this scenario the first load never completes and the value of T0 in the move
+            // won't have been modified by either LW (the first one being interrupted by the
+            // second one, and the second one not having yet finished since we're in the delay
+            // slot).
+            if pending_reg != reg {
+                // We target a different register, we can execute the delay load.
+                self.set_reg(pending_reg, pending_val);
 
-        // This takes care of the following situation:
-        //
-        //    lw   $t0, 0($s0)
-        //    lw   $t0, 0($s1)
-        //    move $t0, $s1
-        //
-        // In this situation the 2nd LW targets the same register an the one just before. In this
-        // scenario the first load never completes and the value of T0 in the move won't have been
-        // modified by either LW (the first one being interrupted by the second one, and the second
-        // one not having yet finished since we're in the delay slot).
-        if pending_reg != reg {
-            self.set_reg(pending_reg, pending_val);
+                // If the calling function doesn't force a sync (i.e. the load doesn't come from
+                // memory) we can also set the free_cycles as usual since the load can run in the
+                // background while other instruction executes
+                if !sync {
+                    self.free_cycles[pending_reg.0 as usize] = duration;
+                    self.free_cycles_reg = pending_reg;
+                }
+            }
         }
 
-        self.load = (reg, val);
+        self.load = Some((reg, val, duration));
     }
 }
 
@@ -206,9 +238,26 @@ pub fn run_next_instruction(psx: &mut Psx) {
     // Fetch instruction at PC
     let instruction = fetch_instruction(psx);
 
+    instruction_tick(psx);
+
     let handler = OPCODE_HANDLERS[instruction.opcode()];
 
     handler(psx, instruction);
+}
+
+/// Advance the CPU cycle counter by one tick unless we're still catching up with a load
+pub fn instruction_tick(psx: &mut Psx) {
+    let r = psx.cpu.free_cycles_reg;
+    let free_cycles = &mut psx.cpu.free_cycles[r.0 as usize];
+
+    if *free_cycles > 0 {
+        // We're still catching up with a load. Since `load` advances the cycle counter to the
+        // end of the load it means that we're still catching up, so we don't do anything
+        *free_cycles -= 1;
+    } else {
+        // We're in sync, we can move the time forward
+        psx.tick(1);
+    }
 }
 
 /// Fetch the instruction at `current_pc` through the instruction cache
@@ -240,6 +289,13 @@ fn fetch_instruction(psx: &mut Psx) -> Instruction {
             // then some words are going to remain invalid in the cacheline.
             let mut cpc = pc;
 
+            // We're about to access the memory to fetch the instructions, we need to finish any
+            // active load first
+            psx.cpu.load_sync();
+
+            // Cache timing lifted straight from Mednafen
+            psx.tick(7 - index as i32);
+
             for i in index..4 {
                 let instruction = psx.load_instruction(cpc);
 
@@ -260,6 +316,15 @@ fn fetch_instruction(psx: &mut Psx) -> Instruction {
         // XXX Apparently pointing the PC to KSEG2 causes a bus error no matter what, even if you
         // point it at some valid register address (like the "cache control" register). Not like it
         // should happen anyway, there's nowhere to put code in KSEG2, only a bunch of registers.
+
+        // We need to wait for any active load to finish before we can fetch the instruction
+        psx.cpu.load_sync();
+
+        // When running without a cache the penalty is about 4 cycles per instruction, sometimes
+        // more (but on average for typical code fairly close to 4). This is therefore a bit
+        // optimistic but it would be pretty tricky to emulate the pipeline more accurately and
+        // running a tiny bit too fast shouldn't be too much of a problem, this isn't a Game Boy.
+        psx.tick(4);
 
         psx.load_instruction(pc)
     }
@@ -325,11 +390,55 @@ fn store<T: Addressable>(psx: &mut Psx, addr: u32, v: T) {
     psx.store(addr, v);
 }
 
-/// Execute a memory read
-fn load<T: Addressable>(psx: &mut Psx, addr: u32) -> T {
+/// Execute a memory read and return the value alongside with the number of cycles necessary for
+/// the load to complete;
+fn load<T: Addressable>(psx: &mut Psx, addr: u32) -> (T, u8) {
+    // Any pending load must terminate before we attempt to start a new one
+    psx.cpu.load_sync();
+
     debugger::memory_read(psx, addr);
 
-    psx.load(addr)
+    if psx.cpu.load.is_none() {
+        // From mednafen: apparently the CPU manages to schedule loads faster if they happen in a
+        // row?
+        psx.tick(2);
+    }
+
+    let prev_cc = psx.cycle_counter;
+
+    let v = psx.load(addr);
+
+    // From mednafen: delay to complete the load
+    psx.tick(2);
+
+    // Compute the duration of the load. The CPU (if possible) keeps executing instructions
+    // while the load takes place, so effectively at this point `psx.cpu.cycle_counter` is too far
+    // ahead by `duration` cycles, so `instruction_tick` will actually skip cycles until we catch
+    // up.
+    let duration = psx.cycle_counter - prev_cc;
+
+    // The duration of an instruction should be a small number that fits easily in an u8 to save
+    // some space (and some cache)
+    debug_assert!(duration < 0x100);
+
+    (v, duration as u8)
+}
+
+/// Handle pipeline timings for register dependencies. Should be called for every CPU registers
+/// used as an input or output. Returns `r` to allow chaining.
+fn reg_dep(psx: &mut Psx, r: RegisterIndex) -> RegisterIndex {
+    // R0 is always "free" to read or write, so it doesn't force a sync when used as a register. In
+    // order to emulate this we can just save and restore the value of the cycle counter for R0 to
+    // make this function a NOP if `r` is R0 without having to use any branching.
+    let c0 = psx.cpu.free_cycles[0];
+
+    // If the register was executing a load we have to wait for it to complete before we can
+    // continue (this is true even if `r` is used as an output register).
+    psx.cpu.free_cycles[r.0 as usize] = 0;
+
+    psx.cpu.free_cycles[0] = c0;
+
+    r
 }
 
 /// When the main opcode is 0 we need to dispatch through a secondary table based on bits [5:0] of
@@ -345,8 +454,8 @@ fn op_function(psx: &mut Psx, instruction: Instruction) {
 /// `SLL $r0, $r0, 0` (machine code 0x0000_0000) is the idiomatic way of encoding a NOP
 fn op_sll(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.shift();
-    let t = instruction.t();
-    let d = instruction.d();
+    let t = reg_dep(psx, instruction.t());
+    let d = reg_dep(psx, instruction.d());
 
     let v = psx.cpu.reg(t) << i;
 
@@ -358,8 +467,8 @@ fn op_sll(psx: &mut Psx, instruction: Instruction) {
 /// Shift Right Logical
 fn op_srl(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.shift();
-    let t = instruction.t();
-    let d = instruction.d();
+    let t = reg_dep(psx, instruction.t());
+    let d = reg_dep(psx, instruction.d());
 
     let v = psx.cpu.reg(t) >> i;
 
@@ -371,8 +480,8 @@ fn op_srl(psx: &mut Psx, instruction: Instruction) {
 /// Shift Right Arithmetic
 fn op_sra(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.shift();
-    let t = instruction.t();
-    let d = instruction.d();
+    let t = reg_dep(psx, instruction.t());
+    let d = reg_dep(psx, instruction.d());
 
     let v = (psx.cpu.reg(t) as i32) >> i;
 
@@ -383,9 +492,9 @@ fn op_sra(psx: &mut Psx, instruction: Instruction) {
 
 /// Shift Left Logical Variable
 fn op_sllv(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     // Shift amount is truncated to 5 bits
     let v = psx.cpu.reg(t) << (psx.cpu.reg(s) & 0x1f);
@@ -397,9 +506,9 @@ fn op_sllv(psx: &mut Psx, instruction: Instruction) {
 
 /// Shift Right Logical Variable
 fn op_srlv(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     // Shift amount is truncated to 5 bits
     let v = psx.cpu.reg(t) >> (psx.cpu.reg(s) & 0x1f);
@@ -411,9 +520,9 @@ fn op_srlv(psx: &mut Psx, instruction: Instruction) {
 
 /// Shift Right Arithmetic Variable
 fn op_srav(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     // Shift amount is truncated to 5 bits
     let v = (psx.cpu.reg(t) as i32) >> (psx.cpu.reg(s) & 0x1f);
@@ -425,7 +534,7 @@ fn op_srav(psx: &mut Psx, instruction: Instruction) {
 
 /// Jump Register
 fn op_jr(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     psx.cpu.next_pc = psx.cpu.reg(s);
     psx.cpu.branch = true;
@@ -435,8 +544,8 @@ fn op_jr(psx: &mut Psx, instruction: Instruction) {
 
 /// Jump And Link Register
 fn op_jalr(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let d = instruction.d();
+    let s = reg_dep(psx, instruction.s());
+    let d = reg_dep(psx, instruction.d());
 
     let ra = psx.cpu.next_pc;
 
@@ -466,7 +575,7 @@ fn op_break(psx: &mut Psx, _: Instruction) {
 
 /// Move From HI
 fn op_mfhi(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
+    let d = reg_dep(psx, instruction.d());
 
     let hi = psx.cpu.hi;
 
@@ -477,7 +586,7 @@ fn op_mfhi(psx: &mut Psx, instruction: Instruction) {
 
 /// Move to HI
 fn op_mthi(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     psx.cpu.hi = psx.cpu.reg(s);
 
@@ -486,7 +595,7 @@ fn op_mthi(psx: &mut Psx, instruction: Instruction) {
 
 /// Move From LO
 fn op_mflo(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
+    let d = reg_dep(psx, instruction.d());
 
     let lo = psx.cpu.lo;
 
@@ -497,7 +606,7 @@ fn op_mflo(psx: &mut Psx, instruction: Instruction) {
 
 /// Move to LO
 fn op_mtlo(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     psx.cpu.lo = psx.cpu.reg(s);
 
@@ -506,8 +615,8 @@ fn op_mtlo(psx: &mut Psx, instruction: Instruction) {
 
 /// Multiply (signed)
 fn op_mult(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let a = i64::from(psx.cpu.reg(s) as i32);
     let b = i64::from(psx.cpu.reg(t) as i32);
@@ -522,8 +631,8 @@ fn op_mult(psx: &mut Psx, instruction: Instruction) {
 
 /// Multiply Unsigned
 fn op_multu(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let a = u64::from(psx.cpu.reg(s));
     let b = u64::from(psx.cpu.reg(t));
@@ -538,8 +647,8 @@ fn op_multu(psx: &mut Psx, instruction: Instruction) {
 
 /// Divide (signed)
 fn op_div(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let n = psx.cpu.reg(s) as i32;
     let d = psx.cpu.reg(t) as i32;
@@ -567,8 +676,8 @@ fn op_div(psx: &mut Psx, instruction: Instruction) {
 
 /// Divide Unsigned
 fn op_divu(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let n = psx.cpu.reg(s);
     let d = psx.cpu.reg(t);
@@ -587,9 +696,9 @@ fn op_divu(psx: &mut Psx, instruction: Instruction) {
 
 /// Add and check for signed overflow
 fn op_add(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
-    let d = instruction.d();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
+    let d = reg_dep(psx, instruction.d());
 
     let s = psx.cpu.reg(s) as i32;
     let t = psx.cpu.reg(t) as i32;
@@ -604,9 +713,9 @@ fn op_add(psx: &mut Psx, instruction: Instruction) {
 
 /// Add Unsigned
 fn op_addu(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
-    let d = instruction.d();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
+    let d = reg_dep(psx, instruction.d());
 
     let v = psx.cpu.reg(s).wrapping_add(psx.cpu.reg(t));
 
@@ -617,9 +726,9 @@ fn op_addu(psx: &mut Psx, instruction: Instruction) {
 
 /// Subtract and check for signed overflow
 fn op_sub(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
-    let d = instruction.d();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
+    let d = reg_dep(psx, instruction.d());
 
     let s = psx.cpu.reg(s) as i32;
     let t = psx.cpu.reg(t) as i32;
@@ -634,9 +743,9 @@ fn op_sub(psx: &mut Psx, instruction: Instruction) {
 
 /// Subtract Unsigned
 fn op_subu(psx: &mut Psx, instruction: Instruction) {
-    let s = instruction.s();
-    let t = instruction.t();
-    let d = instruction.d();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
+    let d = reg_dep(psx, instruction.d());
 
     let v = psx.cpu.reg(s).wrapping_sub(psx.cpu.reg(t));
 
@@ -647,9 +756,9 @@ fn op_subu(psx: &mut Psx, instruction: Instruction) {
 
 /// Bitwise And
 fn op_and(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let v = psx.cpu.reg(s) & psx.cpu.reg(t);
 
@@ -660,9 +769,9 @@ fn op_and(psx: &mut Psx, instruction: Instruction) {
 
 /// Bitwise Or
 fn op_or(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let v = psx.cpu.reg(s) | psx.cpu.reg(t);
 
@@ -673,9 +782,9 @@ fn op_or(psx: &mut Psx, instruction: Instruction) {
 
 /// Bitwise Exclusive Or
 fn op_xor(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let v = psx.cpu.reg(s) ^ psx.cpu.reg(t);
 
@@ -686,9 +795,9 @@ fn op_xor(psx: &mut Psx, instruction: Instruction) {
 
 /// Bitwise Not Or
 fn op_nor(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let v = !(psx.cpu.reg(s) | psx.cpu.reg(t));
 
@@ -699,9 +808,9 @@ fn op_nor(psx: &mut Psx, instruction: Instruction) {
 
 /// Set on Less Than (signed)
 fn op_slt(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let s = psx.cpu.reg(s) as i32;
     let t = psx.cpu.reg(t) as i32;
@@ -715,9 +824,9 @@ fn op_slt(psx: &mut Psx, instruction: Instruction) {
 
 /// Set on Less Than Unsigned
 fn op_sltu(psx: &mut Psx, instruction: Instruction) {
-    let d = instruction.d();
-    let s = instruction.s();
-    let t = instruction.t();
+    let d = reg_dep(psx, instruction.d());
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let v = psx.cpu.reg(s) < psx.cpu.reg(t);
 
@@ -730,7 +839,7 @@ fn op_sltu(psx: &mut Psx, instruction: Instruction) {
 /// which one to use
 fn op_bxx(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     let instruction = instruction.0;
 
@@ -799,8 +908,8 @@ fn op_jal(psx: &mut Psx, instruction: Instruction) {
 /// Branch if Equal
 fn op_beq(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     if psx.cpu.reg(s) == psx.cpu.reg(t) {
         psx.cpu.branch(i);
@@ -812,8 +921,8 @@ fn op_beq(psx: &mut Psx, instruction: Instruction) {
 /// Branch if Not Equal
 fn op_bne(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     if psx.cpu.reg(s) != psx.cpu.reg(t) {
         psx.cpu.branch(i);
@@ -825,7 +934,7 @@ fn op_bne(psx: &mut Psx, instruction: Instruction) {
 /// Branch if Less than or Equal to Zero
 fn op_blez(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     let v = psx.cpu.reg(s) as i32;
 
@@ -839,7 +948,7 @@ fn op_blez(psx: &mut Psx, instruction: Instruction) {
 /// Branch if Greater Than Zero
 fn op_bgtz(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     let v = psx.cpu.reg(s) as i32;
 
@@ -853,8 +962,8 @@ fn op_bgtz(psx: &mut Psx, instruction: Instruction) {
 /// Add Immediate and check for signed overflow
 fn op_addi(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se() as i32;
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let s = psx.cpu.reg(s) as i32;
 
@@ -869,8 +978,8 @@ fn op_addi(psx: &mut Psx, instruction: Instruction) {
 /// Add Immediate Unsigned
 fn op_addiu(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let v = psx.cpu.reg(s).wrapping_add(i);
 
@@ -882,8 +991,8 @@ fn op_addiu(psx: &mut Psx, instruction: Instruction) {
 /// Set if Less Than Immediate (signed)
 fn op_slti(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se() as i32;
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let v = (psx.cpu.reg(s) as i32) < i;
 
@@ -895,8 +1004,8 @@ fn op_slti(psx: &mut Psx, instruction: Instruction) {
 /// Set if Less Than Immediate Unsigned
 fn op_sltiu(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let s = instruction.s();
-    let t = instruction.t();
+    let s = reg_dep(psx, instruction.s());
+    let t = reg_dep(psx, instruction.t());
 
     let v = psx.cpu.reg(s) < i;
 
@@ -908,8 +1017,8 @@ fn op_sltiu(psx: &mut Psx, instruction: Instruction) {
 /// Bitwise And Immediate
 fn op_andi(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let v = psx.cpu.reg(s) & i;
 
@@ -921,8 +1030,8 @@ fn op_andi(psx: &mut Psx, instruction: Instruction) {
 /// Bitwise Or Immediate
 fn op_ori(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let v = psx.cpu.reg(s) | i;
 
@@ -934,8 +1043,8 @@ fn op_ori(psx: &mut Psx, instruction: Instruction) {
 /// Bitwise eXclusive Or Immediate
 fn op_xori(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let v = psx.cpu.reg(s) ^ i;
 
@@ -947,7 +1056,7 @@ fn op_xori(psx: &mut Psx, instruction: Instruction) {
 /// Load Upper Immediate
 fn op_lui(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm();
-    let t = instruction.t();
+    let t = reg_dep(psx, instruction.t());
 
     // Low 16bits are set to 0
     let v = i << 16;
@@ -969,7 +1078,7 @@ fn op_cop0(psx: &mut Psx, instruction: Instruction) {
 
 /// Move To Coprocessor 0
 fn op_mtc0(psx: &mut Psx, instruction: Instruction) {
-    let cpu_r = instruction.t();
+    let cpu_r = reg_dep(psx, instruction.t());
     let cop_r = instruction.d();
 
     let v = psx.cpu.reg(cpu_r);
@@ -981,12 +1090,12 @@ fn op_mtc0(psx: &mut Psx, instruction: Instruction) {
 
 /// Move From Coprocessor 0
 fn op_mfc0(psx: &mut Psx, instruction: Instruction) {
-    let cpu_r = instruction.t();
+    let cpu_r = reg_dep(psx, instruction.t());
     let cop_r = instruction.d();
 
     let v = cop0::mfc0(psx, cop_r);
 
-    psx.cpu.delayed_load_chain(cpu_r, v);
+    psx.cpu.delayed_load_chain(cpu_r, v, 0, false);
 }
 
 /// Return From Exception. Doesn't actually jump anywhere but tells the coprocessor to return to
@@ -1029,32 +1138,36 @@ fn op_cop3(psx: &mut Psx, _: Instruction) {
 /// Load Byte (signed)
 fn op_lb(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
+    let (v, duration) = load::<u8>(psx, addr);
+
     // Cast as i8 to force sign extension
-    let v = load::<u8>(psx, addr) as i8;
+    let v = v as i8;
 
     // Put the load in the delay slot
-    psx.cpu.delayed_load_chain(t, v as u32);
+    psx.cpu.delayed_load_chain(t, v as u32, duration, true);
 }
 
 /// Load Halfword (signed)
 fn op_lh(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
     if addr % 2 == 0 {
+        let (v, duration) = load::<u16>(psx, addr);
+
         // Cast as i16 to force sign extension
-        let v = load::<u16>(psx, addr) as i16;
+        let v = v as i16;
 
         // Put the load in the delay slot
-        psx.cpu.delayed_load_chain(t, v as u32);
+        psx.cpu.delayed_load_chain(t, v as u32, duration, true);
     } else {
         psx.cpu.delayed_load();
         exception(psx, Exception::LoadAddressError);
@@ -1064,24 +1177,24 @@ fn op_lh(psx: &mut Psx, instruction: Instruction) {
 /// Load Word Left
 fn op_lwl(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
+    let mut cur_v = psx.cpu.reg(t);
+
     // This instruction bypasses the load delay restriction: this instruction will merge the new
     // contents with the value currently being loaded if need be.
-    let (pending_reg, pending_value) = psx.cpu.load;
-
-    let cur_v = if pending_reg == t {
-        pending_value
-    } else {
-        psx.cpu.reg(t)
-    };
+    if let Some((pending_reg, pending_value, _)) = psx.cpu.load {
+        if pending_reg == t {
+            cur_v = pending_value;
+        }
+    }
 
     // Next we load the *aligned* word containing the first addressed byte
     let aligned_addr = addr & !3;
-    let aligned_word: u32 = load(psx, aligned_addr);
+    let (aligned_word, duration) = load::<u32>(psx, aligned_addr);
 
     // Depending on the address alignment we fetch the 1, 2, 3 or 4 *most* significant bytes and
     // put them in the target register.
@@ -1094,22 +1207,22 @@ fn op_lwl(psx: &mut Psx, instruction: Instruction) {
     };
 
     // Put the load in the delay slot
-    psx.cpu.delayed_load_chain(t, v);
+    psx.cpu.delayed_load_chain(t, v, duration, true);
 }
 
 /// Load Word
 fn op_lw(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
     // Address must be 32bit aligned
     if addr % 4 == 0 {
-        let v = load(psx, addr);
+        let (v, duration) = load(psx, addr);
 
-        psx.cpu.delayed_load_chain(t, v);
+        psx.cpu.delayed_load_chain(t, v, duration, true);
     } else {
         psx.cpu.delayed_load();
         exception(psx, Exception::LoadAddressError);
@@ -1119,31 +1232,31 @@ fn op_lw(psx: &mut Psx, instruction: Instruction) {
 /// Load Byte Unsigned
 fn op_lbu(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
-    let v = load::<u8>(psx, addr);
+    let (v, duration) = load::<u8>(psx, addr);
 
     // Put the load in the delay slot
-    psx.cpu.delayed_load_chain(t, u32::from(v));
+    psx.cpu.delayed_load_chain(t, u32::from(v), duration, true);
 }
 
 /// Load Halfword Unsigned
 fn op_lhu(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
     // Address must be 16bit aligned
     if addr % 2 == 0 {
-        let v = load::<u16>(psx, addr);
+        let (v, duration) = load::<u16>(psx, addr);
 
         // Put the load in the delay slot
-        psx.cpu.delayed_load_chain(t, u32::from(v));
+        psx.cpu.delayed_load_chain(t, u32::from(v), duration, true);
     } else {
         psx.cpu.delayed_load();
         exception(psx, Exception::LoadAddressError);
@@ -1153,24 +1266,24 @@ fn op_lhu(psx: &mut Psx, instruction: Instruction) {
 /// Load Word Right
 fn op_lwr(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
+    let mut cur_v = psx.cpu.reg(t);
+
     // This instruction bypasses the load delay restriction: this instruction will merge the new
     // contents with the value currently being loaded if need be.
-    let (pending_reg, pending_value) = psx.cpu.load;
-
-    let cur_v = if pending_reg == t {
-        pending_value
-    } else {
-        psx.cpu.reg(t)
-    };
+    if let Some((pending_reg, pending_value, _)) = psx.cpu.load {
+        if pending_reg == t {
+            cur_v = pending_value;
+        }
+    }
 
     // Next we load the *aligned* word containing the first addressed byte
     let aligned_addr = addr & !3;
-    let aligned_word: u32 = load(psx, aligned_addr);
+    let (aligned_word, duration) = load::<u32>(psx, aligned_addr);
 
     // Depending on the address alignment we fetch the 1, 2, 3 or 4 *least* significant bytes and
     // put them in the target register.
@@ -1183,14 +1296,14 @@ fn op_lwr(psx: &mut Psx, instruction: Instruction) {
     };
 
     // Put the load in the delay slot
-    psx.cpu.delayed_load_chain(t, v);
+    psx.cpu.delayed_load_chain(t, v, duration, true);
 }
 
 /// Store Byte
 fn op_sb(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
     let v = psx.cpu.reg(t);
@@ -1203,8 +1316,8 @@ fn op_sb(psx: &mut Psx, instruction: Instruction) {
 /// Store Halfword
 fn op_sh(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
     let v = psx.cpu.reg(t);
@@ -1222,15 +1335,15 @@ fn op_sh(psx: &mut Psx, instruction: Instruction) {
 /// Store Word Left
 fn op_swl(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
     let v = psx.cpu.reg(t);
 
     let aligned_addr = addr & !3;
     // Load the current value for the aligned word at the target address
-    let cur: u32 = load(psx, aligned_addr);
+    let (cur, _) = load::<u32>(psx, aligned_addr);
 
     let new = match addr & 3 {
         0 => (cur & 0xffff_ff00) | (v >> 24),
@@ -1248,8 +1361,8 @@ fn op_swl(psx: &mut Psx, instruction: Instruction) {
 /// Store Word
 fn op_sw(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
     let v = psx.cpu.reg(t);
@@ -1267,15 +1380,15 @@ fn op_sw(psx: &mut Psx, instruction: Instruction) {
 /// Store Word Right
 fn op_swr(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let t = instruction.t();
-    let s = instruction.s();
+    let t = reg_dep(psx, instruction.t());
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
     let v = psx.cpu.reg(t);
 
     let aligned_addr = addr & !3;
     // Load the current value for the aligned word at the target address
-    let cur: u32 = load(psx, aligned_addr);
+    let (cur, _) = load::<u32>(psx, aligned_addr);
 
     let new = match addr & 3 {
         0 => v,
@@ -1314,7 +1427,7 @@ fn op_lwc1(psx: &mut Psx, _: Instruction) {
 fn op_lwc2(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
     let cop_r = instruction.t();
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
@@ -1322,7 +1435,7 @@ fn op_lwc2(psx: &mut Psx, instruction: Instruction) {
 
     // Address must be 32bit aligned
     if addr % 4 == 0 {
-        let v: u32 = load(psx, addr);
+        let (v, _duration) = load::<u32>(psx, addr);
 
         panic!("Implement LWC2 0x{:x} to Cop2 R{}", v, cop_r.0);
     } else {
@@ -1364,7 +1477,7 @@ fn op_swc1(psx: &mut Psx, _: Instruction) {
 fn op_swc2(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
     let cop_r = instruction.t();
-    let s = instruction.s();
+    let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
@@ -1471,21 +1584,21 @@ impl Instruction {
     fn s(self) -> RegisterIndex {
         let Instruction(op) = self;
 
-        RegisterIndex((op >> 21) & 0x1f)
+        RegisterIndex(((op >> 21) & 0x1f) as u8)
     }
 
     /// Return register index in bits [20:16]
     fn t(self) -> RegisterIndex {
         let Instruction(op) = self;
 
-        RegisterIndex((op >> 16) & 0x1f)
+        RegisterIndex(((op >> 16) & 0x1f) as u8)
     }
 
     /// Return register index in bits [15:11]
     fn d(self) -> RegisterIndex {
         let Instruction(op) = self;
 
-        RegisterIndex((op >> 11) & 0x1f)
+        RegisterIndex(((op >> 11) & 0x1f) as u8)
     }
 }
 
@@ -1498,7 +1611,7 @@ impl fmt::Display for Instruction {
 /// A simple wrapper around a register index to avoid coding errors where the register index could
 /// be used instead of its value
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct RegisterIndex(pub u32);
+pub struct RegisterIndex(pub u8);
 
 /// Handler table for the main opcodes (instruction bits [31:26])
 #[rustfmt::skip]

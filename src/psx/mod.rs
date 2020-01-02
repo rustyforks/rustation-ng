@@ -12,8 +12,13 @@ use std::path::Path;
 
 use self::error::Result;
 
+pub type CycleCount = i32;
+
 /// Current state of the emulator
 pub struct Psx {
+    /// Counter of the number of CPU cycles elapsed since an arbitrary point in time. Used as the
+    /// reference to synchronize the other modules
+    pub cycle_counter: CycleCount,
     pub cpu: cpu::Cpu,
     pub cop0: cop0::Cop0,
     pub irq: irq::InterruptState,
@@ -34,6 +39,7 @@ pub struct Psx {
 impl Psx {
     pub fn new(bios_path: &Path) -> Result<Psx> {
         let psx = Psx {
+            cycle_counter: 0,
             cpu: cpu::Cpu::new(),
             cop0: cop0::Cop0::new(),
             irq: irq::InterruptState::new(),
@@ -56,6 +62,11 @@ impl Psx {
         }
     }
 
+    /// Advance the CPU cycle counter by the given number of ticks
+    pub fn tick(&mut self, cycles: CycleCount) {
+        self.cycle_counter += cycles;
+    }
+
     /// Like load, but tries to minimizes side-effects. Used for debugging.
     pub fn examine<T: Addressable>(&mut self, address: u32) -> T {
         // A bit heavy handed but that shouldn't pose much of a problem since this function should
@@ -64,7 +75,12 @@ impl Psx {
         // it attempts to read from some unimplemented memory location).
         use ::std::panic;
 
+        let cc = self.cycle_counter;
+
         let result = panic::catch_unwind(panic::AssertUnwindSafe(|| self.load(address)));
+
+        // Restore the previous counter to avoid advancing the emulation state with debug reads
+        self.cycle_counter = cc;
 
         let bad_value = Addressable::from_u32(0xfbad_c0de);
 
@@ -89,31 +105,46 @@ impl Psx {
         cpu::Instruction::new(i)
     }
 
-    /// Decode `address` and perform the load from the target module
+    /// Decode `address` and perform the load from the target module. `cc` contains the value of
+    /// the CPU cycle counter when the transfer begins and should be updated to contain the value
+    /// of the cycle counter when it'll complete.
     pub fn load<T: Addressable>(&mut self, address: u32) -> T {
         let abs_addr = map::mask_region(address);
 
         if let Some(offset) = map::RAM.contains(abs_addr) {
+            self.tick(3);
             return self.ram.load(offset);
         }
 
         if let Some(offset) = map::BIOS.contains(abs_addr) {
+            // XXX Mednafen doesn't add any penalty for BIOS read, which sounds wrong. It's
+            // probably not a common-enough occurence to matter
             return self.bios.load(offset);
         }
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
+            if T::width() == AccessWidth::Word {
+                self.tick(36);
+            } else {
+                self.tick(16);
+            }
+
             return spu::load(self, offset);
         }
 
         if let Some(offset) = map::DMA.contains(abs_addr) {
+            self.tick(1);
             return dma::load(self, offset);
         }
 
         if let Some(offset) = map::TIMERS.contains(abs_addr) {
+            self.tick(1);
             return timers::load(self, offset);
         }
 
         if let Some(off) = map::IRQ_CONTROL.contains(abs_addr) {
+            self.tick(1);
+
             let v = match off {
                 0 => u32::from(irq::status(self)),
                 4 => u32::from(irq::mask(self)),
