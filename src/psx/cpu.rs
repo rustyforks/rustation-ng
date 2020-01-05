@@ -3,7 +3,7 @@
 //! The timings code is copied from mednafen
 
 use super::cop0::Exception;
-use super::{cop0, debugger, AccessWidth, Addressable, Psx};
+use super::{cop0, debugger, AccessWidth, Addressable, CycleCount, Psx};
 
 use std::fmt;
 
@@ -41,6 +41,10 @@ pub struct Cpu {
     delay_slot: bool,
     /// If true BREAK instructions trigged the debugger instead of generating an exception
     debug_on_break: bool,
+    /// Date at which the last division or multiplication will be done. DIV(U) and MULT(U) can run
+    /// concurrently with other "normal" MIPS instructions and only block if a mf(hi|lo) is
+    /// executed before they're finished
+    mult_div_end: CycleCount,
 }
 
 impl Cpu {
@@ -65,6 +69,7 @@ impl Cpu {
             icache: [ICacheLine::new(); 0x100],
             delay_slot: false,
             debug_on_break: false,
+            mult_div_end: 0,
         }
     }
 
@@ -573,6 +578,23 @@ fn op_break(psx: &mut Psx, _: Instruction) {
     }
 }
 
+/// Block if the current DIV(U) or MULT(U) instruction has not yet finished
+fn sync_mult_div(psx: &mut Psx) {
+    let block_for = psx.cpu.mult_div_end - psx.cycle_counter;
+
+    if block_for > 0 {
+        psx.cycle_counter = psx.cpu.mult_div_end;
+
+        let ri = psx.cpu.free_cycles_reg.0 as usize;
+
+        if CycleCount::from(psx.cpu.free_cycles[ri]) <= block_for {
+            psx.cpu.free_cycles[ri] = 0;
+        } else {
+            psx.cpu.free_cycles[ri] -= block_for as u8;
+        }
+    }
+}
+
 /// Move From HI
 fn op_mfhi(psx: &mut Psx, instruction: Instruction) {
     let d = reg_dep(psx, instruction.d());
@@ -580,6 +602,8 @@ fn op_mfhi(psx: &mut Psx, instruction: Instruction) {
     let hi = psx.cpu.hi;
 
     psx.cpu.delayed_load();
+
+    sync_mult_div(psx);
 
     psx.cpu.set_reg(d, hi);
 }
@@ -600,6 +624,8 @@ fn op_mflo(psx: &mut Psx, instruction: Instruction) {
     let lo = psx.cpu.lo;
 
     psx.cpu.delayed_load();
+
+    sync_mult_div(psx);
 
     psx.cpu.set_reg(d, lo);
 }
@@ -672,6 +698,8 @@ fn op_div(psx: &mut Psx, instruction: Instruction) {
         psx.cpu.hi = (n % d) as u32;
         psx.cpu.lo = (n / d) as u32;
     }
+
+    psx.cpu.mult_div_end = psx.cycle_counter + 37;
 }
 
 /// Divide Unsigned
@@ -692,6 +720,8 @@ fn op_divu(psx: &mut Psx, instruction: Instruction) {
         psx.cpu.hi = n % d;
         psx.cpu.lo = n / d;
     }
+
+    psx.cpu.mult_div_end = psx.cycle_counter + 37;
 }
 
 /// Add and check for signed overflow
