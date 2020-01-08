@@ -1,6 +1,8 @@
 //! Sound Processing Unit
 
-use super::{AccessWidth, Addressable, Psx};
+use super::{cpu, sync, AccessWidth, Addressable, CycleCount, Psx};
+
+const SPUSYNC: sync::SyncToken = sync::SyncToken::Spu;
 
 /// Offset into the SPU internal ram
 type RamIndex = u32;
@@ -73,7 +75,28 @@ impl Spu {
     }
 }
 
+/// Run the SPU until it's caught up with the CPU
+fn run(psx: &mut Psx) {
+    let mut elapsed = sync::resync(psx, SPUSYNC);
+
+    while elapsed > SPU_FREQ_DIVIDER {
+        elapsed -= SPU_FREQ_DIVIDER;
+        run_cycle(psx);
+    }
+
+    // If we have some leftover cycles we can just return them to the synchronization module, we'll
+    // get them back on the next call to resync
+    sync::rewind(psx, SPUSYNC, elapsed);
+}
+
+/// Emulate one cycle of the SPU
+fn run_cycle(_psx: &mut Psx) {}
+
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
+    // This is probably very heavy handed, mednafen only syncs from the CD code and never on
+    // register access
+    run(psx);
+
     if T::width() != AccessWidth::HalfWord {
         panic!("Unhandled {:?} SPU store", T::width());
     }
@@ -119,6 +142,10 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
 }
 
 pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
+    // This is probably very heavy handed, mednafen only syncs from the CD code and never on
+    // register access
+    run(psx);
+
     if T::width() != AccessWidth::HalfWord {
         panic!("Unhandled {:?} SPU load", T::width());
     }
@@ -349,3 +376,10 @@ mod regmap {
 
 /// SPU RAM size in multiple of 16bit words
 const SPU_RAM_SIZE: usize = 256 * 1024;
+
+/// The SPU runs at 44.1kHz, the CD audio frequency, this way no resampling is required
+const AUDIO_FREQ_HZ: CycleCount = 44_100;
+
+/// The CPU frequency is an exact multiple of the audio frequency, so the divider is always an
+/// integer (0x300 normally)
+const SPU_FREQ_DIVIDER: CycleCount = cpu::CPU_FREQ_HZ / AUDIO_FREQ_HZ;

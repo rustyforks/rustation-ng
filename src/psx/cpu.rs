@@ -1764,3 +1764,7 @@ impl ICacheLine {
         self.line[index as usize] = instruction;
     }
 }
+
+/// The PSX CPU is supposed to run at 33.868Mhz. This frequency is exactly 0x300 times the CD
+/// sample rate frequency of 44.1kHz so that the SPU can run synchronously.
+pub const CPU_FREQ_HZ: CycleCount = 33_868_800;

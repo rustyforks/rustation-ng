@@ -6,6 +6,7 @@ mod dma;
 pub mod error;
 mod irq;
 mod spu;
+mod sync;
 mod timers;
 
 use std::path::Path;
@@ -19,6 +20,7 @@ pub struct Psx {
     /// Counter of the number of CPU cycles elapsed since an arbitrary point in time. Used as the
     /// reference to synchronize the other modules
     pub cycle_counter: CycleCount,
+    pub sync: sync::Synchronizer,
     pub cpu: cpu::Cpu,
     pub cop0: cop0::Cop0,
     pub irq: irq::InterruptState,
@@ -40,6 +42,7 @@ impl Psx {
     pub fn new(bios_path: &Path) -> Result<Psx> {
         let psx = Psx {
             cycle_counter: 0,
+            sync: sync::Synchronizer::new(),
             cpu: cpu::Cpu::new(),
             cop0: cop0::Cop0::new(),
             irq: irq::InterruptState::new(),
