@@ -118,6 +118,9 @@ fn run(psx: &mut Psx) {
 /// Emulate one cycle of the SPU
 fn run_cycle(psx: &mut Psx) {
     psx.spu.update_status();
+
+    psx.spu.capture_index += 1;
+    psx.spu.capture_index &= 0x1ff;
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
