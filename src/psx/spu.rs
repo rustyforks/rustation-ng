@@ -2,16 +2,17 @@
 
 use super::{AccessWidth, Addressable, Psx};
 
+/// Offset into the SPU internal ram
+type RamIndex = u32;
+
 pub struct Spu {
-    /// Control register
-    control: Control,
     /// RAM index, used for read/writes using CPU or DMA.
-    ram_index: u32,
+    ram_index: RamIndex,
     /// If the IRQ is enabled in the control register and the SPU memory is accessed at `irq_addr`
     /// (read *or* write) the interrupt is triggered.
-    irq_addr: u32,
+    irq_addr: RamIndex,
     /// Main volume, left and right
-    main_volume: [Volume; 2],
+    main_volume: [VolumeSweep; 2],
     /// The 24 individual voices
     voices: [Voice; 24],
     /// Most of the SPU's register behave like a R/W RAM, so to simplify the emulation we just
@@ -24,10 +25,9 @@ pub struct Spu {
 impl Spu {
     pub fn new() -> Spu {
         Spu {
-            control: Control::new(),
             ram_index: 0,
             irq_addr: 0,
-            main_volume: [Volume::new(), Volume::new()],
+            main_volume: [VolumeSweep::new(), VolumeSweep::new()],
             voices: [
                 Voice::new(),
                 Voice::new(),
@@ -58,6 +58,19 @@ impl Spu {
             ram: [0; SPU_RAM_SIZE],
         }
     }
+
+    /// Returns the value of the control register
+    fn control(&self) -> u16 {
+        self.regs[regmap::CONTROL]
+    }
+
+    fn irq_enabled(&self) -> bool {
+        let control = self.control();
+
+        // No$ says that the bit 6 (IRQ9) is "only when bit15=1", I'm not sure what that means.
+        // Mednafen doesn't appear to put any condition on the interrupt bit.
+        control & (1 << 6) != 0
+    }
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
@@ -79,27 +92,18 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::voice::VOLUME_LEFT => voice.volume[0].set_config(val),
             regmap::voice::VOLUME_RIGHT => voice.volume[1].set_config(val),
             regmap::voice::ADPCM_STEP_LENGTH => voice.step_length = val,
-            _ => panic!("Unhandled SPU voice configuration {:x} @ {:x}", val, index),
+            regmap::voice::ADPCM_START_INDEX => voice.set_start_index(to_ram_index(val)),
+            regmap::voice::ADPCM_ADSR_LO => voice.adsr.set_lo(val),
+            regmap::voice::ADPCM_ADSR_HI => voice.adsr.set_hi(val),
+            _ => (),
         }
     } else {
         match index {
             regmap::MAIN_VOLUME_LEFT => psx.spu.main_volume[0].set_config(val),
             regmap::MAIN_VOLUME_RIGHT => psx.spu.main_volume[1].set_config(val),
-            regmap::REVERB_VOLUME_LEFT => (),
-            regmap::REVERB_VOLUME_RIGHT => (),
-            regmap::VOICE_ON_LO => (),
-            regmap::VOICE_ON_HI => (),
-            regmap::VOICE_OFF_LO => (),
-            regmap::VOICE_OFF_HI => (),
-            regmap::VOICE_FM_MOD_EN_LO => (),
-            regmap::VOICE_FM_MOD_EN_HI => (),
-            regmap::VOICE_NOISE_EN_LO => (),
-            regmap::VOICE_NOISE_EN_HI => (),
-            regmap::VOICE_REVERB_EN_LO => (),
-            regmap::VOICE_REVERB_EN_HI => (),
-            regmap::TRANSFER_START_INDEX => psx.spu.ram_index = u32::from(val) << 2,
+            regmap::TRANSFER_START_INDEX => psx.spu.ram_index = to_ram_index(val),
             regmap::TRANSFER_FIFO => transfer(psx, val),
-            regmap::CONTROL => psx.spu.control.set(val),
+            regmap::CONTROL => check_for_irq(psx, psx.spu.ram_index),
             regmap::TRANSFER_CONTROL => {
                 if val != 4 {
                     // According to No$ this register controls the way the data is transferred to
@@ -109,11 +113,7 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                     warn!("SPU TRANSFER_CONTROL set to 0x{:x}", val);
                 }
             }
-            regmap::CD_VOLUME_LEFT => (),
-            regmap::CD_VOLUME_RIGHT => (),
-            regmap::EXT_VOLUME_LEFT => (),
-            regmap::EXT_VOLUME_RIGHT => (),
-            _ => panic!("Unhandled SPU write {:x} @ {:x}", val, index),
+            _ => (),
         }
     }
 }
@@ -125,7 +125,34 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
 
     let index = (off >> 1) as usize;
 
-    T::from_u32(u32::from(psx.spu.regs[index]))
+    if index > 0x100 {
+        unimplemented!();
+    }
+
+    let reg_v = psx.spu.regs[index];
+
+    let v = if index < 0xc0 {
+        let voice = &psx.spu.voices[index >> 3];
+
+        match index & 7 {
+            regmap::voice::CURRENT_ADSR_VOLUME => voice.level(),
+            regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
+            _ => reg_v,
+        }
+    } else {
+        match index {
+            regmap::VOICE_STATUS_LO => unimplemented!(),
+            regmap::VOICE_STATUS_HI => unimplemented!(),
+            regmap::TRANSFER_FIFO => unimplemented!(),
+            regmap::CURRENT_VOLUME_LEFT => unimplemented!(),
+            regmap::CURRENT_VOLUME_RIGHT => unimplemented!(),
+            // Nobody seems to know what this register is for, but mednafen returns 0
+            regmap::UNKNOWN => return T::from_u32(0),
+            _ => reg_v,
+        }
+    };
+
+    T::from_u32(u32::from(v))
 }
 
 /// Write the SPU ram at the `ram_index` an increment it.
@@ -141,7 +168,7 @@ fn transfer(psx: &mut Psx, val: u16) {
     check_for_irq(psx, psx.spu.ram_index);
 }
 
-fn ram_write(psx: &mut Psx, index: u32, val: u16) {
+fn ram_write(psx: &mut Psx, index: RamIndex, val: u16) {
     check_for_irq(psx, index);
 
     let index = index as usize;
@@ -152,65 +179,90 @@ fn ram_write(psx: &mut Psx, index: u32, val: u16) {
 }
 
 /// Trigger an IRQ if it's enabled in the control register and `addr` is equal to the `irq_addr`
-fn check_for_irq(psx: &mut Psx, index: u32) {
-    if psx.spu.control.irq_enabled() && index == psx.spu.irq_addr {
+fn check_for_irq(psx: &mut Psx, index: RamIndex) {
+    if psx.spu.irq_enabled() && index == psx.spu.irq_addr {
         panic!("Trigger SPU IRQ!");
     }
 }
 
-/// SPU Control register
-struct Control(u16);
-
-impl Control {
-    fn new() -> Control {
-        Control(0)
-    }
-
-    fn set(&mut self, c: u16) {
-        self.0 = c;
-
-        if self.irq_enabled() {
-            panic!("SPU IRQ enabled!");
-        }
-    }
-
-    fn irq_enabled(&self) -> bool {
-        // No$ says that the bit 6 (IRQ9) is "only when bit15=1", I'm not sure what that means.
-        // Mednafen doesn't appear to put any condition on the interrupt bit.
-        self.0 & (1 << 6) != 0
-    }
-}
-
-/// Structure representing the state of one of the PSX SPU's 24voices
 struct Voice {
     /// Voice volume, left and riht
-    volume: [Volume; 2],
+    volume: [VolumeSweep; 2],
+    adsr: Adsr,
     /// This value configures how fast the samples are played on this voice, which effectively
     /// changes the frequency of the output audio.
     step_length: u16,
+    start_index: RamIndex,
 }
 
 impl Voice {
     fn new() -> Voice {
         Voice {
-            volume: [Volume::new(), Volume::new()],
+            volume: [VolumeSweep::new(), VolumeSweep::new()],
+            adsr: Adsr::new(),
             step_length: 0,
+            start_index: 0,
         }
+    }
+
+    fn set_start_index(&mut self, addr: RamIndex) {
+        // From mednafen: apparently the start index is aligned to a multiple of 8 samples
+        self.start_index = addr & !7;
+    }
+
+    fn level(&self) -> u16 {
+        // TODO
+        0
     }
 }
 
-struct Volume {
-    config: u16,
-}
+/// Volume configuration, either fixed or a sweep
+struct VolumeSweep(u16);
 
-impl Volume {
-    fn new() -> Volume {
-        Volume { config: 0 }
+impl VolumeSweep {
+    fn new() -> VolumeSweep {
+        VolumeSweep(0)
     }
 
     fn set_config(&mut self, conf: u16) {
-        self.config = conf;
+        self.0 = conf
     }
+}
+
+/// Attack Delay Sustain Release envelope configuration
+struct Adsr(u32);
+
+impl Adsr {
+    fn new() -> Adsr {
+        Adsr(0)
+    }
+
+    fn set_lo(&mut self, v: u16) {
+        to_lo(&mut self.0, v);
+    }
+
+    fn set_hi(&mut self, v: u16) {
+        to_hi(&mut self.0, v);
+    }
+}
+
+/// Convert a register value to a ram index
+fn to_ram_index(v: u16) -> RamIndex {
+    RamIndex::from(v) << 2
+}
+
+fn to_hi(r: &mut u32, v: u16) {
+    let v = u32::from(v);
+
+    *r &= 0xffff;
+    *r |= v << 16;
+}
+
+fn to_lo(r: &mut u32, v: u16) {
+    let v = u32::from(v);
+
+    *r &= 0xffff_0000;
+    *r |= v;
 }
 
 #[allow(dead_code)]
@@ -259,6 +311,7 @@ mod regmap {
     pub const EXT_VOLUME_RIGHT: usize = 0xdb;
     pub const CURRENT_VOLUME_LEFT: usize = 0xdc;
     pub const CURRENT_VOLUME_RIGHT: usize = 0xdd;
+    pub const UNKNOWN: usize = 0xde;
 
     pub const REVERB_APF_OFFSET1: usize = 0xe0;
     pub const REVERB_APF_OFFSET2: usize = 0xe1;
