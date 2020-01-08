@@ -1,17 +1,23 @@
 mod commands;
 
-use super::{AccessWidth, Addressable, Psx};
+use super::{AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
 
 pub struct Gpu {
     /// GP0 command FIFO
     command_fifo: CommandFifo,
+    /// Variable used to simulate the time taken by draw commands. Taken from mednafen. This value
+    /// can become negative (we don't start a new draw command if it's negative, but a command
+    /// already started won't stop using cycles even if this goes below 0).
+    draw_time_budget: CycleCount,
 }
 
 impl Gpu {
     pub fn new() -> Gpu {
         Gpu {
             command_fifo: CommandFifo::new(),
+            // XXX for now let's start with a huge budget since we don't have proper timings yet
+            draw_time_budget: 0x1000_0000,
         }
     }
 
@@ -34,7 +40,7 @@ impl Gpu {
             // removed we allow it anyway
             let next_command = self.next_command();
 
-            let fifo_max = PSX_COMMAND_FIFO_DEPTH + next_command.fifo_len as usize;
+            let fifo_max = PSX_COMMAND_FIFO_DEPTH + next_command.fifo_len();
 
             if cur_fifo_len >= fifo_max {
                 // Nope, the FIFO is still too full, drop the command
@@ -86,10 +92,48 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
     T::from_u32(v)
 }
 
+/// Handle GP0 commands
 fn gp0(psx: &mut Psx, val: u32) {
     if psx.gpu.try_write_command(val) {
-        // XXX process FIFO
+        process_commands(psx);
     }
+}
+
+/// Attempt to execute a command from the `command_fifo`
+fn process_commands(psx: &mut Psx) {
+    if psx.gpu.command_fifo.is_empty() {
+        // We have nothing to do if the FIFO is empty
+        return;
+    }
+
+    let command = psx.gpu.next_command();
+
+    if command.len() > psx.gpu.command_fifo.len() {
+        // We still haven't received the entire command, wait longer
+        return;
+    }
+
+    // Apparently there are a handful of commands that aren't executed like the rest. Both mednafen
+    // and No$ agree on that, however the specifics are unclear. I tag these commands as "out of
+    // band" here (mednafen calls them "ss_cmd", not sure what that means).
+    //
+    // No$ says that these commands "do not take up space in the FIFO" and are "probably executed
+    // immediately (even if there're still other commands in the FIFO)". If that's true it means
+    // that we should run these commands directly from `gp0` without touching the FIFO.
+    //
+    // Mednafen on the other hands puts these commands through the FIFO as usual and executes them
+    // in order, just with no draw time overhead.
+    if psx.gpu.draw_time_budget < 0 && !command.out_of_band {
+        // We don't have enough time budget to execute this command
+        return;
+    }
+
+    if !command.out_of_band {
+        psx.gpu.draw_time_budget -= 2;
+    }
+
+    // Invoke the callback to actually implement the command
+    (command.handler)(psx);
 }
 
 /// GP0 command FIFO

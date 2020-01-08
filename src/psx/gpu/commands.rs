@@ -17,6 +17,16 @@ pub struct Command {
     pub out_of_band: bool,
 }
 
+impl Command {
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn fifo_len(&self) -> usize {
+        self.fifo_len as usize
+    }
+}
+
 /// Placeholder function
 fn cmd_unimplemented(psx: &mut Psx) {
     unimplemented!("GPU command {:08x}", psx.gpu.command_fifo.pop());
