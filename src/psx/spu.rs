@@ -10,9 +10,14 @@ type RamIndex = u32;
 pub struct Spu {
     /// RAM index, used for read/writes using CPU or DMA.
     ram_index: RamIndex,
+    /// Write index in the capture buffers. There's only one index used for all 4 buffers at any
+    /// given time
+    capture_index: RamIndex,
     /// If the IRQ is enabled in the control register and the SPU memory is accessed at `irq_addr`
     /// (read *or* write) the interrupt is triggered.
     irq_addr: RamIndex,
+    /// True if the interrupt has been triggered and not yet ack'ed
+    irq: bool,
     /// Main volume, left and right
     main_volume: [VolumeSweep; 2],
     /// The 24 individual voices
@@ -28,7 +33,9 @@ impl Spu {
     pub fn new() -> Spu {
         Spu {
             ram_index: 0,
+            capture_index: 0,
             irq_addr: 0,
+            irq: false,
             main_volume: [VolumeSweep::new(), VolumeSweep::new()],
             voices: [
                 Voice::new(),
@@ -73,6 +80,25 @@ impl Spu {
         // Mednafen doesn't appear to put any condition on the interrupt bit.
         control & (1 << 6) != 0
     }
+
+    /// Update the status register
+    fn update_status(&mut self) {
+        let mut status = 0;
+
+        status |= self.control() & 0x3f;
+        status |= (self.irq as u16) << 6;
+
+        // Not sure what that's about, copied straight from mednafen. `TRANSFER_CONTROL` is the
+        // mystery register that mangles the memory writes if it's not set to 4 (cf. No$)
+        if self.regs[regmap::TRANSFER_CONTROL] == 4 {
+            // Bit set to true if the capture index targets the high half of the capture buffers
+            let capture_high = self.capture_index & 0x100 != 0;
+
+            status |= (capture_high as u16) << 11;
+        }
+
+        self.regs[regmap::STATUS] = status;
+    }
 }
 
 /// Run the SPU until it's caught up with the CPU
@@ -90,7 +116,9 @@ fn run(psx: &mut Psx) {
 }
 
 /// Emulate one cycle of the SPU
-fn run_cycle(_psx: &mut Psx) {}
+fn run_cycle(psx: &mut Psx) {
+    psx.spu.update_status();
+}
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
     // This is probably very heavy handed, mednafen only syncs from the CD code and never on
@@ -126,7 +154,14 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::MAIN_VOLUME_RIGHT => psx.spu.main_volume[1].set_config(val),
             regmap::TRANSFER_START_INDEX => psx.spu.ram_index = to_ram_index(val),
             regmap::TRANSFER_FIFO => transfer(psx, val),
-            regmap::CONTROL => check_for_irq(psx, psx.spu.ram_index),
+            regmap::CONTROL => {
+                if psx.spu.irq_enabled() {
+                    check_for_irq(psx, psx.spu.ram_index);
+                } else {
+                    // IRQ is acknowledged
+                    psx.spu.irq = false;
+                }
+            }
             regmap::TRANSFER_CONTROL => {
                 if val != 4 {
                     // According to No$ this register controls the way the data is transferred to
@@ -208,6 +243,7 @@ fn ram_write(psx: &mut Psx, index: RamIndex, val: u16) {
 /// Trigger an IRQ if it's enabled in the control register and `addr` is equal to the `irq_addr`
 fn check_for_irq(psx: &mut Psx, index: RamIndex) {
     if psx.spu.irq_enabled() && index == psx.spu.irq_addr {
+        psx.spu.irq = true;
         panic!("Trigger SPU IRQ!");
     }
 }
