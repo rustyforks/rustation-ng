@@ -1108,7 +1108,10 @@ fn op_cop0(psx: &mut Psx, instruction: Instruction) {
 
 /// Move To Coprocessor 0
 fn op_mtc0(psx: &mut Psx, instruction: Instruction) {
-    let cpu_r = reg_dep(psx, instruction.t());
+    // Mednafen doesn't force the register sync if a load was in progress here. It doesn't make a
+    // lot of sense to me, maybe it's a mistake or maybe it compensates from something else. For
+    // the time being just do whatever mednafen does.
+    let cpu_r = instruction.t();
     let cop_r = instruction.d();
 
     let v = psx.cpu.reg(cpu_r);
