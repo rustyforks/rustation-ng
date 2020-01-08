@@ -12,6 +12,8 @@ pub struct Spu {
     irq_addr: u32,
     /// Main volume, left and right
     main_volume: [Volume; 2],
+    /// The 24 individual voices
+    voices: [Voice; 24],
     /// Most of the SPU's register behave like a R/W RAM, so to simplify the emulation we just
     /// store most registers in a big buffer
     regs: [u16; 320],
@@ -26,6 +28,32 @@ impl Spu {
             ram_index: 0,
             irq_addr: 0,
             main_volume: [Volume::new(), Volume::new()],
+            voices: [
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+                Voice::new(),
+            ],
             regs: [0; 320],
             ram: [0; SPU_RAM_SIZE],
         }
@@ -45,7 +73,14 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
 
     if index < 0xc0 {
         // Voice configuration
-        panic!("Unhandled SPU voice configuration {:x} @ {:x}", val, index);
+        let voice = &mut psx.spu.voices[index >> 3];
+
+        match index & 7 {
+            regmap::voice::VOLUME_LEFT => voice.volume[0].set_config(val),
+            regmap::voice::VOLUME_RIGHT => voice.volume[1].set_config(val),
+            regmap::voice::ADPCM_STEP_LENGTH => voice.step_length = val,
+            _ => panic!("Unhandled SPU voice configuration {:x} @ {:x}", val, index),
+        }
     } else {
         match index {
             regmap::MAIN_VOLUME_LEFT => psx.spu.main_volume[0].set_config(val),
@@ -146,6 +181,24 @@ impl Control {
     }
 }
 
+/// Structure representing the state of one of the PSX SPU's 24voices
+struct Voice {
+    /// Voice volume, left and riht
+    volume: [Volume; 2],
+    /// This value configures how fast the samples are played on this voice, which effectively
+    /// changes the frequency of the output audio.
+    step_length: u16,
+}
+
+impl Voice {
+    fn new() -> Voice {
+        Voice {
+            volume: [Volume::new(), Volume::new()],
+            step_length: 0,
+        }
+    }
+}
+
 struct Volume {
     config: u16,
 }
@@ -169,7 +222,7 @@ mod regmap {
 
         pub const VOLUME_LEFT: usize = 0x0;
         pub const VOLUME_RIGHT: usize = 0x1;
-        pub const ADPCM_SAMPLE_RATE: usize = 0x2;
+        pub const ADPCM_STEP_LENGTH: usize = 0x2;
         pub const ADPCM_START_INDEX: usize = 0x3;
         pub const ADPCM_ADSR_LO: usize = 0x4;
         pub const ADPCM_ADSR_HI: usize = 0x5;
