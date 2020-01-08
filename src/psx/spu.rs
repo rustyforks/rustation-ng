@@ -7,11 +7,16 @@ pub struct Spu {
     control: Control,
     /// RAM index, used for read/writes using CPU or DMA.
     ram_index: u32,
+    /// If the IRQ is enabled in the control register and the SPU memory is accessed at `irq_addr`
+    /// (read *or* write) the interrupt is triggered.
+    irq_addr: u32,
     /// Main volume, left and right
     main_volume: [Volume; 2],
     /// Most of the SPU's register behave like a R/W RAM, so to simplify the emulation we just
     /// store most registers in a big buffer
     regs: [u16; 320],
+    /// SPU internal RAM, 16bit wide
+    ram: [u16; SPU_RAM_SIZE],
 }
 
 impl Spu {
@@ -19,8 +24,10 @@ impl Spu {
         Spu {
             control: Control::new(),
             ram_index: 0,
+            irq_addr: 0,
             main_volume: [Volume::new(), Volume::new()],
             regs: [0; 320],
+            ram: [0; SPU_RAM_SIZE],
         }
     }
 }
@@ -56,6 +63,7 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::VOICE_REVERB_EN_LO => (),
             regmap::VOICE_REVERB_EN_HI => (),
             regmap::TRANSFER_START_INDEX => psx.spu.ram_index = u32::from(val) << 2,
+            regmap::TRANSFER_FIFO => transfer(psx, val),
             regmap::CONTROL => psx.spu.control.set(val),
             regmap::TRANSFER_CONTROL => {
                 if val != 4 {
@@ -83,6 +91,36 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
     let index = (off >> 1) as usize;
 
     T::from_u32(u32::from(psx.spu.regs[index]))
+}
+
+/// Write the SPU ram at the `ram_index` an increment it.
+fn transfer(psx: &mut Psx, val: u16) {
+    let i = psx.spu.ram_index;
+
+    ram_write(psx, i, val);
+
+    psx.spu.ram_index = (i + 1) & 0x3_ffff;
+
+    // `ram_write` already checks for interrupt before the write but mednafen immediately rechecks
+    // the incremented address after that. Sounds weird but let's go with it for now.
+    check_for_irq(psx, psx.spu.ram_index);
+}
+
+fn ram_write(psx: &mut Psx, index: u32, val: u16) {
+    check_for_irq(psx, index);
+
+    let index = index as usize;
+
+    debug_assert!(index < psx.spu.ram.len());
+
+    psx.spu.ram[index] = val;
+}
+
+/// Trigger an IRQ if it's enabled in the control register and `addr` is equal to the `irq_addr`
+fn check_for_irq(psx: &mut Psx, index: u32) {
+    if psx.spu.control.irq_enabled() && index == psx.spu.irq_addr {
+        panic!("Trigger SPU IRQ!");
+    }
 }
 
 /// SPU Control register
@@ -202,3 +240,6 @@ mod regmap {
     pub const REVERB_INPUT_VOLUME_LEFT: usize = 0xfe;
     pub const REVERB_INPUT_VOLUME_RIGHT: usize = 0xff;
 }
+
+/// SPU RAM size in multiple of 16bit words
+const SPU_RAM_SIZE: usize = 256 * 1024;
