@@ -4,6 +4,7 @@ pub mod cpu;
 pub mod debugger;
 mod dma;
 pub mod error;
+mod gpu;
 mod irq;
 mod spu;
 mod sync;
@@ -29,6 +30,7 @@ pub struct Psx {
     pub spu: spu::Spu,
     pub dma: dma::Dma,
     pub timers: timers::Timers,
+    pub gpu: gpu::Gpu,
     /// Memory control registers
     pub mem_control: [u32; 9],
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
@@ -51,6 +53,7 @@ impl Psx {
             spu: spu::Spu::new(),
             dma: dma::Dma::new(),
             timers: timers::Timers::new(),
+            gpu: gpu::Gpu::new(),
             mem_control: [0; 9],
             ram_size: 0,
             cache_control: 0,
@@ -145,6 +148,11 @@ impl Psx {
             return timers::load(self, offset);
         }
 
+        if let Some(offset) = map::GPU.contains(abs_addr) {
+            self.tick(1);
+            return gpu::load(self, offset);
+        }
+
         if let Some(off) = map::IRQ_CONTROL.contains(abs_addr) {
             self.tick(1);
 
@@ -222,6 +230,11 @@ impl Psx {
 
         if let Some(offset) = map::TIMERS.contains(abs_addr) {
             timers::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::GPU.contains(abs_addr) {
+            gpu::store(self, offset, val);
             return;
         }
 
@@ -502,6 +515,9 @@ pub mod map {
 
     /// Timer registers
     pub const TIMERS: Range = Range(0x1f80_1100, 0x30);
+
+    /// GPU Registers
+    pub const GPU: Range = Range(0x1f80_1810, 8);
 
     /// SPU registers
     pub const SPU: Range = Range(0x1f80_1c00, 640);
