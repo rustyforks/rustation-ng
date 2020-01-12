@@ -64,7 +64,11 @@ impl Psx {
 
     pub fn run(&mut self) {
         loop {
-            cpu::run_next_instruction(self);
+            while !sync::is_event_pending(self) {
+                cpu::run_next_instruction(self);
+            }
+
+            sync::handle_events(self);
         }
     }
 

@@ -1,7 +1,9 @@
 mod commands;
 
-use super::{AccessWidth, Addressable, CycleCount, Psx};
+use super::{sync, AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
+
+const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
 pub struct Gpu {
     /// Current value of the draw mode
@@ -71,6 +73,15 @@ impl Gpu {
 
         &commands::GP0_COMMANDS[opcode as usize]
     }
+}
+
+pub fn run(psx: &mut Psx) {
+    let elapsed = sync::resync(psx, GPUSYNC);
+
+    debug!("GPU refresh {}", elapsed);
+
+    // Placeholder code to avoid an infinite loop
+    sync::next_event(psx, GPUSYNC, 512);
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {

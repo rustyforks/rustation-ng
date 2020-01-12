@@ -102,10 +102,10 @@ impl Spu {
 }
 
 /// Run the SPU until it's caught up with the CPU
-fn run(psx: &mut Psx) {
+pub fn run(psx: &mut Psx) {
     let mut elapsed = sync::resync(psx, SPUSYNC);
 
-    while elapsed > SPU_FREQ_DIVIDER {
+    while elapsed >= SPU_FREQ_DIVIDER {
         elapsed -= SPU_FREQ_DIVIDER;
         run_cycle(psx);
     }
@@ -113,6 +113,9 @@ fn run(psx: &mut Psx) {
     // If we have some leftover cycles we can just return them to the synchronization module, we'll
     // get them back on the next call to resync
     sync::rewind(psx, SPUSYNC, elapsed);
+
+    // For now force a sync at the next cycle
+    sync::next_event(psx, SPUSYNC, SPU_FREQ_DIVIDER - elapsed);
 }
 
 /// Emulate one cycle of the SPU

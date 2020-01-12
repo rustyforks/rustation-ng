@@ -1,21 +1,34 @@
-use super::{CycleCount, Psx};
+use super::{gpu, spu, CycleCount, Psx};
 
 /// Tokens used to keep track of the progress of each module individually
 pub enum SyncToken {
+    Gpu,
     Spu,
 
     NumTokens,
 }
 
 pub struct Synchronizer {
+    /// Array containing, for each module, the date corresponding to the last sync.
     last_sync: [CycleCount; SyncToken::NumTokens as usize],
+    /// Array containing, for each module, the date at which we should force a resync.
+    next_event: [CycleCount; SyncToken::NumTokens as usize],
+    /// The date of the event in `next_event` that occurs first
+    first_event: CycleCount,
 }
 
 impl Synchronizer {
     pub fn new() -> Synchronizer {
         Synchronizer {
             last_sync: [0; SyncToken::NumTokens as usize],
+            next_event: [0; SyncToken::NumTokens as usize],
+            first_event: 0,
         }
+    }
+
+    pub fn refresh_first_event(&mut self) {
+        // The only way `min()` can return None is if the array is empty which is impossible here.
+        self.first_event = *self.next_event.iter().min().unwrap();
     }
 }
 
@@ -40,4 +53,29 @@ pub fn rewind(psx: &mut Psx, who: SyncToken, rewind: CycleCount) {
     debug_assert!(rewind >= 0);
 
     psx.sync.last_sync[who as usize] -= rewind;
+}
+
+/// Returns true if an event is pending and should be treated
+pub fn is_event_pending(psx: &Psx) -> bool {
+    psx.cycle_counter >= psx.sync.first_event
+}
+
+/// Run event handlers as necessary
+pub fn handle_events(psx: &mut Psx) {
+    while is_event_pending(psx) {
+        if psx.sync.first_event >= psx.sync.next_event[SyncToken::Gpu as usize] {
+            gpu::run(psx);
+        }
+
+        if psx.sync.first_event >= psx.sync.next_event[SyncToken::Spu as usize] {
+            spu::run(psx);
+        }
+    }
+}
+
+/// Set the next sync for `who` at `delay` cycles from now
+pub fn next_event(psx: &mut Psx, who: SyncToken, delay: CycleCount) {
+    psx.sync.next_event[who as usize] = psx.cycle_counter + delay;
+
+    psx.sync.refresh_first_event();
 }
