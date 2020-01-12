@@ -95,9 +95,39 @@ impl Gpu {
 
         s |= self.draw_mode.0 & 0x7ff;
 
+        // TODO: bit 11 and 12 (GP0[0xe6])
+
+        s |= ((!self.bottom_field) as u32) << 13;
+
+        // TODO: No$ says that bit 14 is `display_mode` bit 7, need to check. Mednafen doesn't set
+        // it.
+
         s |= (self.draw_mode.texture_disable() as u32) << 15;
 
+        s |= ((self.display_mode.0 >> 6) & 1) << 16;
+        s |= (self.display_mode.0 & 0x3f) << 17;
+
+        // TODO: bit 23 - Display Enable (GP1[0x03])
+        // TODO: bit 24 - IRQ1 (*not* VSync)
+        // TODO: bit 25 - DMA data request
+
+        s |= (self.is_idle() as u32) << 26;
+
+        // TODO: bit 27: Data available
+        // TODO: bit 28: DMA ready
+        s |= 1 << 28;
+        // TODO: bits [29:30]: DMA direction
+
+        let display_line_even_odd = (self.cur_line_vram_y & 1) as u32;
+        s |= display_line_even_odd << 31;
+
         s
+    }
+
+    /// Computes the value of the status register's "idle" bit
+    fn is_idle(&self) -> bool {
+        // TODO: add "InCmd" when we implement it
+        self.draw_time_budget >= 0 && self.command_fifo.is_empty()
     }
 
     /// Attempt to write `command` to the command FIFO, returns `true` if successful, `false` if
