@@ -42,6 +42,13 @@ pub struct Psx {
 
 impl Psx {
     pub fn new(bios_path: &Path) -> Result<Psx> {
+        // TODO should be based on the game being run.
+        let standard = if true {
+            gpu::VideoStandard::Pal
+        } else {
+            gpu::VideoStandard::Ntsc
+        };
+
         let psx = Psx {
             cycle_counter: 0,
             sync: sync::Synchronizer::new(),
@@ -53,7 +60,7 @@ impl Psx {
             spu: spu::Spu::new(),
             dma: dma::Dma::new(),
             timers: timers::Timers::new(),
-            gpu: gpu::Gpu::new(),
+            gpu: gpu::Gpu::new(standard),
             mem_control: [0; 9],
             ram_size: 0,
             cache_control: 0,

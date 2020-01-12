@@ -1,11 +1,13 @@
 mod commands;
 
+use super::cpu::CPU_FREQ_HZ;
 use super::{sync, AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
 pub struct Gpu {
+    video_standard: VideoStandard,
     /// Current value of the draw mode
     draw_mode: DrawMode,
     /// GP0 command FIFO
@@ -14,15 +16,20 @@ pub struct Gpu {
     /// can become negative (we don't start a new draw command if it's negative, but a command
     /// already started won't stop using cycles even if this goes below 0).
     draw_time_budget: CycleCount,
+    /// Since the ratio of GPU-to-CPU frequency isn't an integer we can end up with fractional
+    /// cycles in `run`. We store them here (this is a fixed point value with 16 fractional bits).
+    remaining_fractional_cycles: u16,
 }
 
 impl Gpu {
-    pub fn new() -> Gpu {
+    pub fn new(video_standard: VideoStandard) -> Gpu {
         Gpu {
+            video_standard,
             draw_mode: DrawMode::new(),
             command_fifo: CommandFifo::new(),
             // XXX for now let's start with a huge budget since we don't have proper timings yet
             draw_time_budget: 0x1000_0000,
+            remaining_fractional_cycles: 0,
         }
     }
 
@@ -73,12 +80,43 @@ impl Gpu {
 
         &commands::GP0_COMMANDS[opcode as usize]
     }
+
+    fn add_draw_time(&mut self, elapsed_cpu_cycles: CycleCount) {
+        // No idea what's the rationale behind this cycle twiddling, it's copied from mednafen
+        self.draw_time_budget += elapsed_cpu_cycles << 1;
+
+        if self.draw_time_budget > 256 {
+            self.draw_time_budget = 256;
+        }
+    }
+
+    /// Returns the number of GPU cycles elapsed while the CPU ran `cpu_cyles`. Any fractional
+    /// leftover cycle will be stored in `remaining_fractional_cycles`
+    fn tick(&mut self, cpu_cycles: CycleCount) -> CycleCount {
+        let clock_ratio = match self.video_standard {
+            VideoStandard::Ntsc => GPU_CYCLES_PER_CPU_CYCLES_NTSC,
+            VideoStandard::Pal => GPU_CYCLES_PER_CPU_CYCLES_PAL,
+        };
+
+        let mut gpu_cycles = u64::from(self.remaining_fractional_cycles);
+        gpu_cycles += (cpu_cycles as u64) * clock_ratio;
+
+        // FRACTIONAL_FACTOR should be a power of two so that the following modulo/division
+        // optimize as simple bitops
+        self.remaining_fractional_cycles = (gpu_cycles % FRACTIONAL_FACTOR) as u16;
+
+        (gpu_cycles / FRACTIONAL_FACTOR) as CycleCount
+    }
 }
 
 pub fn run(psx: &mut Psx) {
     let elapsed = sync::resync(psx, GPUSYNC);
 
-    debug!("GPU refresh {}", elapsed);
+    psx.gpu.add_draw_time(elapsed);
+
+    process_commands(psx);
+
+    let _elapsed_gpu_cycles = psx.gpu.tick(elapsed);
 
     // Placeholder code to avoid an infinite loop
     sync::next_event(psx, GPUSYNC, 512);
@@ -247,6 +285,32 @@ const PSX_COMMAND_FIFO_DEPTH: usize = 0x10;
 /// emulation inaccuracies, see `try_write_command` above for more infos. Needs to be a power of
 /// two for the FIFO code to work correctly.
 const COMMAND_FIFO_DEPTH: usize = 0x20;
+
+/// The are a few hardware differences between PAL and NTSC consoles, in particular the pixelclock
+/// runs slightly slower on PAL consoles.
+#[derive(Clone, Copy)]
+pub enum VideoStandard {
+    Ntsc,
+    Pal,
+}
+
+/// Scaling factor used in fixed point GPU cycle arithmetics
+const FRACTIONAL_FACTOR: u64 = 1 << 16;
+
+/// Ratio of GPU_FREQ_NTSC_HZ / CPU_FREQ_HZ multiplied by 0x1000 to use fixed point arithmetics
+/// instead of floating point
+const GPU_CYCLES_PER_CPU_CYCLES_NTSC: u64 =
+    (GPU_FREQ_NTSC_HZ * (FRACTIONAL_FACTOR as f64) / (CPU_FREQ_HZ as f64)) as u64;
+
+/// Ratio of GPU_FREQ_PAL_HZ / CPU_FREQ_HZ multiplied by 0x1000 to use fixed point arithmetics
+/// instead of floating point
+const GPU_CYCLES_PER_CPU_CYCLES_PAL: u64 =
+    (GPU_FREQ_PAL_HZ * (FRACTIONAL_FACTOR as f64) / (CPU_FREQ_HZ as f64)) as u64;
+
+/// GPU frequency for NTSC consoles (Japan + North America)
+const GPU_FREQ_NTSC_HZ: f64 = 53_693_181.818;
+/// GPU frequency for PAL consoles (Europe)
+const GPU_FREQ_PAL_HZ: f64 = 53_203_425.;
 
 #[test]
 fn test_command_fifo() {
