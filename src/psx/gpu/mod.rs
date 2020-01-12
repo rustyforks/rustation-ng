@@ -1,4 +1,5 @@
 mod commands;
+mod fifo;
 
 use super::cpu::CPU_FREQ_HZ;
 use super::{sync, AccessWidth, Addressable, CycleCount, Psx};
@@ -11,7 +12,7 @@ pub struct Gpu {
     /// Current value of the draw mode
     draw_mode: DrawMode,
     /// GP0 command FIFO
-    command_fifo: CommandFifo,
+    command_fifo: fifo::CommandFifo,
     /// Variable used to simulate the time taken by draw commands. Taken from mednafen. This value
     /// can become negative (we don't start a new draw command if it's negative, but a command
     /// already started won't stop using cycles even if this goes below 0).
@@ -26,7 +27,7 @@ impl Gpu {
         Gpu {
             video_standard,
             draw_mode: DrawMode::new(),
-            command_fifo: CommandFifo::new(),
+            command_fifo: fifo::CommandFifo::new(),
             // XXX for now let's start with a huge budget since we don't have proper timings yet
             draw_time_budget: 0x1000_0000,
             remaining_fractional_cycles: 0,
@@ -194,73 +195,6 @@ fn process_commands(psx: &mut Psx) {
     (command.handler)(psx);
 }
 
-/// GP0 command FIFO
-struct CommandFifo {
-    buffer: [u32; COMMAND_FIFO_DEPTH],
-    /// Read index in buffer. One bit wider that COMMAND_FIFO_DEPTH to differentiate FIFO full and
-    /// FIFO empty.
-    read_index: u8,
-    /// Write index in buffer. One bit wider that COMMAND_FIFO_DEPTH to differentiate FIFO full and
-    /// FIFO empty.
-    write_index: u8,
-}
-
-impl CommandFifo {
-    fn new() -> CommandFifo {
-        CommandFifo {
-            buffer: [0; COMMAND_FIFO_DEPTH],
-            read_index: 0,
-            write_index: 0,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.read_index == self.write_index
-    }
-
-    fn is_full(&self) -> bool {
-        self.read_index ^ self.write_index ^ COMMAND_FIFO_DEPTH as u8 == 0
-    }
-
-    fn len(&self) -> usize {
-        let l = self.write_index - self.read_index;
-
-        l as usize
-    }
-
-    /// Push an entry in the FIFO. Should *not* be called when the FIFO is full!
-    fn push(&mut self, val: u32) {
-        debug_assert!(!self.is_full());
-
-        let i = self.write_index % COMMAND_FIFO_DEPTH as u8;
-
-        self.write_index = self.write_index.wrapping_add(1);
-
-        self.buffer[i as usize] = val;
-    }
-
-    /// Pop an entry from the FIFO. Should *not* be called when the FIFO is empty!
-    fn pop(&mut self) -> u32 {
-        debug_assert!(!self.is_empty());
-
-        let i = self.read_index % COMMAND_FIFO_DEPTH as u8;
-
-        self.read_index = self.read_index.wrapping_add(1);
-
-        self.buffer[i as usize]
-    }
-
-    /// Returns the element at the top of the FIFO but doesn't pop it. Should *not* be called when
-    /// the FIFO is empty!
-    fn peek(&self) -> u32 {
-        debug_assert!(!self.is_empty());
-
-        let i = self.read_index % COMMAND_FIFO_DEPTH as u8;
-
-        self.buffer[i as usize]
-    }
-}
-
 /// Wrapper around the Draw Mode register value (set by GP0[0xe1])
 struct DrawMode(u32);
 
@@ -311,83 +245,3 @@ const GPU_CYCLES_PER_CPU_CYCLES_PAL: u64 =
 const GPU_FREQ_NTSC_HZ: f64 = 53_693_181.818;
 /// GPU frequency for PAL consoles (Europe)
 const GPU_FREQ_PAL_HZ: f64 = 53_203_425.;
-
-#[test]
-fn test_command_fifo() {
-    let mut fifo = CommandFifo::new();
-
-    // Empty FIFO
-    assert!(fifo.is_empty());
-    assert!(!fifo.is_full());
-    assert_eq!(fifo.len(), 0);
-
-    // Push element
-    fifo.push(1);
-    assert!(!fifo.is_empty());
-    assert!(!fifo.is_full());
-    assert_eq!(fifo.len(), 1);
-
-    // Peek
-    assert_eq!(fifo.peek(), 1);
-    assert!(!fifo.is_empty());
-    assert!(!fifo.is_full());
-    assert_eq!(fifo.len(), 1);
-
-    // Pop
-    assert_eq!(fifo.pop(), 1);
-    assert!(fifo.is_empty());
-    assert!(!fifo.is_full());
-    assert_eq!(fifo.len(), 0);
-
-    // Fill
-    for i in 0..COMMAND_FIFO_DEPTH {
-        assert!(!fifo.is_full());
-        assert!(fifo.len() == i);
-        fifo.push(i as u32);
-    }
-
-    assert!(fifo.is_full());
-    assert!(!fifo.is_empty());
-    assert_eq!(fifo.len(), COMMAND_FIFO_DEPTH);
-
-    // Empty
-    for i in 0..COMMAND_FIFO_DEPTH {
-        assert!(!fifo.is_empty());
-        assert_eq!(fifo.pop(), i as u32);
-    }
-    assert!(fifo.is_empty());
-    assert!(!fifo.is_full());
-    assert_eq!(fifo.len(), 0);
-
-    // Fill interleaved
-    for i in 0..(COMMAND_FIFO_DEPTH - 1) {
-        assert!(!fifo.is_full());
-
-        let v = i as u32;
-
-        fifo.push(v);
-        fifo.push(v);
-        fifo.pop();
-    }
-
-    assert!(!fifo.is_empty());
-    assert!(!fifo.is_full());
-    assert_eq!(fifo.len(), COMMAND_FIFO_DEPTH - 1);
-
-    fifo.push(0xc0_ffee);
-    assert!(fifo.is_full());
-    assert!(!fifo.is_empty());
-    assert_eq!(fifo.len(), COMMAND_FIFO_DEPTH);
-
-    // Empty interleaved
-    for i in 0..COMMAND_FIFO_DEPTH {
-        assert!(!fifo.is_empty());
-        fifo.pop();
-        fifo.push(i as u32);
-        fifo.pop();
-    }
-
-    assert!(fifo.is_empty());
-    assert!(!fifo.is_full());
-    assert_eq!(fifo.len(), 0);
-}
