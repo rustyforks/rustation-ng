@@ -21,6 +21,8 @@ pub struct Psx {
     /// Counter of the number of CPU cycles elapsed since an arbitrary point in time. Used as the
     /// reference to synchronize the other modules
     pub cycle_counter: CycleCount,
+    /// Set to true when the GPU is done drawing one frame (or one field in interlaced mode)
+    pub frame_done: bool,
     pub sync: sync::Synchronizer,
     pub cpu: cpu::Cpu,
     pub cop0: cop0::Cop0,
@@ -51,6 +53,7 @@ impl Psx {
 
         let psx = Psx {
             cycle_counter: 0,
+            frame_done: false,
             sync: sync::Synchronizer::new(),
             cpu: cpu::Cpu::new(),
             cop0: cop0::Cop0::new(),

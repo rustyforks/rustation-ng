@@ -9,6 +9,14 @@ const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
 pub struct Gpu {
     video_standard: VideoStandard,
+    /// Current value of the display mode
+    display_mode: DisplayMode,
+    /// Number of the first line displayed on the screen
+    display_line_start: u16,
+    /// Number of the first line *not* displayed on the screen
+    display_line_end: u16,
+    /// True when we're between [display_line_start; display_line_end[
+    display_active: bool,
     /// Current value of the draw mode
     draw_mode: DrawMode,
     /// GP0 command FIFO
@@ -20,18 +28,60 @@ pub struct Gpu {
     /// Since the ratio of GPU-to-CPU frequency isn't an integer we can end up with fractional
     /// cycles in `run`. We store them here (this is a fixed point value with 16 fractional bits).
     remaining_fractional_cycles: u16,
+    /// True if we're in the current line's HSYNC, false otherwise
+    in_hsync: bool,
+    /// If we're in the current line's HSYNC then this is the time to the end of line. Otherwise
+    /// it's the time until we reach the HSYNC.
+    cycles_to_line_event: CycleCount,
+    /// Number of the line currently being drawn (from 0 to `lines_per_field`)
+    cur_line: u16,
+    /// Offset of the currently drawn line in the VRAM (relative to `display_vram_y_start`)
+    cur_line_fb_offset: u16,
+    /// This variable toggles at each new line.
+    line_phase: bool,
+    /// When interlaced this variable is true when we switch to the bottom field. When progressive
+    /// this variable is always false.
+    bottom_field: bool,
+    /// When interlaced this variable is true when we send the bottom field to the TV
+    read_bottom_field: bool,
+    /// Total number of lines (including blanking) per field. If the display is progressive there's
+    /// only one field per frame
+    lines_per_field: u16,
+    /// Set to `false` on the beginning of a new line and set to `true` when the line has been
+    /// drawn
+    frame_drawn: bool,
 }
 
 impl Gpu {
     pub fn new(video_standard: VideoStandard) -> Gpu {
-        Gpu {
+        let mut gpu = Gpu {
             video_standard,
             draw_mode: DrawMode::new(),
+            display_mode: DisplayMode::new(),
+            display_line_start: 0x10,
+            display_line_end: 0x100,
+            display_active: false,
             command_fifo: fifo::CommandFifo::new(),
             // XXX for now let's start with a huge budget since we don't have proper timings yet
             draw_time_budget: 0x1000_0000,
             remaining_fractional_cycles: 0,
-        }
+            // This is what Mednafen uses, I have no idea where that comes from. Surely having
+            // extremely precise timings so early on doesn't matter? After all the BIOS will resync
+            // on VSync anyway.
+            cycles_to_line_event: 3412 - 200,
+            in_hsync: false,
+            cur_line: 0,
+            cur_line_fb_offset: 0,
+            line_phase: true,
+            bottom_field: false,
+            read_bottom_field: false,
+            lines_per_field: 0,
+            frame_drawn: false,
+        };
+
+        gpu.refresh_lines_per_field();
+
+        gpu
     }
 
     fn status(&self) -> u32 {
@@ -108,6 +158,50 @@ impl Gpu {
 
         (gpu_cycles / FRACTIONAL_FACTOR) as CycleCount
     }
+
+    /// Returns the total length of a line (including horizontal blanking)
+    fn line_length(&self) -> u16 {
+        match self.display_mode.standard() {
+            // I'm not really sure what justifies this `line_phase` business but that's what
+            // mednafen does. Maybe the real value is close to 3412.5 and therefore we have close
+            // to one full cycle added every other cycle?
+            VideoStandard::Ntsc => 3412 + self.line_phase as u16,
+            VideoStandard::Pal => 3405,
+        }
+    }
+
+    /// Refresh the value of `lines_per_field` based on the display mode
+    fn refresh_lines_per_field(&mut self) {
+        self.lines_per_field = if self.display_mode.is_interlaced() {
+            let l = match self.display_mode.standard() {
+                VideoStandard::Ntsc => 263,
+                VideoStandard::Pal => 313,
+            };
+
+            l - self.bottom_field as u16
+        } else {
+            match self.display_mode.standard() {
+                VideoStandard::Ntsc => 263,
+                VideoStandard::Pal => 314,
+            }
+        };
+    }
+
+    /// Called when we switch to a new line
+    fn new_line(&mut self) {
+        self.line_phase = !self.line_phase;
+
+        self.cur_line = (self.cur_line + 1) % self.lines_per_field;
+    }
+
+    /// Called when we're about to finish the current field
+    fn new_field(&mut self) {
+        self.bottom_field = if self.display_mode.is_interlaced() {
+            !self.bottom_field
+        } else {
+            false
+        };
+    }
 }
 
 pub fn run(psx: &mut Psx) {
@@ -117,10 +211,121 @@ pub fn run(psx: &mut Psx) {
 
     process_commands(psx);
 
-    let _elapsed_gpu_cycles = psx.gpu.tick(elapsed);
+    let mut elapsed_gpu_cycles = psx.gpu.tick(elapsed);
+
+    while elapsed_gpu_cycles >= psx.gpu.cycles_to_line_event {
+        elapsed_gpu_cycles -= psx.gpu.cycles_to_line_event;
+
+        // We either reached hsync or left it
+        psx.gpu.in_hsync = !psx.gpu.in_hsync;
+
+        if psx.gpu.in_hsync {
+            handle_hsync(psx);
+        } else {
+            // We reached the EOL
+            handle_eol(psx);
+        }
+    }
+
+    psx.gpu.cycles_to_line_event -= elapsed_gpu_cycles;
 
     // Placeholder code to avoid an infinite loop
     sync::next_event(psx, GPUSYNC, 512);
+}
+
+/// Called when we reach the hsync
+fn handle_hsync(psx: &mut Psx) {
+    // Next event when we reach the EOL
+    psx.gpu.cycles_to_line_event = HSYNC_LEN_CYCLES;
+}
+
+/// Called when we reach the end of line (just after the HSYNC)
+fn handle_eol(psx: &mut Psx) {
+    psx.gpu.new_line();
+
+    // Next line event will be when we reach the hsync
+    psx.gpu.cycles_to_line_event = psx.gpu.line_length() as CycleCount - HSYNC_LEN_CYCLES;
+
+    let cur_line = psx.gpu.cur_line;
+
+    // Taken from mednafen but I'm not sure if that's necessary or even useful. Normally we'll draw
+    // the frame when we reach `display_line_end` below. If we miss that we have the code running
+    // on the last field line below that'll always catch it. So what's the point of checking once
+    // again here? Especially since at this point the line number seems fairly arbitrary. I guess
+    // it can trigger early if `display_line_end` is set to some silly value but is it really worth
+    // a special case?
+    if !psx.gpu.frame_drawn {
+        let draw_line = match psx.gpu.display_mode.standard() {
+            VideoStandard::Ntsc => 256,
+            VideoStandard::Pal => 308,
+        };
+
+        if cur_line == draw_line {
+            // We reached the end of active video, we can tell the frontend to render the frame
+            draw_frame(psx);
+        }
+    }
+
+    let is_first_line = cur_line == 0;
+    let is_last_line = cur_line == psx.gpu.lines_per_field - 1;
+
+    if is_last_line {
+        if !psx.gpu.frame_drawn {
+            // Normally we should've drawn the frame by now but we might have missed it if the
+            // video standard changed mid-frame. In this case we can just draw it now in order not
+            // to skip the frame entirely and it'll return to normal next frame
+            draw_frame(psx);
+        }
+
+        // I'm not sure why Mednafen changes the field on the last line of the field instead of the
+        // first line of the next one.
+        psx.gpu.new_field();
+    } else if is_first_line {
+        debug_assert!(!psx.gpu.frame_drawn, "Last frame wasn't drawn!");
+
+        psx.gpu.frame_drawn = false;
+        psx.gpu.refresh_lines_per_field();
+    }
+
+    if cur_line == psx.gpu.display_line_end && psx.gpu.display_active {
+        // We're leaving the active display area.
+        psx.gpu.display_active = false;
+        psx.gpu.cur_line_fb_offset = 0;
+
+        if psx.gpu.display_mode.is_interlaced() && psx.gpu.display_mode.full_vres() {
+            // Prepare for the next frame, if we're currently sending the bottom field it means
+            // that we're going to switch to the top
+            psx.gpu.read_bottom_field = !psx.gpu.bottom_field;
+        }
+
+        if !psx.gpu.frame_drawn {
+            // More magic from mednafen. I assume that the logic is to try to refresh the display
+            // as early as possible to minimize latency, although I'm not really sure I understand
+            // the logic behind putting a minimum line value here. The comment in mednafen mentions
+            // Descent(NTSC) which reaches the end of frame at line 236 and Mikagura Shoujo
+            // Tanteidan which sets it to 192 during the intro FMV.
+            let line_min = match psx.gpu.display_mode.standard() {
+                VideoStandard::Ntsc => 232,
+                VideoStandard::Pal => 260,
+            };
+
+            if cur_line >= line_min {
+                draw_frame(psx);
+            }
+        }
+    }
+
+    if cur_line == psx.gpu.display_line_start && !psx.gpu.display_active {
+        // We're entering the active display area
+        psx.gpu.display_active = true;
+    }
+
+    // XXX assert VBLANK IRQ with the value of `display_active`
+}
+
+/// Called when a frame is done rendering and should be displayed
+fn draw_frame(psx: &mut Psx) {
+    psx.gpu.frame_drawn = true;
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
@@ -212,6 +417,31 @@ impl DrawMode {
     }
 }
 
+/// Wrapper around the Display Mode register value (set by GP1[0x08])
+struct DisplayMode(u32);
+
+impl DisplayMode {
+    fn new() -> DisplayMode {
+        DisplayMode(0)
+    }
+
+    fn standard(&self) -> VideoStandard {
+        if self.0 & (1 << 3) != 0 {
+            VideoStandard::Pal
+        } else {
+            VideoStandard::Ntsc
+        }
+    }
+
+    fn is_interlaced(&self) -> bool {
+        self.0 & (1 << 5) != 0
+    }
+
+    fn full_vres(&self) -> bool {
+        self.0 & (1 << 2) != 0
+    }
+}
+
 /// Real PSX command FIFO depth
 const PSX_COMMAND_FIFO_DEPTH: usize = 0x10;
 
@@ -227,6 +457,9 @@ pub enum VideoStandard {
     Ntsc,
     Pal,
 }
+
+/// Duration of the HSYNC in GPU cycles
+const HSYNC_LEN_CYCLES: CycleCount = 200;
 
 /// Scaling factor used in fixed point GPU cycle arithmetics
 const FRACTIONAL_FACTOR: u64 = 1 << 16;
