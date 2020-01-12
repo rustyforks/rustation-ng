@@ -4,6 +4,8 @@ use super::{AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
 
 pub struct Gpu {
+    /// Current value of the draw mode
+    draw_mode: DrawMode,
     /// GP0 command FIFO
     command_fifo: CommandFifo,
     /// Variable used to simulate the time taken by draw commands. Taken from mednafen. This value
@@ -15,6 +17,7 @@ pub struct Gpu {
 impl Gpu {
     pub fn new() -> Gpu {
         Gpu {
+            draw_mode: DrawMode::new(),
             command_fifo: CommandFifo::new(),
             // XXX for now let's start with a huge budget since we don't have proper timings yet
             draw_time_budget: 0x1000_0000,
@@ -22,7 +25,13 @@ impl Gpu {
     }
 
     fn status(&self) -> u32 {
-        0
+        let mut s = 0;
+
+        s |= self.draw_mode.0 & 0x7ff;
+
+        s |= (self.draw_mode.texture_disable() as u32) << 15;
+
+        s
     }
 
     /// Attempt to write `command` to the command FIFO, returns `true` if successful, `false` if
@@ -200,6 +209,23 @@ impl CommandFifo {
         let i = self.read_index % COMMAND_FIFO_DEPTH as u8;
 
         self.buffer[i as usize]
+    }
+}
+
+/// Wrapper around the Draw Mode register value (set by GP0[0xe1])
+struct DrawMode(u32);
+
+impl DrawMode {
+    fn new() -> DrawMode {
+        DrawMode(0)
+    }
+
+    fn set(&mut self, mode: u32) {
+        self.0 = mode
+    }
+
+    fn texture_disable(&self) -> bool {
+        self.0 & (1 << 11) != 0
     }
 }
 

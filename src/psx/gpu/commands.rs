@@ -27,6 +27,12 @@ impl Command {
     }
 }
 
+fn cmd_draw_mode(psx: &mut Psx) {
+    let mode = psx.gpu.command_fifo.pop();
+
+    psx.gpu.draw_mode.set(mode);
+}
+
 /// Placeholder function
 fn cmd_unimplemented(psx: &mut Psx) {
     unimplemented!("GPU command {:08x}", psx.gpu.command_fifo.pop());
@@ -1400,9 +1406,9 @@ pub const GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_draw_mode,
         len: 1,
-        fifo_len: 1,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
