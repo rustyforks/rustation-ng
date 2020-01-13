@@ -107,6 +107,11 @@ impl Timer {
         }
     }
 
+    fn counter(&self) -> u16 {
+        debug_assert!(self.counter <= 0xffff);
+        self.counter as u16
+    }
+
     fn set_counter(&mut self, val: u16) {
         self.counter = u32::from(val);
         self.irq_inhibit = false;
@@ -117,6 +122,18 @@ impl Timer {
         // Writing to the mode register resets the counter to 0 and re-enables the IRQ if
         // necessary.
         self.set_counter(0);
+    }
+
+    fn read_mode(&mut self) -> u16 {
+        let mode = self.mode.0;
+
+        // Some bits are read-clear
+        self.mode.clear_overflow_reached();
+        if !self.target_match() {
+            self.mode.clear_target_reached();
+        }
+
+        mode
     }
 
     fn set_target(&mut self, val: u16) {
@@ -189,7 +206,7 @@ impl Timer {
             // overflow IRQ is disabled we could micro-optimize this to only force a refresh
             // when the counter will have wrapped all the way back to the target but it
             // probably isn't worth it.
-            0x10000
+            0x1_0000
         } else {
             // We haven't reached the target yet
             if self.mode.irq_on_target() || self.mode.reset_counter_on_target() {
@@ -199,7 +216,7 @@ impl Timer {
             } else {
                 // We don't have anything special to do when we pass the target, we can aim
                 // directly for the overflow
-                0x10000
+                0x1_0000
             }
         };
 
@@ -230,9 +247,20 @@ fn predict_next_sync(psx: &mut Psx) {
 }
 
 pub fn load<T: Addressable>(psx: &mut Psx, offset: u32) -> T {
-    let _ = psx;
-    let _ = offset;
-    unimplemented!("Timer load @ {:x}", offset)
+    run(psx);
+
+    let which = (offset >> 4) as usize;
+
+    let timer = &mut psx.timers[which];
+
+    let v = match offset & 0xf {
+        0x0 => timer.counter(),
+        0x4 => timer.read_mode(),
+        0x8 => timer.target,
+        n => unimplemented!("timer read @ {:x}", n),
+    };
+
+    T::from_u32(u32::from(v))
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
@@ -280,6 +308,14 @@ impl Mode {
 
     fn set_target_reached(&mut self) {
         self.0 |= 1 << 11;
+    }
+
+    fn clear_target_reached(&mut self) {
+        self.0 &= !(1 << 11);
+    }
+
+    fn clear_overflow_reached(&mut self) {
+        self.0 &= !(1 << 12);
     }
 
     /// Returns true if this counter should trigger an interrupt when the target is reached
