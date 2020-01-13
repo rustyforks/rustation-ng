@@ -1,8 +1,9 @@
-use super::{gpu, spu, CycleCount, Psx};
+use super::{gpu, spu, timers, CycleCount, Psx};
 
 /// Tokens used to keep track of the progress of each module individually
 pub enum SyncToken {
     Gpu,
+    Timers,
     Spu,
 
     NumTokens,
@@ -65,6 +66,10 @@ pub fn handle_events(psx: &mut Psx) {
     while is_event_pending(psx) {
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::Gpu as usize] {
             gpu::run(psx);
+        }
+
+        if psx.sync.first_event >= psx.sync.next_event[SyncToken::Timers as usize] {
+            timers::run(psx);
         }
 
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::Spu as usize] {
