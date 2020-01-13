@@ -118,7 +118,7 @@ impl Gpu {
         s |= 1 << 28;
         // TODO: bits [29:30]: DMA direction
 
-        let display_line_even_odd = (self.cur_line_vram_y & 1) as u32;
+        let display_line_even_odd = u32::from(self.cur_line_vram_y & 1);
         s |= display_line_even_odd << 31;
 
         s
@@ -269,7 +269,7 @@ pub fn run(psx: &mut Psx) {
     // we program sync events based on the CPU clock, so we need to do the conversion
     let mut delta = psx.gpu.cycles_to_line_event as u64 * FRACTIONAL_FACTOR;
     // Don't forget the fractional cycle we have leftover
-    delta -= psx.gpu.remaining_fractional_cycles as u64;
+    delta -= u64::from(psx.gpu.remaining_fractional_cycles);
 
     // Finally divide by the frequency factor, rounding *up* (we want to be called when the event
     // has occurred, not just before). Remember that in order to divide `x` by `y` rounding up you
@@ -304,8 +304,7 @@ fn handle_eol(psx: &mut Psx) {
     psx.gpu.new_line();
 
     // Next line event will be when we reach the hsync
-    psx.gpu.cycles_to_line_event = psx.gpu.line_length() as CycleCount - HSYNC_LEN_CYCLES;
-
+    psx.gpu.cycles_to_line_event = CycleCount::from(psx.gpu.line_length()) - HSYNC_LEN_CYCLES;
     let cur_line = psx.gpu.cur_line;
 
     // Taken from mednafen but I'm not sure if that's necessary or even useful. Normally we'll draw
