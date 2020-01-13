@@ -1,6 +1,6 @@
 //! IRQ handling
 
-use super::Psx;
+use super::{cpu, Psx};
 
 /// The PlayStation supports 10 interrupts
 #[derive(Clone, Copy, Debug)]
@@ -36,17 +36,23 @@ impl InterruptState {
     }
 }
 
-pub fn status(psx: &mut Psx) -> u16 {
+pub fn status(psx: &Psx) -> u16 {
     psx.irq.status
 }
 
-pub fn mask(psx: &mut Psx) -> u16 {
+pub fn mask(psx: &Psx) -> u16 {
     psx.irq.mask
+}
+
+pub fn trigger(psx: &mut Psx, which: Interrupt) {
+    psx.irq.status |= 1 << which as usize;
+
+    cpu::irq_changed(psx);
 }
 
 pub fn set_mask(psx: &mut Psx, mask: u16) {
     // Temporary hack: trigger an error if a non-implemented interrupt is requested
-    let supported: [Interrupt; 0] = [];
+    let supported: [Interrupt; 1] = [Interrupt::VBlank];
 
     let rem = supported
         .iter()
@@ -57,9 +63,18 @@ pub fn set_mask(psx: &mut Psx, mask: u16) {
     }
 
     psx.irq.mask = mask;
+
+    cpu::irq_changed(psx);
 }
 
 /// Acknowledge interrupts by writing 0 to the corresponding bit
 pub fn ack(psx: &mut Psx, ack: u16) {
     psx.irq.status &= ack;
+
+    cpu::irq_changed(psx);
+}
+
+/// Returns true if we currently have at least one active and unmasked interrupt
+pub fn active(psx: &Psx) -> bool {
+    status(psx) & mask(psx) != 0
 }

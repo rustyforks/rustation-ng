@@ -204,6 +204,13 @@ impl fmt::Debug for Cpu {
     }
 }
 
+/// Called whenever the IRQ state has potentially changed
+pub fn irq_changed(psx: &mut Psx) {
+    if cop0::irq_pending(psx) {
+        unimplemented!("Interrupt me!");
+    }
+}
+
 pub fn run_next_instruction(psx: &mut Psx) {
     // Explanation of the various *pc variables:
     //

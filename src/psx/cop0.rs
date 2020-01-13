@@ -9,7 +9,7 @@
 //! the PSX.
 
 use super::cpu::RegisterIndex;
-use super::Psx;
+use super::{irq, Psx};
 
 /// Coprocessor 0: System control
 pub struct Cop0 {
@@ -40,6 +40,11 @@ impl Cop0 {
         self.sr & 0x10000 != 0
     }
 
+    /// Returns true if the CPU can process interrupts
+    pub fn irq_enabled(&self) -> bool {
+        self.sr & 1 != 0
+    }
+
     /// Return the value of the BAD register
     pub fn bad(&self) -> u32 {
         // XXX we don't emulate the "BAD" cop0 register yet. It's almost useless in the PSX anyway
@@ -60,6 +65,8 @@ pub fn mtc0(psx: &mut Psx, cop_r: RegisterIndex, v: u32) {
         12 => psx.cop0.sr = v,
         // Cause register
         13 => {
+            // TODO: be careful to correctly handle the two software interrupt bits [8:9]. Should
+            // probably call `cpu::irq_changed`.
             if v != 0 {
                 panic!("Unhandled write to CAUSE register: {:08x}", v)
             }
@@ -104,13 +111,11 @@ pub fn mfc0(psx: &mut Psx, cop_r: RegisterIndex) -> u32 {
 /// Called when the CPU is about to enter an exception handler. Returns the address of the handler
 /// that should be used.
 pub fn enter_exception(psx: &mut Psx, cause: Exception) -> u32 {
-    // Shift bits [5:0] of `SR` two places to the left. Those bits
-    // are three pairs of Interrupt Enable/User Mode bits behaving
-    // like a stack 3 entries deep. Entering an exception pushes a
-    // pair of zeroes by left shifting the stack which disables
-    // interrupts and puts the CPU in kernel mode. The original
-    // third entry is discarded (it's up to the kernel to handle
-    // more than two recursive exception levels).
+    // Shift bits [5:0] of `SR` two places to the left. Those bits are three pairs of Interrupt
+    // Enable/User Mode bits behaving like a stack 3 entries deep. Entering an exception pushes a
+    // pair of zeroes by left shifting the stack which disables interrupts and puts the CPU in
+    // kernel mode. The original third entry is discarded (it's up to the kernel to handle more
+    // than two recursive exception levels).
     let cop0 = &mut psx.cop0;
     let pc = psx.cpu.current_pc();
 
@@ -119,14 +124,13 @@ pub fn enter_exception(psx: &mut Psx, cause: Exception) -> u32 {
     cop0.sr &= !0x3f;
     cop0.sr |= (mode << 2) & 0x3f;
 
-    // Update `CAUSE` register with the exception code (bits
-    // [6:2])
+    // Update `CAUSE` register with the exception code (bits [6:2])
     cop0.cause &= !0x7c;
     cop0.cause |= (cause as u32) << 2;
 
     if psx.cpu.in_delay_slot() {
-        // When an exception occurs in a delay slot `EPC` points
-        // to the branch instruction and bit 31 of `CAUSE` is set.
+        // When an exception occurs in a delay slot `EPC` points to the branch instruction and bit
+        // 31 of `CAUSE` is set.
         cop0.epc = pc.wrapping_sub(4);
         cop0.cause |= 1 << 31;
     } else {
@@ -134,8 +138,7 @@ pub fn enter_exception(psx: &mut Psx, cause: Exception) -> u32 {
         cop0.cause &= !(1 << 31);
     }
 
-    // The address of the exception handler address depends on the
-    // value of the BEV bit in SR
+    // The address of the exception handler address depends on the value of the BEV bit in SR
     if (cop0.sr & (1 << 22)) != 0 {
         0xbfc0_0180
     } else {
@@ -156,8 +159,22 @@ pub fn return_from_exception(psx: &mut Psx) {
     cop0.sr |= mode >> 2;
 }
 
-pub fn cause(psx: &mut Psx) -> u32 {
-    psx.cop0.cause
+pub fn cause(psx: &Psx) -> u32 {
+    let mut c = psx.cop0.cause;
+
+    // Set the IRQ bit if necessary
+    c |= (irq::active(psx) as u32) << 10;
+
+    c
+}
+
+/// Returns true if the CPU should be interrupted
+pub fn irq_pending(psx: &Psx) -> bool {
+    // Status Register bits [8:15] line up with the same bits in cause to mask any pending
+    // interrupts
+    let active_interrupts = psx.cop0.sr & cause(psx) & 0xff_ff00;
+
+    psx.cop0.irq_enabled() && active_interrupts != 0
 }
 
 /// Exception types (as stored in the `CAUSE` register)

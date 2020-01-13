@@ -2,7 +2,7 @@ mod commands;
 mod fifo;
 
 use super::cpu::CPU_FREQ_HZ;
-use super::{sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{irq, sync, AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
@@ -352,6 +352,8 @@ fn handle_eol(psx: &mut Psx) {
         psx.gpu.display_active = false;
         psx.gpu.cur_line_vram_offset = 0;
 
+        irq::trigger(psx, irq::Interrupt::VBlank);
+
         if psx.gpu.display_mode.is_true_interlaced() {
             // Prepare for the next frame, if we're currently sending the bottom field it means
             // that we're going to switch to the top
@@ -379,8 +381,6 @@ fn handle_eol(psx: &mut Psx) {
         // We're entering the active display area
         psx.gpu.display_active = true;
     }
-
-    // XXX assert VBLANK IRQ with the value of `display_active`
 
     // Figure out which VRAM line is being displayed
     psx.gpu.cur_line_vram_y = psx.gpu.display_vram_y_start;
