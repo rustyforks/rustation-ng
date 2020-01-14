@@ -34,7 +34,8 @@ fn main() -> Result<()> {
         psx::debugger::trigger_break(&mut psx);
     }
 
-    psx.run();
-
-    Ok(())
+    loop {
+        psx.run_frame();
+        info!("Frame done!");
+    }
 }

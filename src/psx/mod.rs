@@ -1,3 +1,5 @@
+//! Top level for the emulation code. Contains the state of the emulated console.
+
 mod bios;
 pub mod cop0;
 pub mod cpu;
@@ -14,32 +16,33 @@ use std::path::Path;
 
 use self::error::Result;
 
+/// Type alias used to represent a number of clock cycles
 pub type CycleCount = i32;
 
 /// Current state of the emulator
 pub struct Psx {
     /// Counter of the number of CPU cycles elapsed since an arbitrary point in time. Used as the
     /// reference to synchronize the other modules
-    pub cycle_counter: CycleCount,
+    cycle_counter: CycleCount,
     /// Set to true when the GPU is done drawing one frame (or one field in interlaced mode)
-    pub frame_done: bool,
-    pub sync: sync::Synchronizer,
+    frame_done: bool,
+    sync: sync::Synchronizer,
     pub cpu: cpu::Cpu,
     pub cop0: cop0::Cop0,
-    pub irq: irq::InterruptState,
-    pub ram: Ram,
-    pub bios: bios::Bios,
-    pub spu: spu::Spu,
-    pub dma: dma::Dma,
-    pub timers: timers::Timers,
-    pub gpu: gpu::Gpu,
+    irq: irq::InterruptState,
+    ram: Ram,
+    bios: bios::Bios,
+    spu: spu::Spu,
+    dma: dma::Dma,
+    timers: timers::Timers,
+    gpu: gpu::Gpu,
     /// Memory control registers
-    pub mem_control: [u32; 9],
+    mem_control: [u32; 9],
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
     /// controller.
-    pub ram_size: u32,
+    ram_size: u32,
     /// Contents of the CACHE_CONTROL register
-    pub cache_control: u32,
+    cache_control: u32,
 }
 
 impl Psx {
@@ -72,8 +75,10 @@ impl Psx {
         Ok(psx)
     }
 
-    pub fn run(&mut self) {
-        loop {
+    /// Run the emulator for a single frame
+    pub fn run_frame(&mut self) {
+        self.frame_done = false;
+        while !self.frame_done {
             while !sync::is_event_pending(self) {
                 cpu::run_next_instruction(self);
             }
@@ -83,7 +88,7 @@ impl Psx {
     }
 
     /// Advance the CPU cycle counter by the given number of ticks
-    pub fn tick(&mut self, cycles: CycleCount) {
+    fn tick(&mut self, cycles: CycleCount) {
         self.cycle_counter += cycles;
     }
 
@@ -109,7 +114,7 @@ impl Psx {
 
     /// Specialized version of load made specifically to fetch CPU instructions. This is supposed
     /// to be a more streamlined version of `load` for performance reasons.
-    pub fn load_instruction(&mut self, address: u32) -> cpu::Instruction {
+    fn load_instruction(&mut self, address: u32) -> cpu::Instruction {
         let abs_addr = map::mask_region(address);
 
         let i = {
@@ -128,7 +133,7 @@ impl Psx {
     /// Decode `address` and perform the load from the target module. `cc` contains the value of
     /// the CPU cycle counter when the transfer begins and should be updated to contain the value
     /// of the cycle counter when it'll complete.
-    pub fn load<T: Addressable>(&mut self, address: u32) -> T {
+    fn load<T: Addressable>(&mut self, address: u32) -> T {
         let abs_addr = map::mask_region(address);
 
         if let Some(offset) = map::RAM.contains(abs_addr) {
@@ -224,7 +229,7 @@ impl Psx {
     }
 
     /// Decode `address` and perform the store to the target module
-    pub fn store<T: Addressable>(&mut self, address: u32, val: T) {
+    fn store<T: Addressable>(&mut self, address: u32, val: T) {
         let abs_addr = map::mask_region(address);
 
         if let Some(offset) = map::RAM.contains(abs_addr) {
@@ -334,12 +339,12 @@ impl Psx {
     }
 
     /// Returns true if the instruction cache is enabled in the CACHE_CONTROL register
-    pub fn icache_enabled(&self) -> bool {
+    fn icache_enabled(&self) -> bool {
         self.cache_control & 0x800 != 0
     }
 
     /// Returns true if the cache is in "tag test mode"
-    pub fn tag_test_mode(&self) -> bool {
+    fn tag_test_mode(&self) -> bool {
         self.cache_control & 4 != 0
     }
 }
@@ -418,7 +423,7 @@ impl Addressable for u32 {
 }
 
 /// RAM
-pub struct Ram {
+struct Ram {
     data: Box<[u8; RAM_SIZE]>,
 }
 
@@ -465,6 +470,8 @@ impl Ram {
 const RAM_SIZE: usize = 2 * 1024 * 1024;
 
 pub mod map {
+    //! PlayStation memory map
+
     /// Mask array used to strip the region bits of the address. The mask is selected using the 3
     /// MSBs of the address so each entry effectively matches 512kB of the address space. KSEG2 is
     /// not touched since it doesn't share anything with the other regions.
