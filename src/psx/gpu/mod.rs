@@ -2,7 +2,7 @@ mod commands;
 mod fifo;
 
 use super::cpu::CPU_FREQ_HZ;
-use super::{irq, sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{irq, sync, timers, AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
@@ -249,14 +249,20 @@ pub fn run(psx: &mut Psx) {
 
     let mut elapsed_gpu_cycles = psx.gpu.tick(elapsed);
 
+    timers::run_gpu_clocks(psx, elapsed_gpu_cycles as u32);
+
     while elapsed_gpu_cycles >= psx.gpu.cycles_to_line_event {
         elapsed_gpu_cycles -= psx.gpu.cycles_to_line_event;
 
         // We either reached hsync or left it
         psx.gpu.in_hsync = !psx.gpu.in_hsync;
 
+        timers::set_in_hsync(psx, psx.gpu.in_hsync);
+
         if psx.gpu.in_hsync {
-            handle_hsync(psx);
+            // We don't have anything special to do here when we reach the hsync, we only handle
+            // this case specially to synchronize the timer code.
+            psx.gpu.cycles_to_line_event = HSYNC_LEN_CYCLES;
         } else {
             // We reached the EOL
             handle_eol(psx);
@@ -291,12 +297,6 @@ pub fn run(psx: &mut Psx) {
     }
 
     sync::next_event(psx, GPUSYNC, delta as i32);
-}
-
-/// Called when we reach the hsync
-fn handle_hsync(psx: &mut Psx) {
-    // Next event when we reach the EOL
-    psx.gpu.cycles_to_line_event = HSYNC_LEN_CYCLES;
 }
 
 /// Called when we reach the end of line (just after the HSYNC)
@@ -353,6 +353,8 @@ fn handle_eol(psx: &mut Psx) {
 
         irq::trigger(psx, irq::Interrupt::VBlank);
 
+        timers::set_in_vsync(psx, true);
+
         if psx.gpu.display_mode.is_true_interlaced() {
             // Prepare for the next frame, if we're currently sending the bottom field it means
             // that we're going to switch to the top
@@ -379,6 +381,7 @@ fn handle_eol(psx: &mut Psx) {
     if cur_line == psx.gpu.display_line_start && !psx.gpu.display_active {
         // We're entering the active display area
         psx.gpu.display_active = true;
+        timers::set_in_vsync(psx, false);
     }
 
     // Figure out which VRAM line is being displayed

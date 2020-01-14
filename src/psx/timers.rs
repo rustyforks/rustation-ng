@@ -18,12 +18,18 @@ const TIMER_IRQ: [irq::Interrupt; 3] = [
 
 pub struct Timers {
     timers: [Timer; 3],
+    /// True if the GPU is currently in an HSync
+    in_hsync: bool,
+    /// True if the GPU is currently in a VSync
+    in_vsync: bool,
 }
 
 impl Timers {
     pub fn new() -> Timers {
         Timers {
             timers: [Timer::new(), Timer::new(), Timer::new()],
+            in_hsync: false,
+            in_vsync: false,
         }
     }
 
@@ -40,13 +46,8 @@ impl Timers {
 
         if timer.mode.sync_enabled() {
             let sync_raw = timer.mode.sync_mode();
-            let sync = SYNC_MODE_MATRIX[which][sync_raw];
 
-            if sync == SyncMode::Unimplemented {
-                unimplemented!("Timer {:x} enabled sync {:x}", which, sync_raw);
-            }
-
-            sync
+            SYNC_MODE_MATRIX[which][sync_raw]
         } else {
             SyncMode::FreeRun
         }
@@ -75,9 +76,69 @@ impl Timers {
     /// Run the timer `which` for `cpu_cycles`. Returns true if an interrupt was triggered.
     fn run_cpu(&mut self, which: usize, cpu_cycles: u32) -> bool {
         let source = self.clock_source(which);
-        let sync_mode = self.sync_mode(which);
 
-        self[which].run_cpu(source, sync_mode, cpu_cycles)
+        self[which].run_cpu(source, cpu_cycles)
+    }
+
+    /// Run the timer `which` for `gpu_cycles`. Returns true if an interrupt was triggered.
+    fn run_gpu_clock(&mut self, which: usize, gpu_cycles: u32) -> bool {
+        let source = self.clock_source(which);
+
+        self[which].run_gpu_clock(source, gpu_cycles)
+    }
+
+    /// Run the timer `which` for `hsync_cycles`. Returns true if an interrupt was triggered.
+    fn run_gpu_hsync(&mut self, which: usize, hsync_cycles: u32) -> bool {
+        let source = self.clock_source(which);
+
+        self[which].run_gpu_hsync(source, hsync_cycles)
+    }
+
+    fn set_in_hsync(&mut self, entered_hsync: bool) {
+        self.in_hsync = entered_hsync;
+        self.refresh_sync();
+
+        // Counter 0 can start on HSync
+        let t0 = &mut self[0];
+
+        if entered_hsync {
+            if t0.sync_state == SyncState::WaitingForSyncStart {
+                // We'll start at the end of HSync
+                t0.sync_state = SyncState::WaitingForSyncEnd;
+            }
+        } else if t0.sync_state == SyncState::WaitingForSyncEnd {
+            // We're running
+            t0.sync_state = SyncState::Running;
+        }
+    }
+
+    fn set_in_vsync(&mut self, entered_vsync: bool) {
+        self.in_vsync = entered_vsync;
+        self.refresh_sync();
+
+        // Counter 1 can start on VSync
+        let t1 = &mut self[1];
+
+        if entered_vsync {
+            if t1.sync_state == SyncState::WaitingForSyncStart {
+                // We'll start at the end of HSync
+                t1.sync_state = SyncState::WaitingForSyncEnd;
+            }
+        } else if t1.sync_state == SyncState::WaitingForSyncEnd {
+            // We're running
+            t1.sync_state = SyncState::Running;
+        }
+    }
+
+    /// Check if timer synchronization config and start or stop them as needed
+    fn refresh_sync(&mut self) {
+        for which in 0..3 {
+            let sync_mode = self.sync_mode(which);
+            let in_hsync = self.in_hsync;
+            let in_vsync = self.in_vsync;
+
+            self[which].refresh_sync(sync_mode, in_hsync, in_vsync);
+        }
     }
 }
 
@@ -95,6 +156,19 @@ impl IndexMut<usize> for Timers {
     }
 }
 
+/// Timer synchronization state
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum SyncState {
+    /// Timer is stopped
+    Stopped,
+    /// Timer runs normally
+    Running,
+    /// Timer waits for for (H|V)Sync start
+    WaitingForSyncStart,
+    /// Timer waits for for (H|V)Sync end
+    WaitingForSyncEnd,
+}
+
 pub struct Timer {
     mode: Mode,
     /// The counter is really 16bit but we use a wider value to avoid overflows (since we might
@@ -104,6 +178,8 @@ pub struct Timer {
     target: u16,
     /// If the IRQ is configured to be oneshot in `Mode` we don't re-trigger.
     irq_inhibit: bool,
+    /// Timer state machine for synchronization
+    sync_state: SyncState,
 }
 
 impl Timer {
@@ -113,6 +189,7 @@ impl Timer {
             counter: 0,
             target: 0,
             irq_inhibit: false,
+            sync_state: SyncState::Running,
         }
     }
 
@@ -121,16 +198,22 @@ impl Timer {
         self.counter as u16
     }
 
-    fn set_counter(&mut self, val: u16) {
+    fn write_counter(&mut self, val: u16) {
         self.counter = u32::from(val);
         self.irq_inhibit = false;
     }
 
     fn set_mode(&mut self, mode: u16) {
         self.mode.configure(mode);
+
         // Writing to the mode register resets the counter to 0 and re-enables the IRQ if
         // necessary.
-        self.set_counter(0);
+        self.write_counter(0);
+
+        // Assume that the counter is stopped for a start, `refresh_sync` will take care of fixing
+        // that if it's not appropriate. It's important to set it to Stopped and not Running in
+        // case the timer is supposed to start on (H|V)Sync.
+        self.sync_state = SyncState::Stopped;
     }
 
     fn read_mode(&mut self) -> u16 {
@@ -273,7 +356,7 @@ impl Timer {
             return self.set_match();
         }
 
-        if cycles == 0 {
+        if cycles == 0 || self.sync_state != SyncState::Running {
             // XXX Shouldn't we trigger the IRQ anyway here if we're still at the match? Does the
             // IRQ keep triggering if SyncMode is Stopped and counter == target for instance? In
             // this case we might want to avoid running this code if `cycles` is 0 in other
@@ -309,7 +392,7 @@ impl Timer {
     }
 
     /// Run the timer for `cpu_cycles` cycles. Returns true if an interrupt has been triggered.
-    fn run_cpu(&mut self, source: Clock, sync_mode: SyncMode, cpu_cycles: u32) -> bool {
+    fn run_cpu(&mut self, source: Clock, cpu_cycles: u32) -> bool {
         let mut cycles = cpu_cycles;
 
         if source == Clock::CpuDiv8 {
@@ -322,22 +405,172 @@ impl Timer {
             cycles = 0;
         }
 
-        if sync_mode == SyncMode::Stopped {
-            cycles = 0;
-        }
-
         // Now we can use switch to the generic code, shared between CPU and GPU
         self.run(cycles)
+    }
+
+    /// Run the timer for `gpu_cycles` cycles. Returns true if an interrupt has been triggered.
+    fn run_gpu_clock(&mut self, source: Clock, gpu_cycles: u32) -> bool {
+        if source == Clock::GpuPixClk {
+            self.run(gpu_cycles)
+        } else {
+            // We're not clocked from the GPU, nothing to do.
+            false
+        }
+    }
+
+    /// Run the timer for `hsync_cycles` cycles. Returns true if an interrupt has been triggered.
+    fn run_gpu_hsync(&mut self, source: Clock, hsync_cycles: u32) -> bool {
+        if source == Clock::GpuHSync {
+            self.run(hsync_cycles)
+        } else {
+            // We're not clocked from the GPU, nothing to do.
+            false
+        }
+    }
+
+    fn refresh_sync(&mut self, sync_mode: SyncMode, in_hsync: bool, in_vsync: bool) {
+        self.sync_state = match sync_mode {
+            SyncMode::FreeRun => SyncState::Running,
+            SyncMode::Stopped => SyncState::Stopped,
+            SyncMode::StartOnNextLine | SyncMode::StartOnNextFrame => {
+                if self.sync_state == SyncState::Stopped {
+                    SyncState::WaitingForSyncStart
+                } else {
+                    // Either we're already running and we have nothing to do, or we're waiting for
+                    // the sync and that's handled in set_in_vsync/set_in_hsync. We have nothing to
+                    // do here.
+                    self.sync_state
+                }
+            }
+            SyncMode::ResetCounterOnHsync => SyncState::Running,
+            SyncMode::ResetCounterOnVsync => SyncState::Running,
+            SyncMode::HSyncOnly => {
+                if in_hsync {
+                    SyncState::Running
+                } else {
+                    SyncState::Stopped
+                }
+            }
+            SyncMode::VSyncOnly => {
+                if in_vsync {
+                    SyncState::Running
+                } else {
+                    SyncState::Stopped
+                }
+            }
+            SyncMode::PauseOnHsync => {
+                if in_hsync {
+                    SyncState::Stopped
+                } else {
+                    SyncState::Running
+                }
+            }
+            SyncMode::PauseOnVsync => {
+                if in_vsync {
+                    SyncState::Stopped
+                } else {
+                    SyncState::Running
+                }
+            }
+        };
+    }
+}
+
+/// Run all three timers, triggering interrupts if needed
+fn run_timers(psx: &mut Psx) {
+    let elapsed = sync::resync(psx, TIMERSYNC);
+
+    for (which, &irq) in TIMER_IRQ.iter().enumerate() {
+        if psx.timers.run_cpu(which, elapsed as u32) {
+            irq::trigger(psx, irq);
+        }
     }
 }
 
 pub fn run(psx: &mut Psx) {
-    let elapsed = sync::resync(psx, TIMERSYNC);
+    run_timers(psx);
+    predict_next_sync(psx);
+}
 
-    // Run all three timers, triggering interrupts if needed
-    for (which, &irq) in TIMER_IRQ.iter().enumerate() {
-        if psx.timers.run_cpu(which, elapsed as u32) {
-            irq::trigger(psx, irq);
+/// Called from the GPU to advance the counters working on the GPU Pixel Clock
+pub fn run_gpu_clocks(psx: &mut Psx, gpu_clock_cycles: u32) {
+    // Only Timer 0 can work on the GPU clock
+    let which = 0;
+
+    if psx.timers.run_gpu_clock(which, gpu_clock_cycles) {
+        irq::trigger(psx, TIMER_IRQ[which]);
+    }
+
+    // Since we don't currently predict GPU clock sync events there's no need to call
+    // predict_next_sync here.
+}
+
+/// Called from the GPU when we enter or leave the HSync
+pub fn set_in_hsync(psx: &mut Psx, entered_hsync: bool) {
+    run_timers(psx);
+
+    psx.timers.set_in_hsync(entered_hsync);
+
+    // Timer 0's counter can optionally be reset to 0 when we enter *or* leave HSync
+    let which = 0;
+
+    let sync_mode = psx.timers.sync_mode(which);
+
+    let needs_reset = if entered_hsync {
+        sync_mode == SyncMode::ResetCounterOnHsync
+    } else {
+        // XXX No$ says that the counter is reset to 0 when we enter HBlank, mednafen does it when
+        // we leave it
+        sync_mode == SyncMode::HSyncOnly
+    };
+
+    if needs_reset {
+        // Don't call `write_counter` because it shouldn't re-enable the IRQ if it's inhibited
+        psx.timers[which].counter = 0;
+
+        if psx.timers[which].target_match() && psx.timers[which].set_match() {
+            irq::trigger(psx, TIMER_IRQ[which]);
+        }
+    }
+
+    if entered_hsync {
+        // Timer 1 can optionally count the number of HSyncs
+        let which = 1;
+
+        if psx.timers.run_gpu_hsync(which, 1) {
+            irq::trigger(psx, TIMER_IRQ[which]);
+        }
+    }
+
+    predict_next_sync(psx);
+}
+
+/// Called from the GPU when we enter or leave the VSync
+pub fn set_in_vsync(psx: &mut Psx, entered_vsync: bool) {
+    run_timers(psx);
+
+    psx.timers.set_in_vsync(entered_vsync);
+
+    // Timer 1's counter can optionally be reset to 0 when we enter *or* leave VSync
+    let which = 1;
+
+    let sync_mode = psx.timers.sync_mode(which);
+
+    let needs_reset = if entered_vsync {
+        sync_mode == SyncMode::ResetCounterOnVsync
+    } else {
+        // XXX No$ says that the counter is reset to 0 when we enter VBlank, mednafen does it when
+        // we leave it
+        sync_mode == SyncMode::VSyncOnly
+    };
+
+    if needs_reset {
+        // Don't call `write_counter` because it shouldn't re-enable the IRQ if it's inhibited
+        psx.timers[which].counter = 0;
+
+        if psx.timers[which].target_match() && psx.timers[which].set_match() {
+            irq::trigger(psx, TIMER_IRQ[which]);
         }
     }
 
@@ -380,8 +613,11 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
     let which = (offset >> 4) as usize;
 
     match offset & 0xf {
-        0x0 => psx.timers[which].set_counter(val),
-        0x4 => psx.timers[which].set_mode(val),
+        0x0 => psx.timers[which].write_counter(val),
+        0x4 => {
+            psx.timers[which].set_mode(val);
+            psx.timers.refresh_sync();
+        }
         0x8 => psx.timers[which].set_target(val),
         0xc => (), // Nothing in this register
         n => unimplemented!("timer write @ {:x}", n),
@@ -477,23 +713,37 @@ enum SyncMode {
     FreeRun,
     /// Counter is stopped
     Stopped,
-    /// XXX unimplemented mode
-    Unimplemented,
+    /// Counter is reset to 0 when we enter HSync
+    ResetCounterOnHsync,
+    /// Count only inside HSync and reset to 0 when we leave it
+    HSyncOnly,
+    /// Couster is paused on HSync
+    PauseOnHsync,
+    /// Counter is reset to 0 when we enter VSync
+    ResetCounterOnVsync,
+    /// Count only inside VSync and reset to 0 when we leave it
+    VSyncOnly,
+    /// Couster is paused on VSync
+    PauseOnVsync,
+    /// Counter starts counting after a full HSync has passed
+    StartOnNextLine,
+    /// Counter starts counting after a full VSync has passed
+    StartOnNextFrame,
 }
 
 /// Look up table to get the actual sync mode from the Mode config for each of the 3 timer
 const SYNC_MODE_MATRIX: [[SyncMode; 4]; 3] = [
     [
-        SyncMode::Unimplemented,
-        SyncMode::Unimplemented,
-        SyncMode::Unimplemented,
-        SyncMode::Unimplemented,
+        SyncMode::PauseOnHsync,
+        SyncMode::ResetCounterOnHsync,
+        SyncMode::HSyncOnly,
+        SyncMode::StartOnNextLine,
     ],
     [
-        SyncMode::Unimplemented,
-        SyncMode::Unimplemented,
-        SyncMode::Unimplemented,
-        SyncMode::Unimplemented,
+        SyncMode::PauseOnVsync,
+        SyncMode::ResetCounterOnVsync,
+        SyncMode::VSyncOnly,
+        SyncMode::StartOnNextFrame,
     ],
     [
         SyncMode::Stopped,
