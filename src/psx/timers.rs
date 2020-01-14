@@ -71,6 +71,14 @@ impl Timers {
 
         delta
     }
+
+    /// Run the timer `which` for `cpu_cycles`. Returns true if an interrupt was triggered.
+    fn run_cpu(&mut self, which: usize, cpu_cycles: u32) -> bool {
+        let source = self.clock_source(which);
+        let sync_mode = self.sync_mode(which);
+
+        self[which].run_cpu(source, sync_mode, cpu_cycles)
+    }
 }
 
 impl Index<usize> for Timers {
@@ -167,6 +175,23 @@ impl Timer {
         }
     }
 
+    /// Called when a counter overflow occurred. Returns `true` if the interrupt has been
+    /// triggered.
+    fn set_overflow(&mut self) -> bool {
+        self.mode.set_overflow_reached();
+
+        self.counter &= 0xffff;
+
+        if self.mode.irq_on_overflow() && !self.irq_inhibit {
+            if self.mode.one_shot_irq() {
+                self.irq_inhibit = true;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Predict the date of the next interrupt (or `None` if the interrupt is disabled or can't be
     /// predicted)
     fn next_irq(&self, source: Clock, sync_mode: SyncMode) -> Option<CycleCount> {
@@ -194,14 +219,15 @@ impl Timer {
         }
 
         if sync_mode == SyncMode::Stopped {
-            // Timer is stopped
+            // Timer is stopped. XXX Might be worth checking what happens if we're stuck on target
+            // and irq_on_target is true.
             return None;
         }
 
         let target = u32::from(self.target);
 
         // Value of the counter the on the next event
-        let event_counter = if self.counter >= target {
+        let event_counter = if self.counter > target {
             // We've overshot the target, the next event is on overflow. Technically if the
             // overflow IRQ is disabled we could micro-optimize this to only force a refresh
             // when the counter will have wrapped all the way back to the target but it
@@ -220,7 +246,15 @@ impl Timer {
             }
         };
 
-        let delta = event_counter - self.counter;
+        let mut delta = event_counter - self.counter;
+
+        if delta == 0 {
+            // This can happen if target == counter == 0 and we reset_counter_on_target. Seems like
+            // a terrible because that'll trigger the interrupt continuously (XXX I think? Need to
+            // double-check).
+            warn!("Timer sync delta is 0");
+            delta = 1;
+        }
 
         if source == Clock::CpuDiv8 {
             unimplemented!("Implement SysClockDiv8");
@@ -228,10 +262,77 @@ impl Timer {
 
         Some(delta as CycleCount)
     }
+
+    /// Advance the counter by `cycles`. Returns true if an interrupt has been triggered
+    fn run(&mut self, cycles: u32) -> bool {
+        if self.mode.reset_counter_on_target() && self.target == 0 && self.target_match() {
+            // This is a weird situation, we need to reset the counter to 0 when we reach the
+            // target, the target is 0, and we've reached it.
+            return self.set_match();
+        }
+
+        if cycles == 0 {
+            // XXX Shouldn't we trigger the IRQ anyway here if we're still at the match? Does the
+            // IRQ keep triggering if SyncMode is Stopped and counter == target for instance? In
+            // this case we might want to avoid running this code if `cycles` is 0 in other
+            // circumstances.
+            return false;
+        }
+
+        let before_counter = self.counter;
+
+        self.counter += cycles;
+
+        let target = u32::from(self.target);
+
+        let target_irq = if before_counter < target && self.counter >= target {
+            // We passed the target
+            self.set_match()
+        } else {
+            false
+        };
+
+        let overflow_irq = if self.counter > 0xffff {
+            self.set_overflow()
+        } else {
+            false
+        };
+
+        target_irq || overflow_irq
+    }
+
+    /// Run the timer for `cpu_cycles` cycles. Returns true if an interrupt has been triggered.
+    fn run_cpu(&mut self, source: Clock, sync_mode: SyncMode, cpu_cycles: u32) -> bool {
+        let mut cycles = cpu_cycles;
+
+        if source == Clock::CpuDiv8 {
+            // TODO Mednafen runs the divider even when the timer is not currently using it
+            unimplemented!("Implement CpuDiv8");
+        }
+
+        if source == Clock::GpuPixClk || source == Clock::GpuHSync {
+            // We're clocked from the GPU, we have nothing to do here
+            cycles = 0;
+        }
+
+        if sync_mode == SyncMode::Stopped {
+            cycles = 0;
+        }
+
+        // Now we can use switch to the generic code, shared between CPU and GPU
+        self.run(cycles)
+    }
 }
 
 pub fn run(psx: &mut Psx) {
-    let mut _elapsed = sync::resync(psx, TIMERSYNC);
+    let elapsed = sync::resync(psx, TIMERSYNC);
+
+    // Run all three timers, triggering interrupts if needed
+    for (which, &irq) in TIMER_IRQ.iter().enumerate() {
+        if psx.timers.run_cpu(which, elapsed as u32) {
+            irq::trigger(psx, irq);
+        }
+    }
 
     predict_next_sync(psx);
 }
@@ -277,18 +378,12 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
         n => unimplemented!("timer write @ {:x}", n),
     }
 
-    if psx.timers[which].target_match() {
-        notify_match(psx, which);
+    // Check if a match happened as a consequence of the register writes
+    if psx.timers[which].target_match() && psx.timers[which].set_match() {
+        irq::trigger(psx, TIMER_IRQ[which]);
     }
 
     predict_next_sync(psx);
-}
-
-/// Called when the counter for `which` reached its target value
-fn notify_match(psx: &mut Psx, which: usize) {
-    if psx.timers[which].set_match() {
-        irq::trigger(psx, TIMER_IRQ[which]);
-    }
 }
 
 /// Timer mode register
@@ -312,6 +407,10 @@ impl Mode {
 
     fn clear_target_reached(&mut self) {
         self.0 &= !(1 << 11);
+    }
+
+    fn set_overflow_reached(&mut self) {
+        self.0 |= 1 << 12;
     }
 
     fn clear_overflow_reached(&mut self) {
