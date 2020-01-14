@@ -64,6 +64,14 @@ pub fn is_event_pending(psx: &Psx) -> bool {
 /// Run event handlers as necessary
 pub fn handle_events(psx: &mut Psx) {
     while is_event_pending(psx) {
+        // If we've "overshot" the event date (which will almost always happen since CPU
+        // instructions usually take more than one cycle to execute) we temporarily rewind to the
+        // event date before running the various handlers. One situation where that matters is for
+        // timers synchronized on GPU timings: if we overshoot the HSync by a few cycles then we'll
+        // freeze the timer too late for instance.
+        let event_delta = psx.cycle_counter - psx.sync.first_event;
+        psx.cycle_counter -= event_delta;
+
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::Gpu as usize] {
             gpu::run(psx);
         }
@@ -75,6 +83,8 @@ pub fn handle_events(psx: &mut Psx) {
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::Spu as usize] {
             spu::run(psx);
         }
+
+        psx.cycle_counter += event_delta;
     }
 }
 
