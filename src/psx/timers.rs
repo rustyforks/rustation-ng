@@ -98,7 +98,8 @@ impl IndexMut<usize> for Timers {
 pub struct Timer {
     mode: Mode,
     /// The counter is really 16bit but we use a wider value to avoid overflows (since we might
-    /// overshoot by a few cycles before we handle the overflow in `run`).
+    /// overshoot by a few cycles before we handle the overflow in `run`). It also makes the code
+    /// dealing with `set_overflow` and `set_target` simpler.
     counter: u32,
     target: u16,
     /// If the IRQ is configured to be oneshot in `Mode` we don't re-trigger.
@@ -237,7 +238,8 @@ impl Timer {
             // We haven't reached the target yet
             if self.mode.irq_on_target() || self.mode.reset_counter_on_target() {
                 // We need to force a refresh when we hit the target to either trigger the IRQ
-                // or reset the counter
+                // or reset the counter. XXX actually I'm fairly sure that we don't need to force a
+                // sync when we `reset_counter_on_target` as long as there's no `irq_on_target`.
                 target
             } else {
                 // We don't have anything special to do when we pass the target, we can aim
@@ -286,12 +288,17 @@ impl Timer {
         let target = u32::from(self.target);
 
         let target_irq = if before_counter < target && self.counter >= target {
-            // We passed the target
+            // We reached the target
             self.set_match()
         } else {
             false
         };
 
+        // If the target was reached and `reset_counter_on_target` is true then we simply cannot
+        // overflow but that's handled correctly here because `self.set_match` is called above if
+        // we've hit the target and it'll already have readjusted `self.counter` if
+        // `reset_counter_on_target` is active. For this reason we must always check for overflow
+        // *after* we check for target match.
         let overflow_irq = if self.counter > 0xffff {
             self.set_overflow()
         } else {
@@ -339,8 +346,10 @@ pub fn run(psx: &mut Psx) {
 
 /// Figure out when we should force a resync next
 fn predict_next_sync(psx: &mut Psx) {
-    // Default value used if we don't have any upcoming event to monitor for.
-    let default = 1024;
+    // Default value used if we don't have any upcoming event to monitor for. Mednafen uses 1024
+    // but I'm not sure why it needs to be so short when to event is scheduled. Technically we
+    // could wait for a long time, as long as we don't overflow the CycleCount.
+    let default = 0x1_0000;
 
     let delta = psx.timers.next_irq().unwrap_or(default);
 
