@@ -56,7 +56,12 @@ pub fn load<T: Addressable>(psx: &mut Psx, offset: u32) -> T {
     let v = match channel {
         0..=6 => {
             // Channel configuration
-            unimplemented!("Read from channel {} register {:x}", channel, reg);
+            let port = Port::from_index(channel);
+
+            match reg {
+                8 => psx.dma[port].control.get(),
+                _ => unimplemented!("Read from channel {:?} register {:x}", port, reg),
+            }
         }
         7 => match reg {
             0 => psx.dma.control.get(),
@@ -175,6 +180,10 @@ impl ChannelControl {
     fn set(&mut self, v: u32) {
         // Many bits are RO
         self.0 = v & 0x7177_0703
+    }
+
+    fn get(&self) -> u32 {
+        self.0
     }
 
     /// Returns true if the 'enable' bit is set
