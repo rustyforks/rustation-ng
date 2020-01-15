@@ -416,6 +416,7 @@ fn handle_eol(psx: &mut Psx) {
 /// Called when a frame is done rendering and should be displayed
 fn draw_frame(psx: &mut Psx) {
     psx.gpu.frame_drawn = true;
+    psx.frame_done = true;
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
