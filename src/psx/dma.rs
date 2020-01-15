@@ -57,9 +57,12 @@ pub fn load<T: Addressable>(psx: &mut Psx, offset: u32) -> T {
         0..=6 => {
             // Channel configuration
             let port = Port::from_index(channel);
+            let channel = &psx.dma[port];
 
             match reg {
-                8 => psx.dma[port].control.get(),
+                0 => channel.base,
+                4 => channel.block_control,
+                8 => channel.control.get(),
                 _ => unimplemented!("Read from channel {:?} register {:x}", port, reg),
             }
         }
@@ -89,6 +92,8 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
             let port = Port::from_index(channel);
 
             match reg {
+                0 => psx.dma[port].base = val & 0xff_ffff,
+                4 => psx.dma[port].block_control = val,
                 8 => set_channel_control(psx, port, val),
                 _ => unimplemented!("Write to channel {:?} register {:x}: {:x}", port, reg, val),
             }
@@ -159,12 +164,19 @@ impl Port {
 
 struct Channel {
     control: ChannelControl,
+    /// Base address
+    base: u32,
+    /// Block control. The interpretation of this field depends on the sync mode configured in the
+    /// channel's control register
+    block_control: u32,
 }
 
 impl Channel {
     fn new() -> Channel {
         Channel {
             control: ChannelControl::new(),
+            base: 0,
+            block_control: 0,
         }
     }
 }
