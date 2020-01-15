@@ -98,6 +98,9 @@ impl Gpu {
 
         self.display_line_start = 0x10;
         self.display_line_end = 0x100;
+
+        self.draw_mode.set(0);
+        self.display_mode.set(0);
     }
 
     fn status(&self) -> u32 {
@@ -460,12 +463,12 @@ fn gp0(psx: &mut Psx, val: u32) {
 
 /// Handle GP1 commands
 fn gp1(psx: &mut Psx, val: u32) {
-    let _ = psx;
-
     let op = val >> 24;
+    let val = val & 0xff_ffff;
 
     match op {
-        0 => psx.gpu.reset(),
+        0x00 => psx.gpu.reset(),
+        0x08 => psx.gpu.display_mode.set(val),
         _ => unimplemented!("GP1 0x{:08x}", val),
     }
 }
@@ -530,6 +533,10 @@ struct DisplayMode(u32);
 impl DisplayMode {
     fn new() -> DisplayMode {
         DisplayMode(0)
+    }
+
+    fn set(&mut self, mode: u32) {
+        self.0 = mode
     }
 
     fn standard(&self) -> VideoStandard {
