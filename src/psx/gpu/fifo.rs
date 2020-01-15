@@ -25,13 +25,18 @@ impl CommandFifo {
     }
 
     pub fn is_full(&self) -> bool {
-        self.read_index ^ self.write_index ^ COMMAND_FIFO_DEPTH as u8 == 0
+        self.len() == COMMAND_FIFO_DEPTH
     }
 
     pub fn len(&self) -> usize {
         let l = self.write_index - self.read_index;
 
         l as usize
+    }
+
+    /// Empty the FIFO completely
+    pub fn clear(&mut self) {
+        self.read_index = self.write_index;
     }
 
     /// Push an entry in the FIFO. Should *not* be called when the FIFO is full!
@@ -110,6 +115,23 @@ fn test_command_fifo() {
         assert!(!fifo.is_empty());
         assert_eq!(fifo.pop(), i as u32);
     }
+    assert!(fifo.is_empty());
+    assert!(!fifo.is_full());
+    assert_eq!(fifo.len(), 0);
+
+    // Fill
+    for i in 0..COMMAND_FIFO_DEPTH {
+        assert!(!fifo.is_full());
+        assert!(fifo.len() == i);
+        fifo.push(i as u32);
+    }
+
+    assert!(fifo.is_full());
+    assert!(!fifo.is_empty());
+    assert_eq!(fifo.len(), COMMAND_FIFO_DEPTH);
+
+    // Clear
+    fifo.clear();
     assert!(fifo.is_empty());
     assert!(!fifo.is_full());
     assert_eq!(fifo.len(), 0);

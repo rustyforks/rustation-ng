@@ -67,8 +67,7 @@ impl Gpu {
             display_active: false,
             display_vram_y_start: 0,
             command_fifo: fifo::CommandFifo::new(),
-            // XXX for now let's start with a huge budget since we don't have proper timings yet
-            draw_time_budget: 0x1000_0000,
+            draw_time_budget: 0,
             remaining_fractional_cycles: 0,
             // This is what Mednafen uses, I have no idea where that comes from. Surely having
             // extremely precise timings so early on doesn't matter? After all the BIOS will resync
@@ -88,6 +87,17 @@ impl Gpu {
         gpu.refresh_lines_per_field();
 
         gpu
+    }
+
+    fn reset(&mut self) {
+        if self.draw_time_budget < 0 {
+            self.draw_time_budget = 0;
+        }
+
+        self.command_fifo.clear();
+
+        self.display_line_start = 0x10;
+        self.display_line_end = 0x100;
     }
 
     fn status(&self) -> u32 {
@@ -414,7 +424,7 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
 
     match off {
         0 => gp0(psx, val),
-        4 => unimplemented!(),
+        4 => gp1(psx, val),
         _ => unreachable!(),
     };
 }
@@ -425,7 +435,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
     }
 
     let v = match off {
-        0 => unimplemented!(),
+        0 => read(psx),
         4 => psx.gpu.status(),
         _ => unreachable!(),
     };
@@ -433,10 +443,30 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
     T::from_u32(v)
 }
 
+/// Handles loads from GP0
+fn read(psx: &mut Psx) -> u32 {
+    let _ = psx;
+    warn!("Unhandled GPU read");
+
+    0
+}
+
 /// Handle GP0 commands
 fn gp0(psx: &mut Psx, val: u32) {
     if psx.gpu.try_write_command(val) {
         process_commands(psx);
+    }
+}
+
+/// Handle GP1 commands
+fn gp1(psx: &mut Psx, val: u32) {
+    let _ = psx;
+
+    let op = val >> 24;
+
+    match op {
+        0 => psx.gpu.reset(),
+        _ => unimplemented!("GP1 0x{:08x}", val),
     }
 }
 
