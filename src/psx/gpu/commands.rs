@@ -33,6 +33,14 @@ fn cmd_draw_mode(psx: &mut Psx) {
     psx.gpu.draw_mode.set(mode);
 }
 
+/// Does nothing, but with style
+fn cmd_nop(psx: &mut Psx) {
+    // Pop the FIFO
+    let w = psx.gpu.command_fifo.pop();
+
+    warn!("Encountered GPU NOP command: 0x{:08x}", w);
+}
+
 /// Placeholder function
 fn cmd_unimplemented(psx: &mut Psx) {
     unimplemented!("GPU command {:08x}", psx.gpu.command_fifo.pop());
@@ -42,10 +50,10 @@ fn cmd_unimplemented(psx: &mut Psx) {
 pub const GP0_COMMANDS: [Command; 0x100] = [
     // 0x00
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
         handler: cmd_unimplemented,
