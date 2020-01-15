@@ -21,6 +21,8 @@ pub struct Gpu {
     display_vram_y_start: u16,
     /// Current value of the draw mode
     draw_mode: DrawMode,
+    /// DMA request direction
+    dma_direction: DmaDirection,
     /// GP0 command FIFO
     command_fifo: fifo::CommandFifo,
     /// Variable used to simulate the time taken by draw commands. Taken from mednafen. This value
@@ -60,12 +62,13 @@ impl Gpu {
     pub fn new(video_standard: VideoStandard) -> Gpu {
         let mut gpu = Gpu {
             video_standard,
-            draw_mode: DrawMode::new(),
             display_mode: DisplayMode::new(),
             display_line_start: 0x10,
             display_line_end: 0x100,
             display_active: false,
             display_vram_y_start: 0,
+            draw_mode: DrawMode::new(),
+            dma_direction: DmaDirection::Off,
             command_fifo: fifo::CommandFifo::new(),
             draw_time_budget: 0,
             remaining_fractional_cycles: 0,
@@ -101,6 +104,7 @@ impl Gpu {
 
         self.draw_mode.set(0);
         self.display_mode.set(0);
+        self.dma_direction.set(0);
     }
 
     fn status(&self) -> u32 {
@@ -127,9 +131,21 @@ impl Gpu {
         s |= (self.is_idle() as u32) << 26;
 
         // TODO: bit 27: Data available
-        // TODO: bit 28: DMA ready
+
+        // XXX This in what mednafen does but it's probably far from accurate. No$ has a more
+        // detailed description but I don't know how accurate it is.
+        let dma_request = self.dma_direction == DmaDirection::CpuToGp0
+            || self.dma_direction == DmaDirection::VRamToCpu;
+
+        s |= (dma_request as u32) << 25;
+
+        // TODO: GPU idle
+        s |= 1 << 26;
+        // TODO: can read bit
+        s |= 1 << 27;
+        // TODO: DMA Ready
         s |= 1 << 28;
-        // TODO: bits [29:30]: DMA direction
+        s |= (self.dma_direction as u32) << 29;
 
         let display_line_even_odd = u32::from(self.cur_line_vram_y & 1);
         s |= display_line_even_odd << 31;
@@ -465,11 +481,12 @@ fn gp0(psx: &mut Psx, val: u32) {
 /// Handle GP1 commands
 fn gp1(psx: &mut Psx, val: u32) {
     let op = val >> 24;
-    let val = val & 0xff_ffff;
+    let param = val & 0xff_ffff;
 
     match op {
         0x00 => psx.gpu.reset(),
-        0x08 => psx.gpu.display_mode.set(val),
+        0x04 => psx.gpu.dma_direction.set(param),
+        0x08 => psx.gpu.display_mode.set(param),
         _ => unimplemented!("GP1 0x{:08x}", val),
     }
 }
@@ -561,6 +578,27 @@ impl DisplayMode {
         let two_fields = self.0 & (1 << 2) != 0;
 
         self.is_interlaced() && two_fields
+    }
+}
+
+/// Requested DMA direction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DmaDirection {
+    Off = 0,
+    Fifo = 1,
+    CpuToGp0 = 2,
+    VRamToCpu = 3,
+}
+
+impl DmaDirection {
+    fn set(&mut self, v: u32) {
+        *self = match v & 3 {
+            0 => DmaDirection::Off,
+            1 => DmaDirection::Fifo,
+            2 => DmaDirection::CpuToGp0,
+            3 => DmaDirection::VRamToCpu,
+            _ => unreachable!(),
+        }
     }
 }
 
