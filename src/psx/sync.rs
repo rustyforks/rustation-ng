@@ -1,10 +1,11 @@
-use super::{gpu, spu, timers, CycleCount, Psx};
+use super::{dma, gpu, spu, timers, CycleCount, Psx};
 
 /// Tokens used to keep track of the progress of each module individually
 pub enum SyncToken {
     Gpu,
     Timers,
     Spu,
+    Dma,
 
     NumTokens,
 }
@@ -30,6 +31,10 @@ impl Synchronizer {
     pub fn refresh_first_event(&mut self) {
         // The only way `min()` can return None is if the array is empty which is impossible here.
         self.first_event = *self.next_event.iter().min().unwrap();
+    }
+
+    pub fn first_event(&self) -> CycleCount {
+        self.first_event
     }
 }
 
@@ -82,6 +87,10 @@ pub fn handle_events(psx: &mut Psx) {
 
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::Spu as usize] {
             spu::run(psx);
+        }
+
+        if psx.sync.first_event >= psx.sync.next_event[SyncToken::Dma as usize] {
+            dma::run(psx);
         }
 
         psx.cycle_counter += event_delta;

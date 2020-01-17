@@ -126,11 +126,6 @@ impl Gpu {
 
         // TODO: bit 23 - Display Enable (GP1[0x03])
         // TODO: bit 24 - IRQ1 (*not* VSync)
-        // TODO: bit 25 - DMA data request
-
-        s |= (self.is_idle() as u32) << 26;
-
-        // TODO: bit 27: Data available
 
         // XXX This in what mednafen does but it's probably far from accurate. No$ has a more
         // detailed description but I don't know how accurate it is.
@@ -139,18 +134,44 @@ impl Gpu {
 
         s |= (dma_request as u32) << 25;
 
-        // TODO: GPU idle
-        s |= 1 << 26;
+        s |= (self.is_idle() as u32) << 26;
+
+        // TODO: bit 27: Data available
+
         // TODO: can read bit
         s |= 1 << 27;
-        // TODO: DMA Ready
-        s |= 1 << 28;
+        s |= (self.dma_can_write() as u32) << 28;
         s |= (self.dma_direction as u32) << 29;
 
         let display_line_even_odd = u32::from(self.cur_line_vram_y & 1);
         s |= display_line_even_odd << 31;
 
         s
+    }
+
+    /// Returns true if we're ready to accept DMA commands
+    pub fn dma_can_write(&self) -> bool {
+        // TODO: return false if in PLINE or Quad
+
+        if self.command_fifo.is_empty() {
+            return true;
+        }
+
+        let next_command = self.next_command();
+
+        // TODO: return false if FBREAD or FBWRITE
+
+        // XXX this is taken from mednafen but I don't quite understand why we check `fifo_len`
+        // instead of `len` here. Don't we just want to check if the entire command has been
+        // received?
+        if self.command_fifo.len() >= next_command.fifo_len() {
+            // XXX I don't understand why mednafen doesn't use the same condition as in
+            // `try_write_command`. Surely it would make sense for the `dma_can_write` bit to
+            // simply be a `is_fifo_not_full` bit?
+            return false;
+        }
+
+        true
     }
 
     /// Computes the value of the status register's "idle" bit
@@ -461,6 +482,10 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
     };
 
     T::from_u32(v)
+}
+
+pub fn dma_store(psx: &mut Psx, val: u32) {
+    gp0(psx, val);
 }
 
 /// Handles loads from GP0
