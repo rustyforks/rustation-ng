@@ -84,3 +84,19 @@ pub fn ack(psx: &mut Psx, ack: u16) {
 pub fn active(psx: &Psx) -> bool {
     status(psx) & mask(psx) != 0
 }
+
+/// Basic helper enum that can be used for return values of functions and method that can trigger
+/// an interrupt. Generates a compiler warning if it's not checked, which should help avoid
+/// "losing" interrupts
+#[must_use]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+pub enum IrqState {
+    Idle,
+    Triggered,
+}
+
+impl IrqState {
+    pub fn is_triggered(self) -> bool {
+        self == IrqState::Triggered
+    }
+}

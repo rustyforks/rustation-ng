@@ -1,7 +1,8 @@
 //! The PlayStation DMA, that can be used to copy data between the RAM and various devices (GPU,
 //! CD drive, MDEC, SPU etc...)
 
-use super::{gpu, sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{gpu, irq, sync, AccessWidth, Addressable, CycleCount, Psx};
+use irq::IrqState;
 use std::ops::{Index, IndexMut};
 
 const DMASYNC: sync::SyncToken = sync::SyncToken::Dma;
@@ -30,6 +31,20 @@ impl Dma {
                 Channel::new(),
             ],
             period_counter: 0,
+        }
+    }
+}
+
+impl Dma {
+    /// Signal that channel `port` is done running. Returns true if an interrupt should be
+    /// triggered
+    fn end_of_dma(&mut self, port: Port) -> IrqState {
+        self[port].control.stop();
+
+        if self.irq_config.irq_enabled(port) {
+            self.irq_config.flag_irq(port)
+        } else {
+            IrqState::Idle
         }
     }
 }
@@ -139,7 +154,11 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
                 // used. Maybe a leftover of some previous iteration?
                 refresh_cpu_halt(psx);
             }
-            4 => psx.dma.irq_config.set(val),
+            4 => {
+                if psx.dma.irq_config.set(val).is_triggered() {
+                    irq::trigger(psx, irq::Interrupt::Dma);
+                }
+            }
             _ => unimplemented!("DMA register write to {:x}", reg),
         },
         _ => unreachable!(),
@@ -315,8 +334,8 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                 _ => unimplemented!(),
             };
 
-            if end_of_dma {
-                unimplemented!();
+            if end_of_dma && psx.dma.end_of_dma(port).is_triggered() {
+                irq::trigger(psx, irq::Interrupt::Dma);
             }
         }
     }
@@ -463,6 +482,14 @@ impl ChannelControl {
     fn is_backwards(self) -> bool {
         self.0 & (1 << 1) != 0
     }
+
+    /// Called when the channel is stopped
+    fn stop(&mut self) {
+        // Clear enabled bit
+        self.0 &= !(1 << 24);
+        // Clear start/trigger bit
+        self.0 &= !(1 << 28);
+    }
 }
 
 /// DMA control register
@@ -490,13 +517,70 @@ impl IrqConfig {
         IrqConfig(0)
     }
 
-    fn set(&mut self, conf: u32) {
-        // Not all bits are writeable
-        self.0 = conf & 0x00ff_803f;
+    fn set(&mut self, conf: u32) -> IrqState {
+        let write_mask = 0x00ff_803f;
+        self.0 &= !write_mask;
+        self.0 |= conf & write_mask;
+
+        // Writing 1 to the flag bits acks the interrupts
+        let ack = conf & 0x7f00_0000;
+        self.0 &= !ack;
+
+        self.refresh_irq()
     }
 
     fn get(&self) -> u32 {
         self.0
+    }
+
+    fn irq_enabled(&self, port: Port) -> bool {
+        let bit = 16 + port as usize;
+
+        self.0 & (1 << bit) != 0
+    }
+
+    /// Set the IRQ flag for `Port` active
+    fn flag_irq(&mut self, port: Port) -> IrqState {
+        let bit = 24 + port as usize;
+
+        self.0 |= 1 << bit;
+
+        self.refresh_irq()
+    }
+
+    fn master_irq_forced(&self) -> bool {
+        self.0 & (1 << 15) != 0
+    }
+
+    fn channel_irq_enable(&self) -> bool {
+        self.0 & (1 << 23) != 0
+    }
+
+    /// Refresh the state of the master IRQ flag and returns IrqState::Triggered if an interrupt
+    /// should be asserted
+    fn refresh_irq(&mut self) -> IrqState {
+        let cur_master = self.0 & (1 << 31) != 0;
+
+        let flags = self.0 & 0x7f00_0000;
+
+        let channel_irq_active = self.channel_irq_enable() && flags != 0;
+
+        let new_master = channel_irq_active || self.master_irq_forced();
+
+        if new_master {
+            if !cur_master {
+                // IRQ has been triggered
+                self.0 |= 1 << 31;
+                IrqState::Triggered
+            } else {
+                // IRQ was already active, nothing to do
+                IrqState::Idle
+            }
+        } else {
+            // Master is disabled
+            self.0 &= !(1 << 31);
+            IrqState::Idle
+        }
     }
 }
 
