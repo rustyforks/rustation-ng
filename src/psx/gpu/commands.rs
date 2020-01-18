@@ -33,6 +33,28 @@ fn cmd_draw_mode(psx: &mut Psx) {
     psx.gpu.draw_mode.set(mode);
 }
 
+fn cmd_tex_window(psx: &mut Psx) {
+    psx.gpu.tex_window = psx.gpu.command_fifo.pop() & 0xf_ffff;
+}
+
+fn cmd_clip_top_left(psx: &mut Psx) {
+    psx.gpu.clip_top_left = psx.gpu.command_fifo.pop() & 0xf_ffff;
+}
+
+fn cmd_clip_bot_right(psx: &mut Psx) {
+    psx.gpu.clip_bot_right = psx.gpu.command_fifo.pop() & 0xf_ffff;
+}
+
+fn cmd_draw_offset(psx: &mut Psx) {
+    psx.gpu.draw_offset = psx.gpu.command_fifo.pop() & 0x3f_ffff;
+}
+
+fn cmd_mask_settings(psx: &mut Psx) {
+    let mask_settings = psx.gpu.command_fifo.pop() & 0x3f_ffff;
+
+    psx.gpu.mask_settings.set(mask_settings)
+}
+
 /// Does nothing, but with style
 fn cmd_nop(psx: &mut Psx) {
     // Pop the FIFO
@@ -1420,33 +1442,33 @@ pub const GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_tex_window,
         len: 1,
-        fifo_len: 1,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_clip_top_left,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_clip_bot_right,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_draw_offset,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_mask_settings,
         len: 1,
-        fifo_len: 1,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {

@@ -56,6 +56,16 @@ pub struct Gpu {
     /// Set to `false` on the beginning of a new line and set to `true` when the line has been
     /// drawn
     frame_drawn: bool,
+    /// Clipping configuration: top-left corner
+    clip_top_left: u32,
+    /// Clipping configuration: bottom-right corner
+    clip_bot_right: u32,
+    /// Drawing offset
+    draw_offset: u32,
+    /// Texture window settings
+    tex_window: u32,
+    /// Mask bit settings
+    mask_settings: MaskSettings,
 }
 
 impl Gpu {
@@ -85,6 +95,11 @@ impl Gpu {
             read_bottom_field: false,
             lines_per_field: 0,
             frame_drawn: false,
+            clip_top_left: 0,
+            clip_bot_right: 0,
+            draw_offset: 0,
+            tex_window: 0,
+            mask_settings: MaskSettings::new(),
         };
 
         gpu.refresh_lines_per_field();
@@ -105,6 +120,12 @@ impl Gpu {
         self.draw_mode.set(0);
         self.display_mode.set(0);
         self.dma_direction.set(0);
+
+        self.clip_top_left = 0;
+        self.clip_bot_right = 0;
+        self.draw_offset = 0;
+        self.tex_window = 0;
+        self.mask_settings.set(0);
     }
 
     fn status(&self) -> u32 {
@@ -112,7 +133,8 @@ impl Gpu {
 
         s |= self.draw_mode.0 & 0x7ff;
 
-        // TODO: bit 11 and 12 (GP0[0xe6])
+        s |= (self.mask_settings.draw_with_mask_bit() as u32) << 11;
+        s |= (self.mask_settings.check_mask_bit() as u32) << 12;
 
         s |= ((!self.bottom_field) as u32) << 13;
 
@@ -603,6 +625,27 @@ impl DisplayMode {
         let two_fields = self.0 & (1 << 2) != 0;
 
         self.is_interlaced() && two_fields
+    }
+}
+
+/// Wrapper around the Mask Setting register value (set by GP0[0xe6])
+struct MaskSettings(u32);
+
+impl MaskSettings {
+    fn new() -> MaskSettings {
+        MaskSettings(0)
+    }
+
+    fn set(&mut self, v: u32) {
+        self.0 = v & 3
+    }
+
+    fn draw_with_mask_bit(&self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    fn check_mask_bit(&self) -> bool {
+        self.0 & (1 << 1) != 0
     }
 }
 
