@@ -963,6 +963,8 @@ fn op_jal(psx: &mut Psx, instruction: Instruction) {
     let ra = psx.cpu.next_pc;
     let target = instruction.imm_jump();
 
+    reg_dep(psx, RegisterIndex(31));
+
     psx.cpu.next_pc = (psx.cpu.pc & 0xf000_0000) | target;
     psx.cpu.branch = true;
 
