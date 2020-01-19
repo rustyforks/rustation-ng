@@ -146,7 +146,8 @@ impl Gpu {
         s |= ((self.display_mode.0 >> 6) & 1) << 16;
         s |= (self.display_mode.0 & 0x3f) << 17;
 
-        // TODO: bit 23 - Display Enable (GP1[0x03])
+        // TODO: bit 23 - Display Off (GP1[0x03])
+        s |= 1 << 23;
         // TODO: bit 24 - IRQ1 (*not* VSync)
 
         // XXX This in what mednafen does but it's probably far from accurate. No$ has a more
@@ -161,7 +162,7 @@ impl Gpu {
         // TODO: bit 27: Data available
 
         // TODO: can read bit
-        s |= 1 << 27;
+        s |= 0 << 27;
         s |= (self.dma_can_write() as u32) << 28;
         s |= (self.dma_direction as u32) << 29;
 
