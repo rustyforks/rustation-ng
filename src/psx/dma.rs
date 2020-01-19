@@ -239,13 +239,13 @@ fn start(psx: &mut Psx, port: Port) {
 
 /// Run channel `port` for `cycles` CPU cycles
 fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
-    let control = psx.dma[port].control;
-    let sync_mode = control.sync_mode();
+    let sync_mode = psx.dma[port].control.sync_mode();
 
     psx.dma[port].clock_counter += cycles;
 
     while psx.dma[port].clock_counter > 0 {
         let mut do_copy = true;
+        let control = psx.dma[port].control;
 
         if psx.dma[port].remaining_words == 0 {
             if !control.is_enabled() {
