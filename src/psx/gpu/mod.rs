@@ -15,6 +15,10 @@ pub struct Gpu {
     display_line_start: u16,
     /// Number of the first line *not* displayed on the screen
     display_line_end: u16,
+    /// Number of the first column displayed on the screen
+    display_column_start: u16,
+    /// Number of the first column *not* displayed on the screen
+    display_column_end: u16,
     /// True when we're between [display_line_start; display_line_end[
     display_active: bool,
     /// First line of the display area in VRAM
@@ -66,6 +70,8 @@ pub struct Gpu {
     tex_window: u32,
     /// Mask bit settings
     mask_settings: MaskSettings,
+    /// Start Display area (top-left corner)
+    display_area_start: u32,
 }
 
 impl Gpu {
@@ -75,6 +81,8 @@ impl Gpu {
             display_mode: DisplayMode::new(),
             display_line_start: 0x10,
             display_line_end: 0x100,
+            display_column_start: 0x200,
+            display_column_end: 0xc00,
             display_active: false,
             display_vram_y_start: 0,
             draw_mode: DrawMode::new(),
@@ -100,6 +108,7 @@ impl Gpu {
             draw_offset: 0,
             tex_window: 0,
             mask_settings: MaskSettings::new(),
+            display_area_start: 0,
         };
 
         gpu.refresh_lines_per_field();
@@ -116,6 +125,8 @@ impl Gpu {
 
         self.display_line_start = 0x10;
         self.display_line_end = 0x100;
+        self.display_column_start = 0x200;
+        self.display_column_end = 0xc00;
 
         self.draw_mode.set(0);
         self.display_mode.set(0);
@@ -126,6 +137,7 @@ impl Gpu {
         self.draw_offset = 0;
         self.tex_window = 0;
         self.mask_settings.set(0);
+        self.display_area_start = 0;
     }
 
     fn status(&self) -> u32 {
@@ -534,6 +546,15 @@ fn gp1(psx: &mut Psx, val: u32) {
     match op {
         0x00 => psx.gpu.reset(),
         0x04 => psx.gpu.dma_direction.set(param),
+        0x05 => psx.gpu.display_area_start = val & 0x7_ffff,
+        0x06 => {
+            psx.gpu.display_column_start = (val & 0xfff) as u16;
+            psx.gpu.display_column_end = ((val >> 12) & 0xfff) as u16;
+        }
+        0x07 => {
+            psx.gpu.display_line_start = (val & 0x3ff) as u16;
+            psx.gpu.display_line_end = ((val >> 10) & 0x3ff) as u16;
+        }
         0x08 => psx.gpu.display_mode.set(param),
         _ => unimplemented!("GP1 0x{:08x}", val),
     }
