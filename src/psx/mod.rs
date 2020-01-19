@@ -276,8 +276,8 @@ impl Psx {
 
         if let Some(offset) = map::IRQ_CONTROL.contains(abs_addr) {
             match offset {
-                0 => irq::ack(self, val.as_u32() as u16),
-                4 => irq::set_mask(self, val.as_u32() as u16),
+                0 => irq::ack(self, val.as_u16()),
+                4 => irq::set_mask(self, val.as_u16()),
                 _ => panic!("Unhandled IRQ store at address {:08x}", abs_addr),
             }
 

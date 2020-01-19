@@ -9,7 +9,7 @@
 //! the PSX.
 
 use super::cpu::RegisterIndex;
-use super::{irq, Psx};
+use super::{cpu, irq, Psx};
 
 /// Coprocessor 0: System control
 pub struct Cop0 {
@@ -62,14 +62,18 @@ pub fn mtc0(psx: &mut Psx, cop_r: RegisterIndex, v: u32) {
                 panic!("Unhandled write to cop0r{}: {:08x}", cop_r.0, v)
             }
         }
-        12 => psx.cop0.sr = v,
+        12 => {
+            psx.cop0.sr = v;
+            cpu::irq_changed(psx);
+        }
         // Cause register
         13 => {
             // TODO: be careful to correctly handle the two software interrupt bits [8:9]. Should
             // probably call `cpu::irq_changed`.
             if v != 0 {
-                panic!("Unhandled write to CAUSE register: {:08x}", v)
+                unimplemented!("Unhandled write to CAUSE register: {:08x}", v)
             }
+            cpu::irq_changed(psx);
         }
         _ => panic!("Unhandled COP0 register {}", cop_r.0),
     }
@@ -116,30 +120,32 @@ pub fn enter_exception(psx: &mut Psx, cause: Exception) -> u32 {
     // pair of zeroes by left shifting the stack which disables interrupts and puts the CPU in
     // kernel mode. The original third entry is discarded (it's up to the kernel to handle more
     // than two recursive exception levels).
-    let cop0 = &mut psx.cop0;
     let pc = psx.cpu.current_pc();
 
-    let mode = cop0.sr & 0x3f;
+    let mode = psx.cop0.sr & 0x3f;
 
-    cop0.sr &= !0x3f;
-    cop0.sr |= (mode << 2) & 0x3f;
+    psx.cop0.sr &= !0x3f;
+    psx.cop0.sr |= (mode << 2) & 0x3f;
 
     // Update `CAUSE` register with the exception code (bits [6:2])
-    cop0.cause &= !0x7c;
-    cop0.cause |= (cause as u32) << 2;
+    psx.cop0.cause &= !0x7c;
+    psx.cop0.cause |= (cause as u32) << 2;
 
     if psx.cpu.in_delay_slot() {
         // When an exception occurs in a delay slot `EPC` points to the branch instruction and bit
         // 31 of `CAUSE` is set.
-        cop0.epc = pc.wrapping_sub(4);
-        cop0.cause |= 1 << 31;
+        psx.cop0.epc = pc.wrapping_sub(4);
+        psx.cop0.cause |= 1 << 31;
     } else {
-        cop0.epc = pc;
-        cop0.cause &= !(1 << 31);
+        psx.cop0.epc = pc;
+        psx.cop0.cause &= !(1 << 31);
     }
 
+    // Since we've just disabled the interrupts we may need to refresh the CPU state
+    cpu::irq_changed(psx);
+
     // The address of the exception handler address depends on the value of the BEV bit in SR
-    if (cop0.sr & (1 << 22)) != 0 {
+    if (psx.cop0.sr & (1 << 22)) != 0 {
         0xbfc0_0180
     } else {
         0x8000_0080
@@ -157,6 +163,9 @@ pub fn return_from_exception(psx: &mut Psx) {
     // a copy of the 2nd entry.
     cop0.sr &= !0xf;
     cop0.sr |= mode >> 2;
+
+    // We might have changed the exception enable bit, refresh the CPU
+    cpu::irq_changed(psx);
 }
 
 pub fn cause(psx: &Psx) -> u32 {
