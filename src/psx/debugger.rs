@@ -1,7 +1,6 @@
 //! Debugger interface
 
 use super::Psx;
-#[cfg(feature = "debugger")]
 use std::cell::RefCell;
 
 /// Trait defining the debugger interface
@@ -63,8 +62,31 @@ pub fn pc_change(psx: &mut Psx) {
     });
 }
 
+thread_local! {
+    pub static PREV_REGS: RefCell<[u32; 32]> = RefCell::new([0; 32]);
+}
+
 #[cfg(not(feature = "debugger"))]
-pub fn pc_change(_: &mut Psx) {}
+pub fn pc_change(psx: &mut Psx) {
+    let delta = psx.cycle_counter - psx.prev_cycle_counter;
+    psx.prev_cycle_counter = psx.cycle_counter;
+
+    print!("?P {:x} {}", psx.cpu.current_pc(), delta);
+
+    PREV_REGS.with(|r| {
+        let mut prev = r.borrow_mut();
+        let cur = psx.cpu.regs();
+
+        for i in 0..32 {
+            if prev[i] != cur[i] {
+                print!(" {} {:x}", crate::psx::cpu::REGISTER_NAMES[i], cur[i]);
+                prev[i] = cur[i];
+            }
+        }
+    });
+
+    println!();
+}
 
 #[cfg(feature = "debugger")]
 pub fn memory_read(psx: &mut Psx, addr: u32) {

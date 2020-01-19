@@ -1,2 +1,5 @@
 /target
 **/*.rs.bk
+fifocmp/fifocmd
+fifocmp/main.d
+fifocmp/main.o

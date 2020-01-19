@@ -1745,7 +1745,7 @@ const FUNCTION_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
 ];
 
 /// Conventional names given to the MIPS registers
-const REGISTER_NAMES: [&str; 32] = [
+pub const REGISTER_NAMES: [&str; 32] = [
     "r0", // Hardwired to be always 0
     "at", // Assembler Temporary (reserved for the assembler)
     "v0", "v1", // First and second return values
