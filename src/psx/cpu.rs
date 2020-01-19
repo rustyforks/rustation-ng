@@ -598,6 +598,12 @@ fn op_break(psx: &mut Psx, _: Instruction) {
 fn sync_mult_div(psx: &mut Psx) {
     let block_for = psx.cpu.mult_div_end - psx.cycle_counter;
 
+    if block_for == 1 {
+        // XXX timing hack from mednafen, if we only have one cycle left we ignore it. We should
+        // really just implement promper timing from psxact
+        return;
+    }
+
     if block_for > 0 {
         psx.cycle_counter = psx.cpu.mult_div_end;
 
@@ -660,15 +666,26 @@ fn op_mult(psx: &mut Psx, instruction: Instruction) {
     let s = reg_dep(psx, instruction.s());
     let t = reg_dep(psx, instruction.t());
 
-    let a = i64::from(psx.cpu.reg(s) as i32);
-    let b = i64::from(psx.cpu.reg(t) as i32);
+    let a = psx.cpu.reg(s) as i32;
+    let b = psx.cpu.reg(t) as i32;
 
-    let res = (a * b) as u64;
+    let res = i64::from(a) * i64::from(b);
+    let res = res as u64;
 
     psx.cpu.delayed_load();
 
     psx.cpu.hi = (res >> 32) as u32;
     psx.cpu.lo = res as u32;
+
+    let timing_index = if a < 0 {
+        (!a).leading_zeros()
+    } else {
+        a.leading_zeros()
+    };
+
+    let penalty = MULT_TIMINGS[timing_index as usize] as CycleCount;
+
+    psx.cpu.mult_div_end = psx.cycle_counter + penalty;
 }
 
 /// Multiply Unsigned
@@ -676,15 +693,19 @@ fn op_multu(psx: &mut Psx, instruction: Instruction) {
     let s = reg_dep(psx, instruction.s());
     let t = reg_dep(psx, instruction.t());
 
-    let a = u64::from(psx.cpu.reg(s));
-    let b = u64::from(psx.cpu.reg(t));
+    let a = psx.cpu.reg(s);
+    let b = psx.cpu.reg(t);
 
-    let res = a * b;
+    let res = u64::from(a) * u64::from(b);
 
     psx.cpu.delayed_load();
 
     psx.cpu.hi = (res >> 32) as u32;
     psx.cpu.lo = res as u32;
+
+    let penalty = MULT_TIMINGS[a.leading_zeros() as usize] as CycleCount;
+
+    psx.cpu.mult_div_end = psx.cycle_counter + penalty;
 }
 
 /// Divide (signed)
@@ -1813,6 +1834,30 @@ impl ICacheLine {
 
     fn set_instruction(&mut self, index: u32, instruction: Instruction) {
         self.line[index as usize] = instruction;
+    }
+}
+
+/// Multiplication timings, based on the number of leading zeroes in the first multiplicand.
+///
+/// XXX I don't know how accurate these timings are. Is it really only dependent on the magnitude
+/// of the first multiplicand?
+const MULT_TIMINGS: [u8; 33] = [
+    14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 10, 10, 10, 10, 10, 10, 10, 10, 10, 7, 7, 7, 7,
+    7, 7, 7, 7, 7, 7, 7, 7,
+];
+
+#[test]
+fn validate_mult_timings() {
+    for i in 0..33 {
+        let penalty = if i < 12 {
+            7
+        } else if i < 21 {
+            3
+        } else {
+            0
+        };
+
+        assert_eq!(penalty + 7, MULT_TIMINGS[i]);
     }
 }
 
