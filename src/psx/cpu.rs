@@ -45,6 +45,8 @@ pub struct Cpu {
     /// concurrently with other "normal" MIPS instructions and only block if a mf(hi|lo) is
     /// executed before they're finished
     mult_div_end: CycleCount,
+    /// Offset added to the index in the opcode jumptable when decoding instructions
+    opcode_table_offset: u8,
 }
 
 impl Cpu {
@@ -70,6 +72,7 @@ impl Cpu {
             delay_slot: false,
             debug_on_break: false,
             mult_div_end: 0,
+            opcode_table_offset: 0,
         }
     }
 
@@ -206,9 +209,13 @@ impl fmt::Debug for Cpu {
 
 /// Called whenever the IRQ state has potentially changed
 pub fn irq_changed(psx: &mut Psx) {
-    if cop0::irq_pending(psx) {
-        unimplemented!("Interrupt me!");
-    }
+    psx.cpu.opcode_table_offset = if cop0::irq_pending(psx) {
+        // Use the 2nd half of the jump table
+        64
+    } else {
+        // Use the normal table
+        0
+    };
 }
 
 pub fn run_next_instruction(psx: &mut Psx) {
@@ -252,7 +259,9 @@ pub fn run_next_instruction(psx: &mut Psx) {
 
     instruction_tick(psx);
 
-    let handler = OPCODE_HANDLERS[instruction.opcode()];
+    let opcode_index = instruction.opcode() | psx.cpu.opcode_table_offset as usize;
+
+    let handler = OPCODE_HANDLERS[opcode_index];
 
     handler(psx, instruction);
 }
@@ -1558,6 +1567,12 @@ fn op_illegal(psx: &mut Psx, instruction: Instruction) {
     exception(psx, Exception::IllegalInstruction);
 }
 
+fn op_irq(psx: &mut Psx, _instruction: Instruction) {
+    psx.cpu.delayed_load();
+
+    exception(psx, Exception::Interrupt);
+}
+
 /// A single MIPS instruction wrapper to make decoding easier
 #[derive(Clone, Copy)]
 pub struct Instruction(u32);
@@ -1655,7 +1670,7 @@ pub struct RegisterIndex(pub u8);
 
 /// Handler table for the main opcodes (instruction bits [31:26])
 #[rustfmt::skip]
-const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
+const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 128] = [
     // 0x00
     op_function, op_bxx,      op_j,        op_jal,
     op_beq,      op_bne,      op_blez,     op_bgtz,
@@ -1676,6 +1691,32 @@ const OPCODE_HANDLERS: [fn(&mut Psx, Instruction); 64] = [
     op_illegal,  op_illegal,  op_illegal,  op_illegal,
     op_swc0,     op_swc1,     op_swc2,     op_swc3,
     op_illegal,  op_illegal,  op_illegal,  op_illegal,
+
+    // This second half is called when an interrupt is active and `opcode_table_offset` is set to
+    // 64. You'll notice that the interrupt code is called every time *except* for COP2 opcodes.
+    // That's because GTE operations behave weirdly when at interrupt occurs. No$ says that they
+    // get repeated, mednafen "cheats" and just postpone the interrupt if it was to occur on a GTE
+    // instruction. Here we use mednafen's approach and ignore the interrupts for GTE operations.
+
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+
+    op_irq,      op_irq,      op_cop2,     op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
+    op_irq,      op_irq,      op_irq,      op_irq,
 ];
 
 /// Handler table for the function codes (instruction bits [31:26] when opcode is 0)
