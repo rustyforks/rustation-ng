@@ -1,5 +1,7 @@
 //! Top level for the emulation code. Contains the state of the emulated console.
 
+#[macro_use]
+mod box_array;
 mod bios;
 pub mod cop0;
 pub mod cpu;
@@ -59,7 +61,13 @@ impl Psx {
             gpu::VideoStandard::Ntsc
         };
 
-        let psx = Psx {
+        let bios = bios::Bios::new(bios_path)?;
+
+        Ok(Psx::new_with_bios(bios, standard))
+    }
+
+    pub fn new_with_bios(bios: bios::Bios, standard: gpu::VideoStandard) -> Psx {
+        Psx {
             cycle_counter: 0,
             frame_done: false,
             sync: sync::Synchronizer::new(),
@@ -67,7 +75,7 @@ impl Psx {
             cop0: cop0::Cop0::new(),
             irq: irq::InterruptState::new(),
             ram: Ram::new(),
-            bios: bios::Bios::new(bios_path)?,
+            bios,
             spu: spu::Spu::new(),
             dma: dma::Dma::new(),
             timers: timers::Timers::new(),
@@ -77,9 +85,7 @@ impl Psx {
             cache_control: 0,
             dma_timing_penalty: 0,
             cpu_stalled_for_dma: false,
-        };
-
-        Ok(psx)
+        }
     }
 
     /// Run the emulator for a single frame
@@ -461,7 +467,7 @@ impl Ram {
     /// Instantiate main RAM
     pub fn new() -> Ram {
         Ram {
-            data: Box::new([0; RAM_SIZE]),
+            data: box_array![0; RAM_SIZE],
         }
     }
 

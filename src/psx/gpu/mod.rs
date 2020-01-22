@@ -7,7 +7,14 @@ use commands::Command;
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
+#[derive(PartialEq, Eq, Debug)]
+enum State {
+    Idle,
+    InQuad(CycleCount),
+}
+
 pub struct Gpu {
+    state: State,
     video_standard: VideoStandard,
     /// Current value of the display mode
     display_mode: DisplayMode,
@@ -60,12 +67,18 @@ pub struct Gpu {
     /// Set to `false` on the beginning of a new line and set to `true` when the line has been
     /// drawn
     frame_drawn: bool,
-    /// Clipping configuration: top-left corner
-    clip_top_left: u32,
-    /// Clipping configuration: bottom-right corner
-    clip_bot_right: u32,
-    /// Drawing offset
-    draw_offset: u32,
+    /// Left edge of the clipping area
+    clip_x_min: i32,
+    /// Top edge of the clipping area
+    clip_y_min: i32,
+    /// Right edge of the clipping area
+    clip_x_max: i32,
+    /// Bottom edge of the clipping area
+    clip_y_max: i32,
+    /// Horizontal drawing offset
+    draw_offset_x: i32,
+    /// Vertical drawing offset
+    draw_offset_y: i32,
     /// Texture window settings
     tex_window: u32,
     /// Mask bit settings
@@ -77,6 +90,7 @@ pub struct Gpu {
 impl Gpu {
     pub fn new(video_standard: VideoStandard) -> Gpu {
         let mut gpu = Gpu {
+            state: State::Idle,
             video_standard,
             display_mode: DisplayMode::new(),
             display_line_start: 0x10,
@@ -103,9 +117,12 @@ impl Gpu {
             read_bottom_field: false,
             lines_per_field: 0,
             frame_drawn: false,
-            clip_top_left: 0,
-            clip_bot_right: 0,
-            draw_offset: 0,
+            clip_x_min: 0,
+            clip_y_min: 0,
+            clip_x_max: 0,
+            clip_y_max: 0,
+            draw_offset_x: 0,
+            draw_offset_y: 0,
             tex_window: 0,
             mask_settings: MaskSettings::new(),
             display_area_start: 0,
@@ -117,9 +134,7 @@ impl Gpu {
     }
 
     fn reset(&mut self) {
-        if self.draw_time_budget < 0 {
-            self.draw_time_budget = 0;
-        }
+        self.state = State::Idle;
 
         self.command_fifo.clear();
 
@@ -132,12 +147,19 @@ impl Gpu {
         self.display_mode.set(0);
         self.dma_direction.set(0);
 
-        self.clip_top_left = 0;
-        self.clip_bot_right = 0;
-        self.draw_offset = 0;
+        self.clip_x_min = 0;
+        self.clip_y_min = 0;
+        self.clip_x_max = 0;
+        self.clip_y_max = 0;
+        self.draw_offset_x = 0;
+        self.draw_offset_y = 0;
         self.tex_window = 0;
         self.mask_settings.set(0);
         self.display_area_start = 0;
+
+        if self.draw_time_budget < 0 {
+            self.draw_time_budget = 0;
+        }
     }
 
     fn status(&self) -> u32 {
@@ -186,7 +208,10 @@ impl Gpu {
 
     /// Returns true if we're ready to accept DMA commands
     pub fn dma_can_write(&self) -> bool {
-        // TODO: return false if in PLINE or Quad
+        // TODO: return false if in PLINE
+        if let State::InQuad(_) = self.state {
+            return false;
+        }
 
         if self.command_fifo.is_empty() {
             return true;
@@ -212,7 +237,7 @@ impl Gpu {
     /// Computes the value of the status register's "idle" bit
     fn is_idle(&self) -> bool {
         // TODO: add "InCmd" when we implement it
-        self.draw_time_budget >= 0 && self.command_fifo.is_empty()
+        self.state == State::Idle && self.draw_time_budget >= 0 && self.command_fifo.is_empty()
     }
 
     /// Attempt to write `command` to the command FIFO, returns `true` if successful, `false` if
@@ -322,6 +347,11 @@ impl Gpu {
         } else {
             false
         };
+    }
+
+    /// Consume the `draw_time_budget`
+    fn draw_time(&mut self, time: CycleCount) {
+        self.draw_time_budget -= time;
     }
 }
 
@@ -562,6 +592,20 @@ fn gp1(psx: &mut Psx, val: u32) {
 
 /// Attempt to execute a command from the `command_fifo`
 fn process_commands(psx: &mut Psx) {
+    match psx.gpu.state {
+        State::Idle => run_next_command(psx),
+        State::InQuad(draw_time) => {
+            if psx.gpu.draw_time_budget >= 0 {
+                // We have finished drawing the first triangle in the quad, we can move to the 2nd
+                // one
+                psx.gpu.draw_time(draw_time);
+                psx.gpu.state = State::Idle;
+            }
+        }
+    }
+}
+
+fn run_next_command(psx: &mut Psx) {
     if psx.gpu.command_fifo.is_empty() {
         // We have nothing to do if the FIFO is empty
         return;
@@ -590,7 +634,7 @@ fn process_commands(psx: &mut Psx) {
     }
 
     if !command.out_of_band {
-        psx.gpu.draw_time_budget -= 2;
+        psx.gpu.draw_time(2);
     }
 
     // Invoke the callback to actually implement the command

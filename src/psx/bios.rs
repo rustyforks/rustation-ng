@@ -13,7 +13,7 @@ impl Bios {
         let mut file = File::open(path)?;
 
         // Load the BIOS
-        let mut rom = Box::new([0; BIOS_SIZE]);
+        let mut rom = box_array![0; BIOS_SIZE];
         let mut nread = 0;
 
         while nread < BIOS_SIZE {
@@ -35,6 +35,14 @@ impl Bios {
         }
 
         Ok(Bios { rom })
+    }
+
+    /// Creates a BIOS instance with content set to all 0s.
+    #[allow(dead_code)]
+    pub fn new_dummy() -> Bios {
+        let rom = box_array![0; BIOS_SIZE];
+
+        Bios { rom }
     }
 
     /// Read `T::width()` bytes from the BIOS at the given `offset`
