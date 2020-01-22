@@ -85,6 +85,8 @@ pub struct Gpu {
     mask_settings: MaskSettings,
     /// Start Display area (top-left corner)
     display_area_start: u32,
+    /// True if the display is disabled,
+    display_off: bool,
 }
 
 impl Gpu {
@@ -126,6 +128,7 @@ impl Gpu {
             tex_window: 0,
             mask_settings: MaskSettings::new(),
             display_area_start: 0,
+            display_off: true,
         };
 
         gpu.refresh_lines_per_field();
@@ -180,8 +183,7 @@ impl Gpu {
         s |= ((self.display_mode.0 >> 6) & 1) << 16;
         s |= (self.display_mode.0 & 0x3f) << 17;
 
-        // TODO: bit 23 - Display Off (GP1[0x03])
-        s |= 1 << 23;
+        s |= (self.display_off as u32) << 23;
         // TODO: bit 24 - IRQ1 (*not* VSync)
 
         // XXX This in what mednafen does but it's probably far from accurate. No$ has a more
@@ -571,11 +573,11 @@ fn gp0(psx: &mut Psx, val: u32) {
 /// Handle GP1 commands
 fn gp1(psx: &mut Psx, val: u32) {
     let op = val >> 24;
-    let param = val & 0xff_ffff;
 
     match op {
         0x00 => psx.gpu.reset(),
-        0x04 => psx.gpu.dma_direction.set(param),
+        0x03 => psx.gpu.display_off = (val & 1) != 0,
+        0x04 => psx.gpu.dma_direction.set(val & 3),
         0x05 => psx.gpu.display_area_start = val & 0x7_ffff,
         0x06 => {
             psx.gpu.display_column_start = (val & 0xfff) as u16;
@@ -585,7 +587,7 @@ fn gp1(psx: &mut Psx, val: u32) {
             psx.gpu.display_line_start = (val & 0x3ff) as u16;
             psx.gpu.display_line_end = ((val >> 10) & 0x3ff) as u16;
         }
-        0x08 => psx.gpu.display_mode.set(param),
+        0x08 => psx.gpu.display_mode.set(val & 0xff_ffff),
         _ => unimplemented!("GP1 0x{:08x}", val),
     }
 }
