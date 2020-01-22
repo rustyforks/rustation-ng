@@ -683,7 +683,7 @@ fn op_mult(psx: &mut Psx, instruction: Instruction) {
         a.leading_zeros()
     };
 
-    let penalty = MULT_TIMINGS[timing_index as usize] as CycleCount;
+    let penalty = CycleCount::from(MULT_TIMINGS[timing_index as usize]);
 
     psx.cpu.mult_div_end = psx.cycle_counter + penalty;
 }
@@ -703,7 +703,7 @@ fn op_multu(psx: &mut Psx, instruction: Instruction) {
     psx.cpu.hi = (res >> 32) as u32;
     psx.cpu.lo = res as u32;
 
-    let penalty = MULT_TIMINGS[a.leading_zeros() as usize] as CycleCount;
+    let penalty = CycleCount::from(MULT_TIMINGS[a.leading_zeros() as usize]);
 
     psx.cpu.mult_div_end = psx.cycle_counter + penalty;
 }
