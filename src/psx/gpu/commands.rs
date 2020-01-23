@@ -339,6 +339,32 @@ where
     psx.gpu.state = State::InQuad(draw_time);
 }
 
+fn cmd_vram_store(psx: &mut Psx) {
+    // Pop command
+    psx.gpu.command_fifo.pop();
+    // Position in VRAM
+    psx.gpu.command_fifo.pop();
+    // Dimensions
+    let dim = psx.gpu.command_fifo.pop();
+
+    // Width is in GPU pixels, i.e. 16bits per pixel
+    let mut width = dim & 0x3ff;
+    let mut height = (dim >> 16) & 0x1ff;
+
+    if width == 0 {
+        width = 1024;
+    }
+
+    if height == 0 {
+        height = 512;
+    }
+
+    // Total number of words we expect to complete the transfer. Since every pixel is 16bit and we
+    // transfer 32bits at a time we need to round up
+    let nwords = (width * height + 1) / 2;
+    psx.gpu.state = State::VRamStore(nwords);
+}
+
 fn cmd_draw_mode(psx: &mut Psx) {
     let mode = psx.gpu.command_fifo.pop();
 
@@ -1372,9 +1398,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0xa0
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_vram_store,
+        len: 3,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {

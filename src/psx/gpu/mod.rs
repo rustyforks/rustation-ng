@@ -10,7 +10,11 @@ const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 #[derive(PartialEq, Eq, Debug)]
 enum State {
     Idle,
+    /// We're drawing the first triangle of a quad. The CycleCount is the number of cycles we'll
+    /// have to use to draw the 2nd triangle.
     InQuad(CycleCount),
+    /// We're uploading data to the VRAM. The u32 is the number of 32bit words left to transfer.
+    VRamStore(u32),
 }
 
 pub struct Gpu {
@@ -221,7 +225,10 @@ impl Gpu {
 
         let next_command = self.next_command();
 
-        // TODO: return false if FBREAD or FBWRITE
+        // TODO: return false if FBREAD
+        if let State::VRamStore(_) = self.state {
+            return false;
+        }
 
         // XXX this is taken from mednafen but I don't quite understand why we check `fifo_len`
         // instead of `len` here. Don't we just want to check if the entire command has been
@@ -602,6 +609,16 @@ fn process_commands(psx: &mut Psx) {
                 // one
                 psx.gpu.draw_time(draw_time);
                 psx.gpu.state = State::Idle;
+            }
+        }
+        State::VRamStore(ref mut nwords) => {
+            if !psx.gpu.command_fifo.is_empty() {
+                psx.gpu.command_fifo.pop();
+                *nwords -= 1;
+
+                if *nwords == 0 {
+                    psx.gpu.state = State::Idle;
+                }
             }
         }
     }
