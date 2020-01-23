@@ -339,7 +339,9 @@ where
     psx.gpu.state = State::InQuad(draw_time);
 }
 
-fn cmd_vram_store(psx: &mut Psx) {
+/// Parses the command FIFO for a VRAM store or load and returns the number of words about to be
+/// read/written
+fn vram_access_length_words(psx: &mut Psx) -> u32 {
     // Pop command
     psx.gpu.command_fifo.pop();
     // Position in VRAM
@@ -351,6 +353,7 @@ fn cmd_vram_store(psx: &mut Psx) {
     let mut width = dim & 0x3ff;
     let mut height = (dim >> 16) & 0x1ff;
 
+    // XXX recheck this, a comment in mednafen says that the results for VRAM load are inconsistent
     if width == 0 {
         width = 1024;
     }
@@ -359,10 +362,19 @@ fn cmd_vram_store(psx: &mut Psx) {
         height = 512;
     }
 
-    // Total number of words we expect to complete the transfer. Since every pixel is 16bit and we
-    // transfer 32bits at a time we need to round up
-    let nwords = (width * height + 1) / 2;
+    // Total number of words to complete the transfer. Since every pixel is 16bit and we transfer
+    // 32bits at a time we need to round up
+    (width * height + 1) / 2
+}
+
+fn cmd_vram_store(psx: &mut Psx) {
+    let nwords = vram_access_length_words(psx);
     psx.gpu.state = State::VRamStore(nwords);
+}
+
+fn cmd_vram_load(psx: &mut Psx) {
+    let nwords = vram_access_length_words(psx);
+    psx.gpu.state = State::VRamLoad(nwords);
 }
 
 fn cmd_draw_mode(psx: &mut Psx) {
@@ -1592,9 +1604,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0xc0
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_vram_load,
+        len: 3,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {

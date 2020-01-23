@@ -15,6 +15,9 @@ enum State {
     InQuad(CycleCount),
     /// We're uploading data to the VRAM. The u32 is the number of 32bit words left to transfer.
     VRamStore(u32),
+    /// We're downloading data from the VRAM. The u32 is the number of 32bit words left to
+    /// transfer.
+    VRamLoad(u32),
 }
 
 pub struct Gpu {
@@ -199,7 +202,9 @@ impl Gpu {
 
         s |= (self.is_idle() as u32) << 26;
 
-        // TODO: bit 27: Data available
+        if let State::VRamLoad(_) = self.state {
+            s |= 1 << 27;
+        }
 
         // TODO: can read bit
         s |= 0 << 27;
@@ -225,8 +230,11 @@ impl Gpu {
 
         let next_command = self.next_command();
 
-        // TODO: return false if FBREAD
         if let State::VRamStore(_) = self.state {
+            return false;
+        }
+
+        if let State::VRamLoad(_) = self.state {
             return false;
         }
 
@@ -564,10 +572,18 @@ pub fn dma_store(psx: &mut Psx, val: u32) {
 
 /// Handles loads from GP0
 fn read(psx: &mut Psx) -> u32 {
-    let _ = psx;
-    warn!("Unhandled GPU read");
+    if let State::VRamLoad(ref mut nwords) = psx.gpu.state {
+        *nwords -= 1;
+        if *nwords == 0 {
+            psx.gpu.state = State::Idle;
+        }
 
-    0
+        // XXX implement me
+        0
+    } else {
+        warn!("Unhandled GPU read");
+        0
+    }
 }
 
 /// Handle GP0 commands
@@ -621,6 +637,8 @@ fn process_commands(psx: &mut Psx) {
                 }
             }
         }
+        // We don't process commands in VRAM Load mode
+        State::VRamLoad(_) => (),
     }
 }
 
