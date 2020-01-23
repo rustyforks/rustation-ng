@@ -78,6 +78,14 @@ impl ShadingMode for NoShading {
     }
 }
 
+struct Shaded;
+
+impl ShadingMode for Shaded {
+    fn is_shaded() -> bool {
+        true
+    }
+}
+
 /// A vertex's coordinates
 #[derive(Debug, Copy, Clone)]
 struct Position {
@@ -285,6 +293,44 @@ where
     draw_time
 }
 
+fn cmd_handle_poly_tri<Transparency, Texture, Shading>(psx: &mut Psx)
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+    Shading: ShadingMode,
+{
+    let mut coords = [
+        Position::new(0, 0),
+        Position::new(0, 0),
+        Position::new(0, 0),
+    ];
+
+    // Load the triangle coordinates. Since we only care about timings here we don't need to load
+    // the texture coordinates or anything.
+    for (v, coord) in coords.iter_mut().enumerate() {
+        if v == 0 || Shading::is_shaded() {
+            // Pop the shading color (also takes care of the command word if we're not shaded)
+            psx.gpu.command_fifo.pop();
+        }
+
+        let cmd = psx.gpu.command_fifo.pop();
+        *coord = Position::from_command(cmd);
+
+        // Add the draw offset
+        coord.x += psx.gpu.draw_offset_x;
+        coord.y += psx.gpu.draw_offset_y;
+
+        if Texture::is_textured() {
+            // Pop texture coordinates
+            psx.gpu.command_fifo.pop();
+        }
+    }
+
+    // Compute the time needed to draw the triangle
+    let draw_time = triangle_draw_time::<Transparency, Texture, Shading>(psx, coords);
+    psx.gpu.draw_time(64 + 18 + draw_time);
+}
+
 fn cmd_handle_poly_quad<Transparency, Texture, Shading>(psx: &mut Psx)
 where
     Transparency: TransparencyMode,
@@ -336,7 +382,7 @@ where
     // Compute the time needed to draw the second triangle and save it for later
     let draw_time = triangle_draw_time::<Transparency, Texture, Shading>(psx, triangle_2);
 
-    psx.gpu.state = State::InQuad(draw_time);
+    psx.gpu.state = State::InQuad(28 + 18 + draw_time);
 }
 
 /// Parses the command FIFO for a VRAM store or load and returns the number of words about to be
@@ -731,8 +777,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0x30
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, NoTexture, Shaded>,
+        len: 6,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -779,8 +825,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, NoTexture, Shaded>,
+        len: 8,
         fifo_len: 1,
         out_of_band: false,
     },
