@@ -165,9 +165,13 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
     }
 }
 
-fn set_channel_control(psx: &mut Psx, port: Port, ctrl: u32) {
+fn set_channel_control(psx: &mut Psx, port: Port, mut ctrl: u32) {
     if port == Port::Otc {
-        unimplemented!("Handle OTC channel configuration");
+        // Since the OTC's port sole raison d'être is to initialize the GPU linked list in RAM it
+        // doesn't support all the DMA control options
+        ctrl &= 0x5100_0000;
+        // OTC is always backwards
+        ctrl |= 2;
     }
 
     let was_enabled = psx.dma[port].control.is_enabled();
@@ -262,6 +266,11 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
             let cur_addr = psx.dma[port].cur_address;
 
             match sync_mode {
+                SyncMode::Manual => {
+                    let channel = &mut psx.dma[port];
+
+                    channel.remaining_words = channel.block_size;
+                }
                 SyncMode::Request => {
                     let channel = &mut psx.dma[port];
 
@@ -296,7 +305,6 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                     // around).
                     do_copy = false;
                 }
-                _ => unimplemented!("Implement {:?}", sync_mode),
             }
         } else if control.is_chopped() {
             unimplemented!("Implement chop");
@@ -314,7 +322,8 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                 let v = psx.ram.load(cur_addr);
                 port_store(psx, port, v);
             } else {
-                unimplemented!();
+                let v = port_load(psx, port);
+                psx.ram.store(cur_addr, v);
             }
 
             psx.dma[port].cur_address = 0xff_ffff
@@ -338,6 +347,10 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
             }
 
             let end_of_dma = match sync_mode {
+                SyncMode::Manual => {
+                    // We do the transfer all at once, we're done
+                    true
+                }
                 SyncMode::Request => {
                     let channel = &mut psx.dma[port];
 
@@ -349,7 +362,6 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                     // Check for end-of-list marker
                     psx.dma[port].base == 0xff_ffff
                 }
-                _ => unimplemented!(),
             };
 
             if end_of_dma && psx.dma.end_of_dma(port).is_triggered() {
@@ -372,6 +384,9 @@ fn can_run(psx: &Psx, port: Port, write: bool) -> bool {
         }
     } else {
         match port {
+            // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
+            // `true`
+            Port::Otc => psx.dma[port].control.is_started(),
             _ => unimplemented!("Can read {:?}?", port),
         }
     }
@@ -381,6 +396,24 @@ fn can_run(psx: &Psx, port: Port, write: bool) -> bool {
 fn port_store(psx: &mut Psx, port: Port, v: u32) {
     match port {
         Port::Gpu => gpu::dma_store(psx, v),
+        _ => unimplemented!("DMA port store {:?}", port),
+    }
+}
+
+/// Perform a DMA port read
+fn port_load(psx: &mut Psx, port: Port) -> u32 {
+    match port {
+        Port::Otc => {
+            let channel = &psx.dma[port];
+
+            if channel.remaining_words == 1 {
+                // Last entry contains the end of table marker
+                0xff_ffff
+            } else {
+                // Pointer to the previous entry
+                channel.cur_address.wrapping_sub(4) & 0x1f_ffff
+            }
+        }
         _ => unimplemented!("DMA port store {:?}", port),
     }
 }
@@ -491,6 +524,11 @@ impl ChannelControl {
     /// Returns true if the 'enable' bit is set
     fn is_enabled(self) -> bool {
         self.0 & (1 << 24) != 0
+    }
+
+    /// Returns true if the 'start' bit is set
+    fn is_started(self) -> bool {
+        self.0 & (1 << 28) != 0
     }
 
     /// Returns true if transfer is from RAM to device, false otherwise
