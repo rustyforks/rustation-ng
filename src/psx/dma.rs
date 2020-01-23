@@ -108,7 +108,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, offset: u32) -> T {
 
             match reg {
                 0 => channel.base,
-                4 => channel.block_control,
+                4 => channel.block_control(),
                 8 => channel.control.get(),
                 _ => unimplemented!("Read from channel {:?} register {:x}", port, reg),
             }
@@ -142,7 +142,7 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
 
             match reg {
                 0 => psx.dma[port].base = val & 0xff_ffff,
-                4 => psx.dma[port].block_control = val,
+                4 => psx.dma[port].set_block_control(val),
                 8 => set_channel_control(psx, port, val),
                 _ => unimplemented!("Write to channel {:?} register {:x}: {:x}", port, reg, val),
             }
@@ -206,7 +206,7 @@ fn refresh_cpu_halt(psx: &mut Psx) {
         let gpu_chan = &psx.dma[Port::Gpu];
         let control = gpu_chan.control;
 
-        let block_size = gpu_chan.block_control & 0xffff;
+        let block_size = gpu_chan.block_size;
 
         let is_cpu_stalled = control.is_enabled()
             && !control.is_chopped()
@@ -262,6 +262,17 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
             let cur_addr = psx.dma[port].cur_address;
 
             match sync_mode {
+                SyncMode::Request => {
+                    let channel = &mut psx.dma[port];
+
+                    channel.remaining_words = channel.block_size;
+                    channel.block_count -= 1;
+
+                    // XXX From mednafen, only GPU timings are implemented so far
+                    if port == Port::Gpu {
+                        channel.clock_counter -= 7;
+                    }
+                }
                 SyncMode::LinkedList => {
                     let overflow = cur_addr & 0x80_0000 != 0;
 
@@ -327,6 +338,13 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
             }
 
             let end_of_dma = match sync_mode {
+                SyncMode::Request => {
+                    let channel = &mut psx.dma[port];
+
+                    channel.base = channel.cur_address;
+
+                    channel.block_count == 0
+                }
                 SyncMode::LinkedList => {
                     // Check for end-of-list marker
                     psx.dma[port].base == 0xff_ffff
@@ -418,9 +436,10 @@ struct Channel {
     base: u32,
     /// Current address during DMA operation
     cur_address: u32,
-    /// Block control. The interpretation of this field depends on the sync mode configured in the
-    /// channel's control register
-    block_control: u32,
+    /// Block size (not used in LinkedList mode)
+    block_size: u16,
+    /// Number of blocks being transferred in Request mode
+    block_count: u16,
     remaining_words: u16,
     clock_counter: CycleCount,
 }
@@ -431,10 +450,23 @@ impl Channel {
             control: ChannelControl::new(),
             base: 0,
             cur_address: 0,
-            block_control: 0,
+            block_size: 0,
+            block_count: 0,
             remaining_words: 0,
             clock_counter: 0,
         }
+    }
+
+    fn block_control(&self) -> u32 {
+        let bs = u32::from(self.block_size);
+        let bc = u32::from(self.block_count);
+
+        (bc << 16) | bs
+    }
+
+    fn set_block_control(&mut self, val: u32) {
+        self.block_size = val as u16;
+        self.block_count = (val >> 16) as u16;
     }
 }
 
