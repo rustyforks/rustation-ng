@@ -29,7 +29,7 @@ impl CommandFifo {
     }
 
     pub fn len(&self) -> usize {
-        let l = self.write_index - self.read_index;
+        let l = self.write_index.wrapping_sub(self.read_index);
 
         l as usize
     }
@@ -167,4 +167,23 @@ fn test_command_fifo() {
     assert!(fifo.is_empty());
     assert!(!fifo.is_full());
     assert_eq!(fifo.len(), 0);
+}
+
+#[test]
+fn test_fifo_pointer_overflow() {
+    let mut fifo = CommandFifo::new();
+
+    for v in 0..256 {
+        for i in 0..COMMAND_FIFO_DEPTH {
+            assert_eq!(fifo.len(), i);
+            fifo.push(v);
+        }
+
+        for i in 0..COMMAND_FIFO_DEPTH {
+            assert_eq!(fifo.len(), COMMAND_FIFO_DEPTH - i);
+            assert_eq!(fifo.pop(), v);
+        }
+
+        assert_eq!(fifo.len(), 0);
+    }
 }
