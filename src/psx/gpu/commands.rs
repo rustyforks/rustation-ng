@@ -380,6 +380,11 @@ fn cmd_mask_settings(psx: &mut Psx) {
     psx.gpu.mask_settings.set(mask_settings)
 }
 
+fn cmd_clear_cache(psx: &mut Psx) {
+    // XXX for now we don't implement the GPU cache timings
+    psx.gpu.command_fifo.pop();
+}
+
 /// Does nothing, but with style
 fn cmd_nop(psx: &mut Psx) {
     // Pop the FIFO
@@ -403,9 +408,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_clear_cache,
         len: 1,
-        fifo_len: 1,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
