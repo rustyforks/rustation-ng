@@ -44,9 +44,15 @@ pub fn resync(psx: &mut Psx, who: SyncToken) -> CycleCount {
     let who = who as usize;
 
     let elapsed = psx.cycle_counter - psx.sync.last_sync[who];
-    psx.sync.last_sync[who] = psx.cycle_counter;
 
-    debug_assert!(elapsed >= 0);
+    if elapsed <= 0 {
+        // Since we move the timestamp back when we handle an event it's possible in some cases to
+        // end up with an event being handled after a refresh that already put us past it.
+        debug_assert!(elapsed > -300);
+        return 0;
+    }
+
+    psx.sync.last_sync[who] = psx.cycle_counter;
 
     elapsed
 }
