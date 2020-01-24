@@ -219,13 +219,13 @@ fn refresh_cpu_halt(psx: &mut Psx) {
             && can_run(psx, Port::Gpu, control.is_from_ram());
 
         if is_cpu_stalled {
-            block_size - 1
+            CycleCount::from(block_size - 1)
         } else {
             0
         }
     };
 
-    psx.set_dma_timing_penalty(timing_penalty as CycleCount);
+    psx.set_dma_timing_penalty(timing_penalty);
     psx.set_cpu_stalled_for_dma(halt_cpu);
 }
 
