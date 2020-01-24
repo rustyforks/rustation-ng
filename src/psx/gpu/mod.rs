@@ -128,7 +128,7 @@ impl Gpu {
             frame_drawn: false,
             clip_x_min: 0,
             clip_y_min: 0,
-            clip_x_max: 0,
+            clip_x_max: 1,
             clip_y_max: 0,
             draw_offset_x: 0,
             draw_offset_y: 0,
@@ -159,7 +159,7 @@ impl Gpu {
 
         self.clip_x_min = 0;
         self.clip_y_min = 0;
-        self.clip_x_max = 0;
+        self.clip_x_max = 1;
         self.clip_y_max = 0;
         self.draw_offset_x = 0;
         self.draw_offset_y = 0;

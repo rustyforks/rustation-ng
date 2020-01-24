@@ -66,6 +66,18 @@ impl TextureMode for NoTexture {
     }
 }
 
+struct TextureBlending;
+
+impl TextureMode for TextureBlending {
+    fn is_textured() -> bool {
+        true
+    }
+
+    fn is_raw_texture() -> bool {
+        false
+    }
+}
+
 trait ShadingMode {
     fn is_shaded() -> bool;
 }
@@ -385,6 +397,89 @@ where
     psx.gpu.state = State::InQuad(28 + 18 + draw_time);
 }
 
+fn rect_draw_time<Transparency, Texture>(
+    psx: &mut Psx,
+    dimensions: Option<(i32, i32)>,
+) -> CycleCount
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    // Pop the command/color
+    psx.gpu.command_fifo.pop();
+
+    let mut top_left_corner = Position::from_command(psx.gpu.command_fifo.pop());
+    // Add the draw offset
+    top_left_corner.x += psx.gpu.draw_offset_x;
+    top_left_corner.y += psx.gpu.draw_offset_y;
+
+    if Texture::is_textured() {
+        // Pop texture coordinates
+        psx.gpu.command_fifo.pop();
+    }
+
+    let (mut width, mut height) = match dimensions {
+        Some((w, h)) => (w, h),
+        None => {
+            // Variable dimensions
+            let dim = psx.gpu.command_fifo.pop();
+            let w = dim & 0x3ff;
+            let h = (dim >> 16) & 0x1ff;
+
+            (w as i32, h as i32)
+        }
+    };
+
+    let min_x = top_left_corner.x;
+    let min_y = top_left_corner.y;
+    let max_x = top_left_corner.x + width;
+    let max_y = top_left_corner.y + height;
+
+    if min_x < psx.gpu.clip_x_min {
+        width -= psx.gpu.clip_x_min - min_x;
+    }
+    if max_x > psx.gpu.clip_x_max {
+        width -= max_x - psx.gpu.clip_x_max;
+    }
+    if min_y < psx.gpu.clip_y_min {
+        height -= psx.gpu.clip_y_min - min_y;
+    }
+    if max_y > psx.gpu.clip_y_max {
+        height -= max_y - psx.gpu.clip_y_max;
+    }
+
+    if width <= 0 || height <= 0 {
+        // XXX are 0-size rects really rejected immediately even if one dimension in non-0?
+        return 0;
+    }
+
+    let mut draw_time = width * height;
+
+    if Transparency::is_transparent() || psx.gpu.mask_settings.check_mask_bit() {
+        // If we need to read the VRAM for transparency or mask checking we use about 1.5 cycles
+        // per pixel.
+        // XXX here mednafen rounds up the dimensions to the next multiple of two, but not for the
+        // "base" time above. Not sure what's up with that.
+        draw_time = (draw_time * 3) / 2
+    };
+
+    debug!(
+        "Draw rectangle {:?} {}x{}: draw_time: {}",
+        top_left_corner, width, height, draw_time
+    );
+
+    draw_time
+}
+
+fn cmd_handle_rect_variable<Transparency, Texture>(psx: &mut Psx)
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    let draw_time = rect_draw_time::<Transparency, Texture>(psx, None);
+    psx.gpu.draw_time(draw_time);
+}
+
 /// Parses the command FIFO for a VRAM store or load and returns the number of words about to be
 /// read/written
 fn vram_access_length_words(psx: &mut Psx) -> u32 {
@@ -445,6 +540,10 @@ fn cmd_clip_bot_right(psx: &mut Psx) {
 
     psx.gpu.clip_x_max = (clip & 0x3ff) as i32;
     psx.gpu.clip_y_max = ((clip >> 10) & 0x3ff) as i32;
+
+    // XXX double check but apparently the real X clip is one more pixel than configured in the
+    // command.
+    psx.gpu.clip_x_max += 1;
 }
 
 fn cmd_draw_offset(psx: &mut Psx) {
@@ -1092,9 +1191,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_variable::<Opaque, TextureBlending>,
+        len: 4,
+        fifo_len: 4,
         out_of_band: false,
     },
     Command {
