@@ -144,10 +144,6 @@ impl Gpu {
     }
 
     fn reset(&mut self) {
-        self.state = State::Idle;
-
-        self.command_fifo.clear();
-
         self.display_line_start = 0x10;
         self.display_line_end = 0x100;
         self.display_column_start = 0x200;
@@ -166,6 +162,13 @@ impl Gpu {
         self.tex_window = 0;
         self.mask_settings.set(0);
         self.display_area_start = 0;
+
+        self.reset_command_fifo();
+    }
+
+    fn reset_command_fifo(&mut self) {
+        self.command_fifo.clear();
+        self.state = State::Idle;
 
         if self.draw_time_budget < 0 {
             self.draw_time_budget = 0;
@@ -599,6 +602,8 @@ fn gp1(psx: &mut Psx, val: u32) {
 
     match op {
         0x00 => psx.gpu.reset(),
+        0x01 => psx.gpu.reset_command_fifo(),
+        0x02 => debug!("IRQ1 ack"),
         0x03 => psx.gpu.display_off = (val & 1) != 0,
         0x04 => psx.gpu.dma_direction.set(val & 3),
         0x05 => psx.gpu.display_area_start = val & 0x7_ffff,
