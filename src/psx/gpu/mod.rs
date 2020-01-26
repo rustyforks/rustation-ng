@@ -143,6 +143,10 @@ impl Gpu {
         gpu
     }
 
+    pub fn video_standard(&self) -> VideoStandard {
+        self.video_standard
+    }
+
     fn reset(&mut self) {
         self.display_line_start = 0x10;
         self.display_line_end = 0x100;

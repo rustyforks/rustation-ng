@@ -99,9 +99,9 @@ pub fn mfc0(psx: &mut Psx, cop_r: RegisterIndex) -> u32 {
             // virtual memory, however some exceptions do write to this register so maybe it's
             // worth implementing better
             warn!("Unhandled read from BAD_VADDR (cop0r8)");
-            0
+            psx.cop0.bad()
         }
-        12 => psx.cop0.sr,
+        12 => psx.cop0.sr(),
         13 => cause(psx),
         14 => psx.cop0.epc,
         15 => PROCESSOR_ID,

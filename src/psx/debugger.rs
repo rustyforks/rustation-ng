@@ -43,9 +43,6 @@ pub fn swap_debugger(new_debugger: Box<dyn Debugger>) {
     });
 }
 
-#[cfg(not(feature = "debugger"))]
-pub fn swap_debugger(_: Box<dyn Debugger>) {}
-
 #[cfg(feature = "debugger")]
 pub fn trigger_break(psx: &mut Psx) {
     DEBUGGER.with(|d| {

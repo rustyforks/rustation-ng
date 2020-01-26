@@ -2,12 +2,12 @@
 
 #[macro_use]
 mod box_array;
-mod bios;
+pub mod bios;
+mod cdrom;
 pub mod cop0;
 pub mod cpu;
 pub mod debugger;
 mod dma;
-pub mod error;
 mod gpu;
 mod irq;
 mod spu;
@@ -15,9 +15,11 @@ mod sync;
 mod timers;
 
 use std::cmp::min;
-use std::path::Path;
 
-use self::error::Result;
+use crate::error::Result;
+
+pub use cdrom::{disc, iso9660};
+pub use gpu::VideoStandard;
 
 /// Type alias used to represent a number of clock cycles
 pub type CycleCount = i32;
@@ -53,15 +55,8 @@ pub struct Psx {
 }
 
 impl Psx {
-    pub fn new(bios_path: &Path) -> Result<Psx> {
-        // TODO should be based on the game being run.
-        let standard = if true {
-            gpu::VideoStandard::Pal
-        } else {
-            gpu::VideoStandard::Ntsc
-        };
-
-        let bios = bios::Bios::new(bios_path)?;
+    pub fn new(disc: disc::Disc, bios: bios::Bios) -> Result<Psx> {
+        let standard = disc.region().video_standard();
 
         Ok(Psx::new_with_bios(bios, standard))
     }
@@ -88,6 +83,10 @@ impl Psx {
         }
     }
 
+    pub fn video_standard(&self) -> VideoStandard {
+        self.gpu.video_standard()
+    }
+
     /// Run the emulator for a single frame
     pub fn run_frame(&mut self) {
         self.frame_done = false;
@@ -111,6 +110,7 @@ impl Psx {
     }
 
     /// Like load, but tries to minimizes side-effects. Used for debugging.
+    #[cfg(feature = "debugger")]
     pub fn examine<T: Addressable>(&mut self, address: u32) -> T {
         // A bit heavy handed but that shouldn't pose much of a problem since this function should
         // only be used for debugging. Catching unwinds means that it will be harder for the

@@ -82,6 +82,7 @@ impl Cpu {
     }
 
     /// Force PC address. Meant to be used from the debugger. Use at your own risk.
+    #[cfg(feature = "debugger")]
     pub fn force_pc(&mut self, pc: u32) {
         self.pc = pc;
         self.next_pc = self.pc.wrapping_add(4);
@@ -94,16 +95,19 @@ impl Cpu {
     }
 
     /// Get the value of all general purpose registers
+    #[cfg(feature = "debugger")]
     pub fn regs(&self) -> &[u32] {
         &self.regs
     }
 
     /// Get the value of the LO register
+    #[cfg(feature = "debugger")]
     pub fn lo(&self) -> u32 {
         self.lo
     }
 
     /// Get the value of the HI register
+    #[cfg(feature = "debugger")]
     pub fn hi(&self) -> u32 {
         self.hi
     }
