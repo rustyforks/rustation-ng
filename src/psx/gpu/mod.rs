@@ -1,9 +1,11 @@
 mod commands;
 mod fifo;
+mod rasterizer;
 
 use super::cpu::CPU_FREQ_HZ;
 use super::{irq, sync, timers, AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
+pub use rasterizer::{Frame, OutputPixel};
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
@@ -22,6 +24,7 @@ enum State {
 
 pub struct Gpu {
     state: State,
+    rasterizer: rasterizer::Handle,
     video_standard: VideoStandard,
     /// Current value of the display mode
     display_mode: DisplayMode,
@@ -100,6 +103,7 @@ impl Gpu {
     pub fn new(video_standard: VideoStandard) -> Gpu {
         let mut gpu = Gpu {
             state: State::Idle,
+            rasterizer: rasterizer::start(),
             video_standard,
             display_mode: DisplayMode::new(),
             display_line_start: 0x10,
@@ -145,6 +149,10 @@ impl Gpu {
 
     pub fn video_standard(&self) -> VideoStandard {
         self.video_standard
+    }
+
+    pub fn last_frame(&mut self) -> &Frame {
+        self.rasterizer.last_frame()
     }
 
     fn reset(&mut self) {
@@ -440,6 +448,8 @@ pub fn run(psx: &mut Psx) {
 
 /// Called when we reach the end of line (just after the HSYNC)
 fn handle_eol(psx: &mut Psx) {
+    let mut eof = false;
+
     psx.gpu.new_line();
 
     // Next line event will be when we reach the hsync
@@ -460,7 +470,6 @@ fn handle_eol(psx: &mut Psx) {
 
         if cur_line == draw_line {
             // We reached the end of active video, we can tell the frontend to render the frame
-            draw_frame(psx);
         }
     }
 
@@ -472,7 +481,7 @@ fn handle_eol(psx: &mut Psx) {
             // Normally we should've drawn the frame by now but we might have missed it if the
             // video standard changed mid-frame. In this case we can just draw it now in order not
             // to skip the frame entirely and it'll return to normal next frame
-            draw_frame(psx);
+            eof = true;
         }
 
         // I'm not sure why Mednafen changes the field on the last line of the field instead of the
@@ -512,7 +521,7 @@ fn handle_eol(psx: &mut Psx) {
             };
 
             if cur_line >= line_min {
-                draw_frame(psx);
+                eof = true;
             }
         }
     }
@@ -532,7 +541,11 @@ fn handle_eol(psx: &mut Psx) {
     };
     psx.gpu.cur_line_vram_y %= VRAM_HEIGHT;
 
-    // XXX actually copy the line to the output framebuffer here
+    psx.gpu.rasterizer.end_of_line(cur_line);
+
+    if eof {
+        draw_frame(psx);
+    }
 
     if psx.gpu.display_active {
         psx.gpu.cur_line_vram_offset += 1;
@@ -541,6 +554,7 @@ fn handle_eol(psx: &mut Psx) {
 
 /// Called when a frame is done rendering and should be displayed
 fn draw_frame(psx: &mut Psx) {
+    psx.gpu.rasterizer.end_of_frame();
     psx.gpu.frame_drawn = true;
     psx.frame_done = true;
 }

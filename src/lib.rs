@@ -90,11 +90,18 @@ impl Context {
 impl libretro::Context for Context {
     fn render_frame(&mut self) {
         self.psx.run_frame();
+
+        let frame = self.psx.last_frame();
+
+        libretro::frame_done(&frame.pixels, frame.width, frame.height);
     }
 
     fn get_system_av_info(&self) -> libretro::SystemAvInfo {
         let upscaling = options::CoreOptions::internal_upscale_factor();
-        let full_vram = options::CoreOptions::display_full_vram();
+
+        // XXX For now we only support displaying the full VRAM, fix me later
+        let _full_vram = options::CoreOptions::display_full_vram();
+        let full_vram = true;
 
         let (w, h) = if full_vram {
             (1024, 512)
@@ -114,7 +121,7 @@ impl libretro::Context for Context {
                 base_height: max_height,
                 max_width,
                 max_height,
-                aspect_ratio: 4. / 3.,
+                aspect_ratio: 2. / 1.,
             },
             timing: libretro::SystemTiming {
                 fps: self.video_output_framerate() as f64,
@@ -282,6 +289,10 @@ mod options {
 
 fn init() {
     retrolog::init();
+
+    if !libretro::set_pixel_format(libretro::PixelFormat::Xrgb8888) {
+        error!("Can't set pixel format to XRGB 8888!");
+    }
 }
 
 fn init_variables() {

@@ -19,7 +19,7 @@ use std::cmp::min;
 use crate::error::Result;
 
 pub use cdrom::{disc, iso9660};
-pub use gpu::VideoStandard;
+pub use gpu::{Frame, OutputPixel, VideoStandard};
 
 /// Type alias used to represent a number of clock cycles
 pub type CycleCount = i32;
@@ -102,6 +102,10 @@ impl Psx {
 
             sync::handle_events(self);
         }
+    }
+
+    pub fn last_frame(&mut self) -> &Frame {
+        self.gpu.last_frame()
     }
 
     /// Advance the CPU cycle counter by the given number of ticks

@@ -486,7 +486,9 @@ static mut ENVIRONMENT: EnvironmentFn = dummy::environment;
 // Higher level helper functions
 //*******************************
 
-pub fn frame_done(frame: &[u32], width: usize, height: usize) {
+pub fn frame_done(frame: &[crate::psx::OutputPixel], width: usize, height: usize) {
+    debug_assert!(frame.len() >= width * height);
+
     unsafe {
         let data = frame.as_ptr() as *const c_void;
 
@@ -494,7 +496,7 @@ pub fn frame_done(frame: &[u32], width: usize, height: usize) {
             data,
             width as u32,
             height as u32,
-            width * height * ::std::mem::size_of_val(&frame[0]),
+            width * ::std::mem::size_of_val(&frame[0]),
         );
     }
 }
