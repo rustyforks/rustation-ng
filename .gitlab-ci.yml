@@ -6,7 +6,7 @@ cache:
     - $HOME/.cargo/
     - target/
 
-# Define a yaml template for running a build and then running your tests
+# Define a yaml template for running a build and then running the tests
 .cargo_test_template: &cargo_test
   script:
   - rustc --version && cargo --version
@@ -18,12 +18,13 @@ cache:
 variables:
   RUST_BACKTRACE: "FULL"
 
-# Do any pre-flight requirements here, such as updating $PATH installing dependencies
+# Do any pre-flight requirements here, such as updating $PATH installing
+# dependencies
 before_script:
   - export PATH="/root/.cargo/bin:$PATH"
 
-# The following test: stages inherit from the test template above and
-# configure the image used for the various Rust release trains
+# The following test: stages inherit from the test template above and configure
+# the image used for the various Rust release trains
 test:stable:
   image: "rustdocker/rust:stable"
   <<: *cargo_test
@@ -37,15 +38,16 @@ test:nightly:
   allow_failure: true
   <<: *cargo_test
 
-# Always want to run rustfmt and clippy against our tests, to ensure that
-# we aren't using any anti-patterns or failing to follow our style guide
+# Always want to run rustfmt and clippy against our tests, to ensure that we
+# aren't using any anti-patterns or failing to follow our style guide
 lint:rustfmt:
   image: "guangie88/rustfmt-clippy"
+  allow_failure: true
   script:
     - cargo fmt -- --check
 
 lint:clippy:
   image: "guangie88/rustfmt-clippy"
-  allow_failure: false
+  allow_failure: true
   script:
     - cargo clippy -- -D warnings # Turn all warnings into errors
