@@ -3,7 +3,7 @@ use std::fmt;
 use cdimage::bcd::Bcd;
 use cdimage::msf::Msf;
 use cdimage::sector::Sector;
-use cdimage::{CdResult, Image};
+use cdimage::Image;
 
 use super::iso9660;
 use crate::error::{Error, Result};
@@ -47,25 +47,6 @@ impl Disc {
     #[allow(dead_code)]
     pub fn image(&mut self) -> &mut dyn Image {
         &mut *self.image
-    }
-}
-
-/// Dummy Image implemementation used when deserializing a Disc. Since we don't want to store the
-/// entire disc in the image it will be missing after a load, it's up to the frontend to make sure
-/// to reload the image.
-struct MissingImage;
-
-impl Image for MissingImage {
-    fn image_format(&self) -> String {
-        panic!("Missing CD image!")
-    }
-
-    fn read_sector(&mut self, _: &mut Sector, _: Msf) -> CdResult<()> {
-        panic!("Missing CD image!")
-    }
-
-    fn track_msf(&self, _: Bcd, _: Msf) -> CdResult<Msf> {
-        panic!("Missing CD image!")
     }
 }
 
