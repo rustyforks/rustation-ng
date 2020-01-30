@@ -322,10 +322,10 @@ where
     for (v, coord) in coords.iter_mut().enumerate() {
         if v == 0 || Shading::is_shaded() {
             // Pop the shading color (also takes care of the command word if we're not shaded)
-            psx.gpu.command_fifo.pop();
+            psx.gpu.command_pop_to_rasterizer();
         }
 
-        let cmd = psx.gpu.command_fifo.pop();
+        let cmd = psx.gpu.command_pop_to_rasterizer();
         *coord = Position::from_command(cmd);
 
         // Add the draw offset
@@ -334,7 +334,7 @@ where
 
         if Texture::is_textured() {
             // Pop texture coordinates
-            psx.gpu.command_fifo.pop();
+            psx.gpu.command_pop_to_rasterizer();
         }
     }
 
@@ -368,10 +368,10 @@ where
     for (v, coord) in coords.iter_mut().enumerate() {
         if v == 0 || Shading::is_shaded() {
             // Pop the shading color (also takes care of the command word if we're not shaded)
-            psx.gpu.command_fifo.pop();
+            psx.gpu.command_pop_to_rasterizer();
         }
 
-        let cmd = psx.gpu.command_fifo.pop();
+        let cmd = psx.gpu.command_pop_to_rasterizer();
         *coord = Position::from_command(cmd);
 
         // Add the draw offset
@@ -380,7 +380,7 @@ where
 
         if Texture::is_textured() {
             // Pop texture coordinates
-            psx.gpu.command_fifo.pop();
+            psx.gpu.command_pop_to_rasterizer();
         }
     }
 
@@ -406,23 +406,23 @@ where
     Texture: TextureMode,
 {
     // Pop the command/color
-    psx.gpu.command_fifo.pop();
+    psx.gpu.command_pop_to_rasterizer();
 
-    let mut top_left_corner = Position::from_command(psx.gpu.command_fifo.pop());
+    let mut top_left_corner = Position::from_command(psx.gpu.command_pop_to_rasterizer());
     // Add the draw offset
     top_left_corner.x += psx.gpu.draw_offset_x;
     top_left_corner.y += psx.gpu.draw_offset_y;
 
     if Texture::is_textured() {
         // Pop texture coordinates
-        psx.gpu.command_fifo.pop();
+        psx.gpu.command_pop_to_rasterizer();
     }
 
     let (mut width, mut height) = match dimensions {
         Some((w, h)) => (w, h),
         None => {
             // Variable dimensions
-            let dim = psx.gpu.command_fifo.pop();
+            let dim = psx.gpu.command_pop_to_rasterizer();
             let w = dim & 0x3ff;
             let h = (dim >> 16) & 0x1ff;
 
@@ -484,11 +484,11 @@ where
 /// read/written
 fn vram_access_length_words(psx: &mut Psx) -> u32 {
     // Pop command
-    psx.gpu.command_fifo.pop();
+    psx.gpu.command_pop_to_rasterizer();
     // Position in VRAM
-    psx.gpu.command_fifo.pop();
+    psx.gpu.command_pop_to_rasterizer();
     // Dimensions
-    let dim = psx.gpu.command_fifo.pop();
+    let dim = psx.gpu.command_pop_to_rasterizer();
 
     // Width is in GPU pixels, i.e. 16bits per pixel
     let mut width = dim & 0x3ff;
@@ -519,24 +519,24 @@ fn cmd_vram_load(psx: &mut Psx) {
 }
 
 fn cmd_draw_mode(psx: &mut Psx) {
-    let mode = psx.gpu.command_fifo.pop();
+    let mode = psx.gpu.command_pop_to_rasterizer();
 
     psx.gpu.draw_mode.set(mode);
 }
 
 fn cmd_tex_window(psx: &mut Psx) {
-    psx.gpu.tex_window = psx.gpu.command_fifo.pop() & 0xf_ffff;
+    psx.gpu.tex_window = psx.gpu.command_pop_to_rasterizer() & 0xf_ffff;
 }
 
 fn cmd_clip_top_left(psx: &mut Psx) {
-    let clip = psx.gpu.command_fifo.pop();
+    let clip = psx.gpu.command_pop_to_rasterizer();
 
     psx.gpu.clip_x_min = (clip & 0x3ff) as i32;
     psx.gpu.clip_y_min = ((clip >> 10) & 0x3ff) as i32;
 }
 
 fn cmd_clip_bot_right(psx: &mut Psx) {
-    let clip = psx.gpu.command_fifo.pop();
+    let clip = psx.gpu.command_pop_to_rasterizer();
 
     psx.gpu.clip_x_max = (clip & 0x3ff) as i32;
     psx.gpu.clip_y_max = ((clip >> 10) & 0x3ff) as i32;
@@ -547,7 +547,7 @@ fn cmd_clip_bot_right(psx: &mut Psx) {
 }
 
 fn cmd_draw_offset(psx: &mut Psx) {
-    let off = psx.gpu.command_fifo.pop();
+    let off = psx.gpu.command_pop_to_rasterizer();
 
     let off_x = off & 0x7ff;
     let off_y = (off >> 11) & 0x7ff;
@@ -558,19 +558,21 @@ fn cmd_draw_offset(psx: &mut Psx) {
 }
 
 fn cmd_mask_settings(psx: &mut Psx) {
-    let mask_settings = psx.gpu.command_fifo.pop() & 0x3f_ffff;
+    let mask_settings = psx.gpu.command_pop_to_rasterizer() & 0x3f_ffff;
 
     psx.gpu.mask_settings.set(mask_settings)
 }
 
 fn cmd_clear_cache(psx: &mut Psx) {
     // XXX for now we don't implement the GPU cache timings
-    psx.gpu.command_fifo.pop();
+    psx.gpu.command_pop_to_rasterizer();
 }
 
 /// Does nothing, but with style
 fn cmd_nop(psx: &mut Psx) {
-    // Pop the FIFO
+    // Pop the FIFO.
+    //
+    // We don't call command_pop_to_rasterizer since it's pointless to send nops to the rasterizer
     let w = psx.gpu.command_fifo.pop();
 
     warn!("Encountered GPU NOP command: 0x{:08x}", w);

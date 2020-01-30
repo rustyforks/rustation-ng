@@ -1,3 +1,21 @@
+//! Rustation libretro core
+
+// This warning is a bit overkill at times, for instance it wants we to rewrite a simple
+//
+// ```
+// for i in 1..len {
+// ```
+//
+// into:
+// ```
+// for <item> in params.iter_mut().take(len).skip(1) {
+// ```
+#![allow(clippy::needless_range_loop)]
+// This one is not too terrible but I find it not very useful when writing an emulator because
+// the vast majority of the time our types are actually constrained by the original
+// hardware, so using "as" casts is not a problem the vast majority of the time.
+#![allow(clippy::cast_lossless)]
+
 extern crate libc;
 #[macro_use]
 extern crate log;

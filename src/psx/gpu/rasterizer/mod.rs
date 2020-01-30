@@ -2,6 +2,9 @@
 //! performance reasons and communicates through a pair of channels (one to receive draw commands,
 //! one to send back the finished frames).
 
+mod draw;
+
+use draw::Rasterizer;
 use std::sync::mpsc;
 use std::thread;
 
@@ -14,7 +17,7 @@ enum LastFrame {
 
 /// This is the handle used from the main thread to communicate with the rasterizer
 pub struct Handle {
-    command_buffer: Vec<RawCommand>,
+    command_buffer: CommandBuffer,
     handle: Option<thread::JoinHandle<()>>,
     command_channel: mpsc::Sender<CommandBuffer>,
     frame_channel: mpsc::Receiver<Frame>,
@@ -23,7 +26,7 @@ pub struct Handle {
 
 impl Handle {
     pub fn push_command(&mut self, c: Command) {
-        self.command_buffer.push(c.into_raw());
+        self.command_buffer.push(c);
     }
 
     /// Send the command buffer to the pasteurizer thread
@@ -74,6 +77,14 @@ impl Handle {
             LastFrame::Frame(ref f) => f,
         }
     }
+
+    pub fn push_gp0(&mut self, gp0: u32) {
+        self.push_command(Command::Gp0(gp0));
+    }
+
+    pub fn push_gp1(&mut self, gp1: u32) {
+        self.push_command(Command::Gp1(gp1));
+    }
 }
 
 impl ::std::ops::Drop for Handle {
@@ -116,61 +127,7 @@ pub fn start() -> Handle {
     }
 }
 
-struct Rasterizer {
-    /// Frame currently being drawn
-    cur_frame: Frame,
-    /// Channel used to receive commands
-    command_channel: mpsc::Receiver<CommandBuffer>,
-    /// Channel used to send completed frames back
-    frame_channel: mpsc::Sender<Frame>,
-}
-
-impl Rasterizer {
-    fn new(
-        command_channel: mpsc::Receiver<CommandBuffer>,
-        frame_channel: mpsc::Sender<Frame>,
-    ) -> Rasterizer {
-        Rasterizer {
-            cur_frame: Frame::new(1024, 512),
-            command_channel,
-            frame_channel,
-        }
-    }
-
-    fn run(&mut self) {
-        loop {
-            let commands = self.command_channel.recv().unwrap();
-
-            for &raw in commands.iter() {
-                let cmd = Command::from_raw(raw);
-
-                match cmd {
-                    Command::Gp0(v) => println!("GP0 {}", v),
-                    Command::Gp1(v) => println!("GP1 {}", v),
-                    Command::Special(Special::Quit) => return,
-                    // XXX draw one line at a time
-                    Command::Special(Special::EndOfLine(_)) => (),
-                    Command::Special(Special::EndOfFrame) => self.send_frame(),
-                }
-            }
-        }
-    }
-
-    fn send_frame(&mut self) {
-        let mut new_frame = Frame::new(1024, 512);
-
-        ::std::mem::swap(&mut new_frame, &mut self.cur_frame);
-
-        self.frame_channel.send(new_frame).unwrap();
-    }
-}
-
-/// Dense encoding of a Command. GP0 command keep their normal encoding, GP1 and "special" commands
-/// are encoded using unused GP0 values
-#[derive(Copy, Clone)]
-struct RawCommand(u32);
-
-type CommandBuffer = Vec<RawCommand>;
+type CommandBuffer = Vec<Command>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -194,53 +151,6 @@ impl Command {
     fn quit() -> Command {
         Command::Special(Special::Quit)
     }
-
-    /// Encode `self` into a `RawCommand`
-    fn into_raw(self) -> RawCommand {
-        let raw = match self {
-            // We can pass GP0 as-is, all the special encodings below map to GP0 NOPs which
-            // should never be sent to the rasterizer
-            Command::Gp0(v) => v,
-            // We use the unused GP0 opcodes 0xf0 to 0xff and 0xe0 for GP1
-            Command::Gp1(v) => {
-                let op = v >> 24;
-
-                match op {
-                    // GP1 commands with the exception of the GPU info are sent prefixed with
-                    // 0xf
-                    0..=0xf => 0xf000_0000 | v,
-                    // This one doesn't fit in the 0xf prefix, so we use 0xe0 instead
-                    0x10 => 0xe000_0000 | (v & 0xff_ffff),
-                    // The other values shouldn't be possible for GP1
-                    _ => unreachable!(),
-                }
-            }
-            // We use the unused GP0 opcode 0x10 for special commands
-            Command::Special(s) => {
-                // We use the 0x10 prefix for special commands
-                0x1000_0000 | s.into_raw()
-            }
-        };
-
-        let raw = RawCommand(raw);
-
-        // Make sure we didn't mess the encoding
-        debug_assert!(Command::from_raw(raw) == self);
-
-        raw
-    }
-
-    fn from_raw(raw: RawCommand) -> Command {
-        let v = raw.0;
-        let op = v >> 24;
-
-        match op {
-            0xf0..=0xff => Command::Gp1(v & 0xfff_ffff),
-            0xe0 => Command::Gp1(0x1000_0000 | (v & 0xff_ffff)),
-            0x10 => Command::Special(Special::from_raw(v & 0xff_ffff)),
-            n => Command::Gp0(n),
-        }
-    }
 }
 
 /// Special commands in bits [27:24] when bits [31:28] are 0xf. Value 0x0 is reserved for GP1
@@ -253,35 +163,6 @@ pub enum Special {
     EndOfLine(u16),
     /// Finalize frame and return it through `frame_channel`
     EndOfFrame,
-}
-
-impl Special {
-    fn into_raw(self) -> u32 {
-        let mut arg = 0u16;
-
-        let op = match self {
-            Special::Quit => 0,
-            Special::EndOfLine(l) => {
-                arg = l;
-                1
-            }
-            Special::EndOfFrame => 2,
-        };
-
-        (op << 16) | u32::from(arg)
-    }
-
-    fn from_raw(v: u32) -> Special {
-        let op = v >> 16;
-        let arg = v as u16;
-
-        match op {
-            0 => Special::Quit,
-            1 => Special::EndOfLine(arg),
-            2 => Special::EndOfFrame,
-            _ => unreachable!(),
-        }
-    }
 }
 
 /// One output pixel, in XRGB 8888 format

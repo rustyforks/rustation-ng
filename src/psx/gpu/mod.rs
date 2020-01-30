@@ -155,6 +155,16 @@ impl Gpu {
         self.rasterizer.last_frame()
     }
 
+    /// Pop a command from the `command_fifo` and return it while also sending it to the rasterizer
+    /// as a side effect.
+    fn command_pop_to_rasterizer(&mut self) -> u32 {
+        let v = self.command_fifo.pop();
+
+        self.rasterizer.push_gp0(v);
+
+        v
+    }
+
     fn reset(&mut self) {
         self.display_line_start = 0x10;
         self.display_line_end = 0x100;
@@ -616,6 +626,8 @@ fn gp0(psx: &mut Psx, val: u32) {
 
 /// Handle GP1 commands
 fn gp1(psx: &mut Psx, val: u32) {
+    psx.gpu.rasterizer.push_gp1(val);
+
     let op = val >> 24;
 
     match op {
@@ -652,7 +664,8 @@ fn process_commands(psx: &mut Psx) {
         }
         State::VRamStore(ref mut nwords) => {
             if !psx.gpu.command_fifo.is_empty() {
-                psx.gpu.command_fifo.pop();
+                let w = psx.gpu.command_fifo.pop();
+                psx.gpu.rasterizer.push_gp0(w);
                 *nwords -= 1;
 
                 if *nwords == 0 {
