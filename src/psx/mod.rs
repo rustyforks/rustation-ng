@@ -19,7 +19,7 @@ use std::cmp::min;
 use crate::error::Result;
 
 pub use cdrom::{disc, iso9660};
-pub use gpu::{Frame, OutputPixel, VideoStandard};
+pub use gpu::{Frame, VideoStandard};
 
 /// Type alias used to represent a number of clock cycles
 pub type CycleCount = i32;

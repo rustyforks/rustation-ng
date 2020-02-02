@@ -165,13 +165,10 @@ pub enum Special {
     EndOfFrame,
 }
 
-/// One output pixel, in XRGB 8888 format
-#[derive(Copy, Clone)]
-pub struct OutputPixel(u32);
-
 /// Buffer containing one rendered frame
 pub struct Frame {
-    pub pixels: Vec<OutputPixel>,
+    /// Frame pixels in xRGB 8888 format
+    pub pixels: Vec<u32>,
     pub width: usize,
     pub height: usize,
 }
@@ -179,7 +176,7 @@ pub struct Frame {
 impl Frame {
     fn new(width: usize, height: usize) -> Frame {
         Frame {
-            pixels: vec![OutputPixel(0xff_00ff); width * height],
+            pixels: vec![0; width * height],
             width,
             height,
         }

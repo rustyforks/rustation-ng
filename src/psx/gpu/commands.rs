@@ -29,11 +29,11 @@ impl Command {
     }
 }
 
-trait TransparencyMode {
+pub trait TransparencyMode {
     fn is_transparent() -> bool;
 }
 
-struct Transparent;
+pub struct Transparent;
 
 impl TransparencyMode for Transparent {
     fn is_transparent() -> bool {
@@ -41,7 +41,7 @@ impl TransparencyMode for Transparent {
     }
 }
 
-struct Opaque;
+pub struct Opaque;
 
 impl TransparencyMode for Opaque {
     fn is_transparent() -> bool {
@@ -49,12 +49,12 @@ impl TransparencyMode for Opaque {
     }
 }
 
-trait TextureMode {
+pub trait TextureMode {
     fn is_textured() -> bool;
     fn is_raw_texture() -> bool;
 }
 
-struct NoTexture;
+pub struct NoTexture;
 
 impl TextureMode for NoTexture {
     fn is_textured() -> bool {
@@ -66,7 +66,7 @@ impl TextureMode for NoTexture {
     }
 }
 
-struct TextureBlending;
+pub struct TextureBlending;
 
 impl TextureMode for TextureBlending {
     fn is_textured() -> bool {
@@ -78,11 +78,11 @@ impl TextureMode for TextureBlending {
     }
 }
 
-trait ShadingMode {
+pub trait ShadingMode {
     fn is_shaded() -> bool;
 }
 
-struct NoShading;
+pub struct NoShading;
 
 impl ShadingMode for NoShading {
     fn is_shaded() -> bool {
@@ -90,7 +90,7 @@ impl ShadingMode for NoShading {
     }
 }
 
-struct Shaded;
+pub struct Shaded;
 
 impl ShadingMode for Shaded {
     fn is_shaded() -> bool {
@@ -100,17 +100,17 @@ impl ShadingMode for Shaded {
 
 /// A vertex's coordinates
 #[derive(Debug, Copy, Clone)]
-struct Position {
-    x: i32,
-    y: i32,
+pub struct Position {
+    pub x: i32,
+    pub y: i32,
 }
 
 impl Position {
-    fn new(x: i32, y: i32) -> Position {
+    pub fn new(x: i32, y: i32) -> Position {
         Position { x, y }
     }
 
-    fn from_command(c: u32) -> Position {
+    pub fn from_command(c: u32) -> Position {
         let x = c;
         let y = c >> 16;
 

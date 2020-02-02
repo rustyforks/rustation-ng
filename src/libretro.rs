@@ -486,7 +486,7 @@ static mut ENVIRONMENT: EnvironmentFn = dummy::environment;
 // Higher level helper functions
 //*******************************
 
-pub fn frame_done(frame: &[crate::psx::OutputPixel], width: usize, height: usize) {
+pub fn frame_done(frame: &[u32], width: usize, height: usize) {
     debug_assert!(frame.len() >= width * height);
 
     unsafe {

@@ -5,7 +5,7 @@ mod rasterizer;
 use super::cpu::CPU_FREQ_HZ;
 use super::{irq, sync, timers, AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
-pub use rasterizer::{Frame, OutputPixel};
+pub use rasterizer::Frame;
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
