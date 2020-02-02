@@ -5,8 +5,17 @@ use crate::psx::gpu::commands::{NoShading, Position};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureMode, TransparencyMode};
 use crate::psx::gpu::{DrawMode, MaskSettings};
 
+#[derive(Debug)]
+enum State {
+    /// We're waiting for the next command
+    WaitingForCommand,
+    /// We're uploading data to the VRAM.
+    VRamStore(VRamStore),
+}
+
 pub struct Rasterizer {
     vram: Box<[VRamPixel; 1024 * 512]>,
+    state: State,
     /// Frame currently being drawn
     cur_frame: Frame,
     /// Channel used to receive commands
@@ -40,6 +49,7 @@ impl Rasterizer {
     ) -> Rasterizer {
         Rasterizer {
             vram: box_array![VRamPixel::new(); 1024 * 512],
+            state: State::WaitingForCommand,
             cur_frame: Frame::new(1024, 512),
             command_channel,
             frame_channel,
@@ -64,26 +74,48 @@ impl Rasterizer {
             while let Some(cmd) = command_i.next() {
                 match cmd {
                     Command::Gp0(v) => {
-                        let op = v >> 24;
-                        let h = &GP0_COMMANDS[op as usize];
-                        // The longest possible draw command is 12 word long (shaded and textured
-                        // quad)
-                        let mut params = [0; 12];
+                        match self.state {
+                            State::WaitingForCommand => {
+                                let op = v >> 24;
+                                let h = &GP0_COMMANDS[op as usize];
+                                // The longest possible draw command is 12 word long (shaded and
+                                // textured quad)
+                                let mut params = [0; 12];
 
-                        params[0] = *v;
+                                params[0] = *v;
 
-                        let len = h.len as usize;
+                                let len = h.len as usize;
 
-                        for i in 1..len {
-                            // The main GPU code is supposed to send us complete draw commands so
-                            // it should be safe to expect the right number of parameters here.
-                            match command_i.next() {
-                                Some(Command::Gp0(v)) => params[i] = *v,
-                                other => panic!("Expected GP0 command, got {:?}", other),
+                                for i in 1..len {
+                                    // The main GPU code is supposed to send us complete draw
+                                    // commands so it should be safe to expect the right number of
+                                    // parameters here.
+                                    match command_i.next() {
+                                        Some(Command::Gp0(v)) => params[i] = *v,
+                                        other => panic!("Expected GP0 command, got {:?}", other),
+                                    }
+                                }
+
+                                (h.handler)(self, &params[..len]);
+                            }
+                            State::VRamStore(ref mut store) => {
+                                let p0 = VRamPixel::from_mbgr1555(*v as u16);
+                                let p1 = VRamPixel::from_mbgr1555((*v >> 16) as u16);
+
+                                for &p in [p0, p1].iter() {
+                                    let vram_off = store.target_vram_offset();
+
+                                    // XXX handle mask bit
+                                    self.vram[vram_off] = p;
+
+                                    if store.next().is_none() {
+                                        // End of store
+                                        self.state = State::WaitingForCommand;
+                                        break;
+                                    }
+                                }
                             }
                         }
-
-                        (h.handler)(self, &params[..len]);
                     }
                     Command::Gp1(v) => self.gp1(*v),
                     Command::Special(Special::Quit) => return,
@@ -230,6 +262,10 @@ impl VRamPixel {
         p |= (rl << 16) | (gl << 19) | (bl << 22);
 
         VRamPixel(p)
+    }
+
+    fn from_mbgr1555(mbgr: u16) -> VRamPixel {
+        VRamPixel(mbgr as u32)
     }
 
     fn to_rgb888(self) -> u32 {
@@ -410,6 +446,82 @@ where
     }
 
     unimplemented!("Non-rect quad {:?}", vertices);
+}
+
+#[derive(Debug)]
+struct VRamStore {
+    x_min: u16,
+    x_max: u16,
+    y_min: u16,
+    y_max: u16,
+    /// Current X coordinate, from x_min to x_max
+    x: u16,
+    /// Current Y coordinate, from y_min to y_max
+    y: u16,
+}
+
+impl VRamStore {
+    fn new(left: u16, top: u16, width: u16, height: u16) -> VRamStore {
+        debug_assert!(width > 0);
+        debug_assert!(height > 0);
+
+        VRamStore {
+            x_min: left,
+            x_max: left + width,
+            y_min: top,
+            y_max: top + height,
+            x: left,
+            y: top,
+        }
+    }
+
+    fn target_vram_offset(&self) -> usize {
+        let x = (self.x % 1024) as usize;
+        let y = (self.y % 512) as usize;
+
+        y * 1024 + x
+    }
+
+    fn next(&mut self) -> Option<()> {
+        self.x += 1;
+
+        if self.x == self.x_max {
+            self.x = self.x_min;
+            self.y += 1;
+
+            if self.y == self.y_max {
+                // End of transfer
+                return None;
+            }
+        }
+
+        Some(())
+    }
+}
+
+fn cmd_vram_store(rasterizer: &mut Rasterizer, params: &[u32]) {
+    let pos = params[1];
+    let dim = params[2];
+
+    let left = (pos & 0x3ff) as u16;
+    let top = ((pos >> 16) & 0x3ff) as u16;
+
+    // Width is in GPU pixels, i.e. 16bits per pixel
+    let mut width = (dim & 0x3ff) as u16;
+    let mut height = ((dim >> 16) & 0x1ff) as u16;
+
+    // XXX recheck this, a comment in mednafen says that the results for VRAM load are inconsistent
+    if width == 0 {
+        width = 1024;
+    }
+
+    if height == 0 {
+        height = 512;
+    }
+
+    let store = VRamStore::new(left, top, width, height);
+
+    rasterizer.state = State::VRamStore(store);
 }
 
 fn cmd_tex_window(rasterizer: &mut Rasterizer, params: &[u32]) {
@@ -1120,7 +1232,7 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
     },
     // 0xa0
     CommandHandler {
-        handler: cmd_unimplemented,
+        handler: cmd_vram_store,
         len: 3,
     },
     CommandHandler {
