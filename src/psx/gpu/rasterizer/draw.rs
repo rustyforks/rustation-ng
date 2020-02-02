@@ -457,6 +457,10 @@ fn cmd_mask_settings(rasterizer: &mut Rasterizer, params: &[u32]) {
     rasterizer.mask_settings.set(mask_settings)
 }
 
+fn cmd_clear_cache(_rasterizer: &mut Rasterizer, _params: &[u32]) {
+    // TODO: no cache support for now
+}
+
 /// Placeholder function
 fn cmd_unimplemented(_rasterizer: &mut Rasterizer, params: &[u32]) {
     unimplemented!("GPU command {:08x}", params[0]);
@@ -470,7 +474,7 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
+        handler: cmd_clear_cache,
         len: 1,
     },
     CommandHandler {
