@@ -524,6 +524,12 @@ fn cmd_vram_store(rasterizer: &mut Rasterizer, params: &[u32]) {
     rasterizer.state = State::VRamStore(store);
 }
 
+fn cmd_vram_load(rasterizer: &mut Rasterizer, params: &[u32]) {
+    let _ = rasterizer;
+    let _ = params;
+    warn!("Implement VRAM load");
+}
+
 fn cmd_tex_window(rasterizer: &mut Rasterizer, params: &[u32]) {
     rasterizer.tex_window = params[0] & 0xf_ffff;
 }
@@ -1362,7 +1368,7 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
     },
     // 0xc0
     CommandHandler {
-        handler: cmd_unimplemented,
+        handler: cmd_vram_load,
         len: 3,
     },
     CommandHandler {
