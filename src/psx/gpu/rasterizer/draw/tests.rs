@@ -84,6 +84,68 @@ fn quad_rect_solid_opaque() {
 }
 
 #[test]
+fn triangle_solid_opaque_pyramid_up() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        Command::Gp0(0x200000ff),
+        vertex_coord(5, 2),
+        vertex_coord(2, 5),
+        vertex_coord(8, 5),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let x = VRamPixel::new();
+    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+
+    let expected: &[&[VRamPixel]] = &[
+        &[x, x, x, x, x, x, x, x],
+        &[x, x, x, x, x, x, x, x],
+        &[x, x, x, x, x, x, x, x],
+        &[x, x, x, x, r, r, x, x],
+        &[x, x, x, r, r, r, r, x],
+        &[x, x, x, x, x, x, x, x],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
+
+#[test]
+fn triangle_solid_opaque_pyramid_down() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        Command::Gp0(0x200000ff),
+        vertex_coord(5, 5),
+        vertex_coord(2, 2),
+        vertex_coord(8, 2),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let x = VRamPixel::new();
+    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+
+    let expected: &[&[VRamPixel]] = &[
+        &[x, x, x, x, x, x, x, x, x],
+        &[x, x, x, x, x, x, x, x, x],
+        &[x, x, r, r, r, r, r, r, x],
+        &[x, x, x, r, r, r, r, x, x],
+        &[x, x, x, x, r, r, x, x, x],
+        &[x, x, x, x, x, x, x, x, x],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
+
+#[test]
 fn triangle_solid_opaque_flat_up() {
     let (mut rasterizer, command_channel, _) = build_rasterizer();
 

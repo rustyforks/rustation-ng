@@ -258,7 +258,7 @@ impl Rasterizer {
         //    |\
         //    | \
         //    |  \
-        //    |   + B <-- Need to cut horizontally here.
+        //  H +   + B <-- Need to cut horizontally here.
         //    |  /
         //    | /
         //    |/
@@ -270,20 +270,122 @@ impl Rasterizer {
         // width increasing by a constant amount at every step. Then we can do the same thing from
         // B to C
         //
-        // Of course in some situations we'll end up with "flat" triangles, where A.x == B.x or C.x
-        // == B.x, in which case one of these sub-triangles will effectively have 0 height.
+        // Of course in some situations we'll end up with "flat" triangles, where one edge is
+        // perfectly horizontal and A.x == B.x or C.x == B.x, in which case one of these
+        // sub-triangles will effectively have 0 height.
         let a = &vertices[0];
         let b = &vertices[1];
         let c = &vertices[2];
 
+        let xproduct = cross_product(a.position, b.position, c.position);
+
+        if xproduct == 0 {
+            // All three vertices are aligned, the triangle is perfectly flat
+            return;
+        }
+
         let y_ab = b.position.y - a.position.y;
         let y_ac = c.position.y - a.position.y;
+        let y_bc = c.position.y - b.position.y;
 
-        let dx_ab = FixedPoint::new(b.position.x - a.position.x) / FixedPoint::new(y_ab);
+        if y_ac >= 512 {
+            // Triangle is too tall, we don't draw anything
+            return;
+        }
+
         let dx_ac = FixedPoint::new(c.position.x - a.position.x) / FixedPoint::new(y_ac);
 
-        panic!("Draw triangle {:?} ({}, {})", vertices, dx_ab, dx_ac);
+        // True if AC is the left edge and AB + BC are the right edges, false if it's the other way
+        // round
+        let ac_is_left = xproduct > 0;
+
+        // X value at H, that is the X coordinate of the intersection of an horizontal line passing
+        // by B and AC
+        let h_x;
+
+        // Largest value strictly inferior to 1 we can represent with our FixedPoint implementation
+        let bias = FixedPoint::new(1) - FixedPoint::epsilon();
+
+        // First we draw the top portion of the triangle (i.e. everything above B)
+        // Due to the way the PlayStation rasterizes triangles we know for sure that the first line
+        // of the "pointy" top (if there's one) won't be drawn. So in the drawing above, if A is
+        // exactly one line above B nothing is drawn above B.
+        if y_ab > 1 {
+            let dx_ab = FixedPoint::new(b.position.x - a.position.x) / FixedPoint::new(y_ab);
+
+            let (dx_left, dx_right) = if ac_is_left {
+                // AC is the left edge, AB is the right edge
+                (dx_ac, dx_ab)
+            } else {
+                // AB is the left edge, AC is the right edge
+                (dx_ab, dx_ac)
+            };
+
+            // The X start and stop coordinates for every line. Since we start at vertex A at the
+            // top they are the same point originally and they'll diverge as we go down
+            let a_x = FixedPoint::new(a.position.x);
+            // Bias the left side so that we always get the right coordinate when rounding down
+            let mut x_start = a_x + bias;
+            let mut x_end = a_x;
+
+            for y in (a.position.y + 1)..b.position.y {
+                x_start += dx_left;
+                x_end += dx_right;
+
+                for x in x_start.truncate()..x_end.truncate() {
+                    // TODO implement texture/gouraud shading
+                    self.draw_solid_pixel::<Transparency>(x, y, a.color);
+                }
+            }
+
+            // The bottom part (if it exists) will begin on the next line, we'll continue along the
+            // "long" side AC so we must be careful not to lose the current value
+            if ac_is_left {
+                h_x = x_start + dx_left;
+            } else {
+                h_x = x_end + dx_right;
+            }
+        } else {
+            // The triangle has an horizontal edge at the top, H is A
+            h_x = FixedPoint::new(a.position.x) + bias;
+        }
+
+        // Now we can move on to the bottom part of the triangle, that is everything below and
+        // including B
+        if y_bc > 0 {
+            let dx_bc = FixedPoint::new(c.position.x - b.position.x) / FixedPoint::new(y_bc);
+
+            let b_x = FixedPoint::new(b.position.x);
+
+            let (mut x_start, mut x_end, dx_left, dx_right) = if ac_is_left {
+                // AC is the left edge, AB is the right edge
+                (h_x, b_x, dx_ac, dx_bc)
+            } else {
+                // AB is the left edge, AC is the right edge
+
+                // Bias the left side so that we always get the right coordinate when rounding
+                // down. We only need to do it in this case because if AC is the left edge
+                // we've already done the biasing while drawing the top part above
+                let l_x = b_x + bias;
+
+                (l_x, h_x, dx_bc, dx_ac)
+            };
+
+            for y in b.position.y..c.position.y {
+                for x in x_start.truncate()..x_end.truncate() {
+                    // TODO implement texture/gouraud shading
+                    self.draw_solid_pixel::<Transparency>(x, y, a.color);
+                }
+                x_start += dx_left;
+                x_end += dx_right;
+            }
+        }
     }
+}
+
+/// Compute the cross-product of (AB) x (AC)
+fn cross_product(a: Position, b: Position, c: Position) -> i32 {
+    (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)
 }
 
 /// A single BGR1555 VRAM pixel. In order to make the emulation code simpler and to support
@@ -354,6 +456,10 @@ impl fmt::Debug for VRamPixel {
 struct Bgr888(u32);
 
 impl Bgr888 {
+    fn black() -> Bgr888 {
+        Bgr888(0)
+    }
+
     fn from_command(c: u32) -> Bgr888 {
         Bgr888(c & 0xff_ffff)
     }
@@ -374,10 +480,6 @@ impl Vertex {
             color: Bgr888::from_command(0),
             texture: 0,
         }
-    }
-
-    fn set_color(&mut self, c: u32) {
-        self.color = Bgr888::from_command(c);
     }
 
     fn set_position(&mut self, p: u32) {
@@ -408,13 +510,16 @@ where
     let mut vertices = [Vertex::new(), Vertex::new(), Vertex::new(), Vertex::new()];
 
     let mut index = 0;
+    let mut cur_color = Bgr888::black();
 
     // Load the vertex data from the command
     for (v, vertex) in vertices.iter_mut().enumerate() {
         if v == 0 || Shading::is_shaded() {
-            vertex.set_color(params[index]);
+            cur_color = Bgr888::from_command(params[index]);
             index += 1;
         }
+
+        vertex.color = cur_color;
 
         vertex.set_position(params[index]);
         index += 1;
@@ -520,13 +625,15 @@ where
     let mut vertices = [Vertex::new(), Vertex::new(), Vertex::new()];
 
     let mut index = 0;
+    let mut cur_color = Bgr888::black();
 
     // Load the vertex data from the command
     for (v, vertex) in vertices.iter_mut().enumerate() {
         if v == 0 || Shading::is_shaded() {
-            vertex.set_color(params[index]);
+            cur_color = Bgr888::from_command(params[index]);
             index += 1;
         }
+        vertex.color = cur_color;
 
         vertex.set_position(params[index]);
         index += 1;
@@ -814,8 +921,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
     },
     // 0x20
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, NoTexture, NoShading>,
+        len: 4,
     },
     CommandHandler {
         handler: cmd_unimplemented,
