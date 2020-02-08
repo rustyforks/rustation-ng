@@ -1,9 +1,17 @@
+mod fixed_point;
+
+#[cfg(test)]
+mod tests;
+
 use std::sync::mpsc;
 
 use super::{Command, CommandBuffer, Frame, Special};
+use crate::psx::gpu::commands::Shaded;
 use crate::psx::gpu::commands::{NoShading, Position};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureMode, TransparencyMode};
 use crate::psx::gpu::{DrawMode, MaskSettings};
+use fixed_point::FixedPoint;
+use std::fmt;
 
 #[derive(Debug)]
 enum State {
@@ -183,6 +191,7 @@ impl Rasterizer {
             unimplemented!();
         } else {
             *vram_pixel = VRamPixel::from_bgr888(color);
+            println!("draw {}x{} {}", x, y, *vram_pixel);
         };
     }
 
@@ -230,58 +239,114 @@ impl Rasterizer {
             }
         }
     }
+
+    fn draw_triangle<Transparency, Texture, Shading>(&mut self, mut vertices: [Vertex; 3])
+    where
+        Transparency: TransparencyMode,
+        Texture: TextureMode,
+        Shading: ShadingMode,
+    {
+        // We're going to draw the triangle one line at a time, starting at the top and ending at
+        // the bottom. First, let's order the vertices by Y coordinate
+        vertices.sort_by(|a, b| a.position.y.cmp(&b.position.y));
+
+        // Now we need to draw split the triangle in two sub-triangles. Consider the following
+        // triangle:
+        //
+        //    A
+        //    +
+        //    |\
+        //    | \
+        //    |  \
+        //    |   + B <-- Need to cut horizontally here.
+        //    |  /
+        //    | /
+        //    |/
+        //    +
+        //    C
+        //
+        // In order to draw it simply we need to break it into two triangles by drawing an
+        // horizontal line at B. Then we can simply iterate on each line from A to B, with the line
+        // width increasing by a constant amount at every step. Then we can do the same thing from
+        // B to C
+        //
+        // Of course in some situations we'll end up with "flat" triangles, where A.x == B.x or C.x
+        // == B.x, in which case one of these sub-triangles will effectively have 0 height.
+        let a = &vertices[0];
+        let b = &vertices[1];
+        let c = &vertices[2];
+
+        let y_ab = b.position.y - a.position.y;
+        let y_ac = c.position.y - a.position.y;
+
+        let dx_ab = FixedPoint::new(b.position.x - a.position.x) / FixedPoint::new(y_ab);
+        let dx_ac = FixedPoint::new(c.position.x - a.position.x) / FixedPoint::new(y_ac);
+
+        panic!("Draw triangle {:?} ({}, {})", vertices, dx_ab, dx_ac);
+    }
 }
 
 /// A single BGR1555 VRAM pixel. In order to make the emulation code simpler and to support
 /// increased color depth we always use xBGR 1888 internally
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 struct VRamPixel(u32);
 
 impl VRamPixel {
     fn new() -> VRamPixel {
-        VRamPixel(0x7)
+        VRamPixel(0)
     }
 
     fn from_bgr888(bgr: Bgr888) -> VRamPixel {
-        let r = bgr.red();
-        let g = bgr.green();
-        let b = bgr.blue();
-        let mask = bgr.mask();
-
-        let r5 = r >> 3;
-        let g5 = g >> 3;
-        let b5 = b >> 3;
-
-        let mut p = r5 | (g5 << 5) | (b5 << 10) | (mask << 15);
-
-        // Store the extended precision (not available on real hardware) bits in the top 16 bits
-        let rl = r & 0x7;
-        let gl = g & 0x7;
-        let bl = b & 0x7;
-
-        p |= (rl << 16) | (gl << 19) | (bl << 22);
-
-        VRamPixel(p)
+        VRamPixel(bgr.0)
     }
 
     fn from_mbgr1555(mbgr: u16) -> VRamPixel {
-        VRamPixel(mbgr as u32)
+        let r = (mbgr & 0x1f) as u32;
+        let g = ((mbgr >> 5) & 0x1f) as u32;
+        let b = ((mbgr >> 10) & 0x1f) as u32;
+        let m = ((mbgr >> 15) & 1) as u32;
+
+        // We want to extend to RGB888 so we copy the 3 MBS to the LSBs (this way black remains
+        // black and white remains white)
+        let r = (r << 3) | (r >> 2);
+        let g = (g << 3) | (g >> 2);
+        let b = (b << 3) | (b >> 2);
+
+        VRamPixel(r | (g << 8) | (b << 16) | (m << 24))
     }
 
     fn to_rgb888(self) -> u32 {
-        let p = self.0;
+        self.0 & 0xff_ff_ff
+    }
 
-        let mut r = (p & 0x1f) << 3;
-        let mut g = ((p >> 5) & 0x1f) << 3;
-        let mut b = ((p >> 10) & 0x1f) << 3;
+    fn red(self) -> u8 {
+        (self.0 & 0xff) as u8
+    }
 
-        r |= (p >> 16) & 0x7;
-        g |= (p >> 19) & 0x7;
-        b |= (p >> 22) & 0x7;
+    fn green(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
 
-        // Do we want to return the mask bit here? I can't really see how it would ever be useful.
+    fn blue(self) -> u8 {
+        (self.0 >> 16) as u8
+    }
+}
 
-        (r << 16) | (g << 8) | b
+impl fmt::Display for VRamPixel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "#{:02x}{:02x}{:02x}",
+            self.red(),
+            self.green(),
+            self.blue()
+        )
+    }
+}
+
+impl fmt::Debug for VRamPixel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self)
     }
 }
 
@@ -292,26 +357,10 @@ impl Bgr888 {
     fn from_command(c: u32) -> Bgr888 {
         Bgr888(c & 0xff_ffff)
     }
-
-    fn red(self) -> u32 {
-        self.0 & 0xff
-    }
-
-    fn green(self) -> u32 {
-        (self.0 >> 8) & 0xff
-    }
-
-    fn blue(self) -> u32 {
-        (self.0 >> 16) & 0xff
-    }
-
-    fn mask(self) -> u32 {
-        (self.0 >> 24) & 1
-    }
 }
 
 /// Description of a vertex with position, texture and shading (depending on the command)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Vertex {
     position: Position,
     color: Bgr888,
@@ -445,7 +494,54 @@ where
         }
     }
 
-    unimplemented!("Non-rect quad {:?}", vertices);
+    let triangle = [
+        vertices[0].clone(),
+        vertices[1].clone(),
+        vertices[2].clone(),
+    ];
+    rasterizer.draw_triangle::<Transparency, Texture, Shading>(triangle);
+
+    // Clippy wants us to remove the last clone here, but doing so generates a compilation error
+    #[allow(clippy::redundant_clone)]
+    let triangle = [
+        vertices[1].clone(),
+        vertices[2].clone(),
+        vertices[3].clone(),
+    ];
+    rasterizer.draw_triangle::<Transparency, Texture, Shading>(triangle);
+}
+
+fn cmd_handle_poly_tri<Transparency, Texture, Shading>(rasterizer: &mut Rasterizer, params: &[u32])
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+    Shading: ShadingMode,
+{
+    let mut vertices = [Vertex::new(), Vertex::new(), Vertex::new()];
+
+    let mut index = 0;
+
+    // Load the vertex data from the command
+    for (v, vertex) in vertices.iter_mut().enumerate() {
+        if v == 0 || Shading::is_shaded() {
+            vertex.set_color(params[index]);
+            index += 1;
+        }
+
+        vertex.set_position(params[index]);
+        index += 1;
+
+        // Add the draw offset
+        vertex.position.x += rasterizer.draw_offset_x;
+        vertex.position.y += rasterizer.draw_offset_y;
+
+        if Texture::is_textured() {
+            vertex.texture = params[index];
+            index += 1;
+        }
+    }
+
+    rasterizer.draw_triangle::<Transparency, Texture, Shading>(vertices);
 }
 
 #[derive(Debug)]
@@ -783,7 +879,7 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
     },
     // 0x30
     CommandHandler {
-        handler: cmd_unimplemented,
+        handler: cmd_handle_poly_tri::<Opaque, NoTexture, Shaded>,
         len: 6,
     },
     CommandHandler {
@@ -815,7 +911,7 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
+        handler: cmd_handle_poly_quad::<Opaque, NoTexture, Shaded>,
         len: 8,
     },
     CommandHandler {
