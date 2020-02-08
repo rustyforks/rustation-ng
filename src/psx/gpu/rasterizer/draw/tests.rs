@@ -413,3 +413,186 @@ fn triangle_solid_opaque_mid_left() {
 
     check_rasterizer(&rasterizer, &expected);
 }
+
+/// Draw a large triangle with a non-trivial edge slope to catch precision errors
+#[test]
+fn triangle_solid_opaque_big1() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        Command::Gp0(0x200000ff),
+        vertex_coord(0, 0),
+        vertex_coord(0, 500),
+        vertex_coord(125, 500),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let x = VRamPixel::new();
+    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+
+    let expected: &[&[VRamPixel]] = &[
+        &[x, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, r, x],
+        &[r, r, r, r, r, x],
+        &[r, r, r, r, r, x],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
+
+/// Same as big1 but with a small x offset change, enough to change the drawing slightly
+#[test]
+fn triangle_solid_opaque_big2() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        Command::Gp0(0x200000ff),
+        vertex_coord(0, 0),
+        vertex_coord(0, 500),
+        vertex_coord(125, 500),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let x = VRamPixel::new();
+    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+
+    let expected: &[&[VRamPixel]] = &[
+        &[x, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, x, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, x, x],
+        &[r, r, r, r, r, x],
+        &[r, r, r, r, r, x],
+        &[r, r, r, r, r, x],
+        &[r, r, r, r, r, x],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
+
+/// The PSX only allows to draw triangles up to 512 pixels in height and 1024 pixels in width
+#[test]
+fn triangle_solid_opaque_draw_limits() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        // First a red triangle with the max possible size
+        Command::Gp0(0x200000ff),
+        vertex_coord(-10, -1),
+        vertex_coord(-10, 510),
+        vertex_coord(1013, 510),
+        // Then attempt to draw a slightly taller green triangle (shouldn't draw anything)
+        Command::Gp0(0x2000ff00),
+        vertex_coord(-10, -1),
+        vertex_coord(-10, 511),
+        vertex_coord(1013, 510),
+        // Then attempt to draw a slightly wider blue triangle (shouldn't draw anything)
+        Command::Gp0(0x20ff0000),
+        vertex_coord(-10, -1),
+        vertex_coord(-11, 510),
+        vertex_coord(1013, 510),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let x = VRamPixel::new();
+    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+
+    let expected: &[&[VRamPixel]] = &[
+        &[x, x, x, x, x, x],
+        &[x, x, x, x, x, x],
+        &[x, x, x, x, x, x],
+        &[x, x, x, x, x, x],
+        &[r, x, x, x, x, x],
+        &[r, r, r, x, x, x],
+        &[r, r, r, r, r, x],
+        &[r, r, r, r, r, r],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
+
+/// Two triangles with slightly different coordinates which actually end up drawing the exact
+/// same pixels
+#[test]
+fn triangle_solid_opaque_false_friends() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        Command::Gp0(0x2000_00ff),
+        vertex_coord(1, 1),
+        vertex_coord(1, 6),
+        vertex_coord(6, 6),
+        // This 2nd triangle has a slightly different shape but it ends up drawing exactly the same
+        // pixel pattern
+        Command::Gp0(0x2000_00ff),
+        vertex_coord(0, 7),
+        vertex_coord(1, 12),
+        vertex_coord(5, 11),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let x = VRamPixel::new();
+    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+
+    let expected: &[&[VRamPixel]] = &[
+        &[x, x, x, x, x, x],
+        &[x, x, x, x, x, x],
+        &[x, r, x, x, x, x],
+        &[x, r, r, x, x, x],
+        &[x, r, r, r, x, x],
+        &[x, r, r, r, r, x],
+        &[x, x, x, x, x, x],
+        &[x, x, x, x, x, x],
+        &[x, r, x, x, x, x],
+        &[x, r, r, x, x, x],
+        &[x, r, r, r, x, x],
+        &[x, r, r, r, r, x],
+        &[x, x, x, x, x, x],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
