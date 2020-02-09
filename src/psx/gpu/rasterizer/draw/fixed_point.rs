@@ -36,6 +36,10 @@ impl FixedPoint {
     pub fn to_float(self) -> f32 {
         (self.0 as f32) / ((1 << FIXED_POINT_SHIFT) as f32)
     }
+
+    pub fn is_positive(self) -> bool {
+        self.0 >= 0
+    }
 }
 
 impl fmt::Display for FixedPoint {

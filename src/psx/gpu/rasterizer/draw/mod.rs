@@ -246,6 +246,13 @@ impl Rasterizer {
         Texture: TextureMode,
         Shading: ShadingMode,
     {
+        let x_min = vertices.iter().map(|v| v.position.x).min().unwrap();
+        let x_max = vertices.iter().map(|v| v.position.x).max().unwrap();
+
+        if x_max - x_min >= 1024 {
+            // Triangle is too large, give up
+        }
+
         // We're going to draw the triangle one line at a time, starting at the top and ending at
         // the bottom. First, let's order the vertices by Y coordinate
         vertices.sort_by(|a, b| a.position.y.cmp(&b.position.y));
@@ -280,7 +287,8 @@ impl Rasterizer {
         let xproduct = cross_product(a.position, b.position, c.position);
 
         if xproduct == 0 {
-            // All three vertices are aligned, the triangle is perfectly flat
+            // All three vertices are aligned, the triangle is perfectly flat and we have nothing
+            // to draw
             return;
         }
 
@@ -293,10 +301,13 @@ impl Rasterizer {
             return;
         }
 
+        // We don't have to check if y_ac is 0 because we know that B.y is between A.y and C.y,
+        // therefore is y_ac is 0 it means that A.y, B.y and C.y are 0 which means that the
+        // triangle is flat and that's already checked above with the cross product.
         let dx_ac = FixedPoint::new(c.position.x - a.position.x) / FixedPoint::new(y_ac);
 
         // True if AC is the left edge and AB + BC are the right edges, false if it's the other way
-        // round
+        // around
         let ac_is_left = xproduct > 0;
 
         // X value at H, that is the X coordinate of the intersection of an horizontal line passing
@@ -324,15 +335,26 @@ impl Rasterizer {
             // The X start and stop coordinates for every line. Since we start at vertex A at the
             // top they are the same point originally and they'll diverge as we go down
             let a_x = FixedPoint::new(a.position.x);
-            // Bias the left side so that we always get the right coordinate when rounding down
-            let mut x_start = a_x + bias;
-            let mut x_end = a_x;
+
+            let (mut x_start, mut x_end) = if dx_right.is_positive() {
+                let x_start = a_x + FixedPoint::new(1) - FixedPoint::epsilon();
+                let x_end = a_x - FixedPoint::epsilon();
+
+                (x_start, x_end)
+            } else {
+                let x_start = a_x - FixedPoint::epsilon();
+                let x_end = a_x - FixedPoint::new(1) - FixedPoint::epsilon();
+
+                (x_start, x_end)
+            };
 
             for y in (a.position.y + 1)..b.position.y {
                 x_start += dx_left;
                 x_end += dx_right;
 
-                for x in x_start.truncate()..x_end.truncate() {
+                println!("{}: {} -> {}", y, x_start, x_end);
+
+                for x in x_start.truncate()..=x_end.truncate() {
                     // TODO implement texture/gouraud shading
                     self.draw_solid_pixel::<Transparency>(x, y, a.color);
                 }
@@ -355,20 +377,14 @@ impl Rasterizer {
         if y_bc > 0 {
             let dx_bc = FixedPoint::new(c.position.x - b.position.x) / FixedPoint::new(y_bc);
 
-            let b_x = FixedPoint::new(b.position.x);
+            let b_x = FixedPoint::new(b.position.x) + bias;
 
             let (mut x_start, mut x_end, dx_left, dx_right) = if ac_is_left {
                 // AC is the left edge, AB is the right edge
                 (h_x, b_x, dx_ac, dx_bc)
             } else {
                 // AB is the left edge, AC is the right edge
-
-                // Bias the left side so that we always get the right coordinate when rounding
-                // down. We only need to do it in this case because if AC is the left edge
-                // we've already done the biasing while drawing the top part above
-                let l_x = b_x + bias;
-
-                (l_x, h_x, dx_bc, dx_ac)
+                (b_x, h_x, dx_bc, dx_ac)
             };
 
             for y in b.position.y..c.position.y {
