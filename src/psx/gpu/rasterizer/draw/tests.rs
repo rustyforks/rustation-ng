@@ -317,9 +317,9 @@ fn triangle_solid_opaque_slant_top_right() {
 
     let commands = vec![
         Command::Gp0(0x200000ff),
-        vertex_coord(9, 2),
-        vertex_coord(2, 6),
-        vertex_coord(7, 6),
+        vertex_coord(8, 2),
+        vertex_coord(1, 6),
+        vertex_coord(6, 6),
         Command::Special(Special::Quit),
     ];
 
@@ -330,6 +330,7 @@ fn triangle_solid_opaque_slant_top_right() {
     let x = VRamPixel::new();
     let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
 
+    // XXX double-check this one, I could've gotten it wrong
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
@@ -531,7 +532,7 @@ fn triangle_solid_opaque_big2() {
         Command::Gp0(0x200000ff),
         vertex_coord(0, 0),
         vertex_coord(0, 500),
-        vertex_coord(125, 500),
+        vertex_coord(126, 500),
         Command::Special(Special::Quit),
     ];
 
