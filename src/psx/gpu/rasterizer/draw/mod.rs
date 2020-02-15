@@ -11,6 +11,7 @@ use crate::psx::gpu::commands::{NoShading, Position};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureMode, TransparencyMode};
 use crate::psx::gpu::{DrawMode, MaskSettings};
 use fixed_point::FixedPoint;
+use std::cmp::{max, min};
 use std::fmt;
 
 #[derive(Debug)]
@@ -246,18 +247,14 @@ impl Rasterizer {
         Texture: TextureMode,
         Shading: ShadingMode,
     {
-        let x_min = vertices.iter().map(|v| v.position.x).min().unwrap();
-        let x_max = vertices.iter().map(|v| v.position.x).max().unwrap();
-
-        if x_max - x_min >= 1024 {
-            // Triangle is too large, give up
-        }
-
-        // We're going to draw the triangle one line at a time, starting at the top and ending at
-        // the bottom. First, let's order the vertices by Y coordinate
+        // Order the vertices by y
         vertices.sort_by(|a, b| a.position.y.cmp(&b.position.y));
 
-        // Now we need to draw split the triangle in two sub-triangles. Consider the following
+        let a = &vertices[0];
+        let b = &vertices[1];
+        let c = &vertices[2];
+
+        // We need to draw split the triangle in two sub-triangles. Consider the following
         // triangle:
         //
         //    A
@@ -272,6 +269,9 @@ impl Rasterizer {
         //    +
         //    C
         //
+        // Note that since we order A, B and C by Y coordinate it's possible for B to be on either
+        // side of the triangle (see `ac_is_left` below)
+        //
         // In order to draw it simply we need to break it into two triangles by drawing an
         // horizontal line at B. Then we can simply iterate on each line from A to B, with the line
         // width increasing by a constant amount at every step. Then we can do the same thing from
@@ -280,9 +280,48 @@ impl Rasterizer {
         // Of course in some situations we'll end up with "flat" triangles, where one edge is
         // perfectly horizontal and A.x == B.x or C.x == B.x, in which case one of these
         // sub-triangles will effectively have 0 height.
-        let a = &vertices[0];
-        let b = &vertices[1];
-        let c = &vertices[2];
+
+        let y_min = a.position.y;
+        let y_max = c.position.y;
+
+        if y_max - y_min >= 512 {
+            // Triangle is too tall, give up
+            return;
+        }
+
+        if y_max < self.clip_y_min || y_min > self.clip_y_max {
+            // The triangle is fully above or below the clip area, we don't have anything to draw
+            return;
+        }
+
+        // Find the left side of the bounding box and the index of the core vertex. The core vertex
+        // is the one we'll start drawing from.
+        let (x_min, core_index) = vertices
+            .iter()
+            .min_by(|v0, v1| {
+                // Here's the trick: the "core" vertex is the leftmost one. If two vertices are
+                // lined up vertically on the left they'll both be equally leftmost, in this case
+                // we take the one that comes *last* in the command.
+                v0.position
+                    .x
+                    .cmp(&v1.position.x)
+                    .then_with(|| v1.index.cmp(&v0.index))
+            })
+            .map(|core_vertex| (core_vertex.position.x, core_vertex.index))
+            .unwrap();
+
+        let x_max = vertices.iter().map(|v| v.position.x).max().unwrap();
+
+        if x_max - x_min >= 1024 {
+            // Triangle is too large, give up
+            return;
+        }
+
+        if x_max < self.clip_x_min || x_min > self.clip_x_max {
+            // The triangle is fully to the left or right of the draw area, we don't have anything
+            // to draw
+            return;
+        }
 
         let xproduct = cross_product(a.position, b.position, c.position);
 
@@ -292,111 +331,249 @@ impl Rasterizer {
             return;
         }
 
-        let y_ab = b.position.y - a.position.y;
-        let y_ac = c.position.y - a.position.y;
-        let y_bc = c.position.y - b.position.y;
-
-        if y_ac >= 512 {
-            // Triangle is too tall, we don't draw anything
-            return;
-        }
-
-        // We don't have to check if y_ac is 0 because we know that B.y is between A.y and C.y,
-        // therefore is y_ac is 0 it means that A.y, B.y and C.y are 0 which means that the
-        // triangle is flat and that's already checked above with the cross product.
-        let dx_ac = FixedPoint::new(c.position.x - a.position.x) / FixedPoint::new(y_ac);
-
         // True if AC is the left edge and AB + BC are the right edges, false if it's the other way
         // around
         let ac_is_left = xproduct > 0;
 
-        // X value at H, that is the X coordinate of the intersection of an horizontal line passing
-        // by B and AC
-        let h_x;
+        let a_x = a.position.x;
+        let b_x = b.position.x;
+        let c_x = c.position.x;
 
-        // Largest value strictly inferior to 1 we can represent with our FixedPoint implementation
-        let bias = FixedPoint::new(1) - FixedPoint::epsilon();
+        let a_y = a.position.y;
+        let b_y = b.position.y;
+        let c_y = c.position.y;
 
-        // First we draw the top portion of the triangle (i.e. everything above B)
-        // Due to the way the PlayStation rasterizes triangles we know for sure that the first line
-        // of the "pointy" top (if there's one) won't be drawn. So in the drawing above, if A is
-        // exactly one line above B nothing is drawn above B.
-        if y_ab > 1 {
-            let dx_ab = FixedPoint::new(b.position.x - a.position.x) / FixedPoint::new(y_ab);
+        // Slope of AC. We've already checked that the triangle had non-0 screen height, so we know
+        // that this can't be a division by 0
+        let ac_dxdy = FixedPoint::new_dxdy(c_x - a_x, c_y - a_y);
 
-            let (dx_left, dx_right) = if ac_is_left {
-                // AC is the left edge, AB is the right edge
-                (dx_ac, dx_ab)
-            } else {
-                // AB is the left edge, AC is the right edge
-                (dx_ab, dx_ac)
-            };
+        // Slope of AB
+        let ab_dxdy = if a_y != b_y {
+            FixedPoint::new_dxdy(b_x - a_x, b_y - a_y)
+        } else {
+            // AB is horizontal, we won't have to use this variable
+            FixedPoint::new(0)
+        };
 
-            // The X start and stop coordinates for every line. Since we start at vertex A at the
-            // top they are the same point originally and they'll diverge as we go down
-            let a_x = FixedPoint::new(a.position.x);
+        // Slope of BC
+        let bc_dxdy = if b_y != c_y {
+            FixedPoint::new_dxdy(c_x - b_x, c_y - b_y)
+        } else {
+            // BC is horizontal, we won't have to use this variable
+            FixedPoint::new(0)
+        };
 
-            let (mut x_start, mut x_end) = if dx_right.is_positive() {
-                let x_start = a_x + FixedPoint::new(1) - FixedPoint::epsilon();
-                let x_end = a_x - FixedPoint::epsilon();
+        let a_fpx = FixedPoint::new_saturated(a_x);
+        let b_fpx = FixedPoint::new_saturated(b_x);
+        let c_fpx = FixedPoint::new_saturated(c_x);
+        // Coordinate of the point on AC that has the same y as B
+        let h_fpx = a_fpx + ac_dxdy * (b_y - a_y);
 
-                (x_start, x_end)
-            } else {
-                let x_start = a_x - FixedPoint::epsilon();
-                let x_end = a_x - FixedPoint::new(1) - FixedPoint::epsilon();
+        // The draw order depends on the core_vertex.
+        if core_index == a.index {
+            // We draw AB then BC
 
-                (x_start, x_end)
-            };
+            if a_y != b_y {
+                // Draw AB
+                let (left_dxdy, right_dxdy) = if ac_is_left {
+                    (ac_dxdy, ab_dxdy)
+                } else {
+                    (ab_dxdy, ac_dxdy)
+                };
 
-            for y in (a.position.y + 1)..b.position.y {
-                x_start += dx_left;
-                x_end += dx_right;
+                let rc = RasterCoords {
+                    start_y: a_y,
+                    end_y: b_y,
+                    left_x: a_fpx,
+                    right_x: a_fpx,
+                    left_dxdy,
+                    right_dxdy,
+                };
 
-                println!("{}: {} -> {}", y, x_start, x_end);
-
-                for x in x_start.truncate()..=x_end.truncate() {
-                    // TODO implement texture/gouraud shading
-                    self.draw_solid_pixel::<Transparency>(x, y, a.color);
-                }
+                self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Down);
             }
 
-            // The bottom part (if it exists) will begin on the next line, we'll continue along the
-            // "long" side AC so we must be careful not to lose the current value
-            if ac_is_left {
-                h_x = x_start + dx_left;
-            } else {
-                h_x = x_end + dx_right;
+            if b_y != c_y {
+                // Draw BC
+                let (left_x, left_dxdy, right_x, right_dxdy) = if ac_is_left {
+                    (h_fpx, ac_dxdy, b_fpx, bc_dxdy)
+                } else {
+                    (b_fpx, bc_dxdy, h_fpx, ac_dxdy)
+                };
+
+                let rc = RasterCoords {
+                    start_y: b_y,
+                    end_y: c_y,
+                    left_x,
+                    right_x,
+                    left_dxdy,
+                    right_dxdy,
+                };
+
+                self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Down);
             }
         } else {
-            // The triangle has an horizontal edge at the top, H is A
-            h_x = FixedPoint::new(a.position.x) + bias;
-        }
+            // Core vertex is B or C
 
-        // Now we can move on to the bottom part of the triangle, that is everything below and
-        // including B
-        if y_bc > 0 {
-            let dx_bc = FixedPoint::new(c.position.x - b.position.x) / FixedPoint::new(y_bc);
+            if b_y != c_y {
+                if core_index == b.index {
+                    // Draw BC
+                    let (left_x, left_dxdy, right_x, right_dxdy) = if ac_is_left {
+                        (h_fpx, ac_dxdy, b_fpx, bc_dxdy)
+                    } else {
+                        (b_fpx, bc_dxdy, h_fpx, ac_dxdy)
+                    };
 
-            let b_x = FixedPoint::new(b.position.x) + bias;
+                    let rc = RasterCoords {
+                        start_y: b_y,
+                        end_y: c_y,
+                        left_x,
+                        right_x,
+                        left_dxdy,
+                        right_dxdy,
+                    };
 
-            let (mut x_start, mut x_end, dx_left, dx_right) = if ac_is_left {
-                // AC is the left edge, AB is the right edge
-                (h_x, b_x, dx_ac, dx_bc)
-            } else {
-                // AB is the left edge, AC is the right edge
-                (b_x, h_x, dx_bc, dx_ac)
-            };
+                    self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Down);
+                } else {
+                    // Core vertex is C. Draw CB.
+                    let (left_dxdy, right_dxdy) = if ac_is_left {
+                        (ac_dxdy, bc_dxdy)
+                    } else {
+                        (bc_dxdy, ac_dxdy)
+                    };
 
-            for y in b.position.y..c.position.y {
-                for x in x_start.truncate()..x_end.truncate() {
-                    // TODO implement texture/gouraud shading
-                    self.draw_solid_pixel::<Transparency>(x, y, a.color);
+                    let rc = RasterCoords {
+                        start_y: c_y,
+                        end_y: b_y,
+                        left_x: c_fpx,
+                        right_x: c_fpx,
+                        left_dxdy,
+                        right_dxdy,
+                    };
+
+                    self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Up);
                 }
-                x_start += dx_left;
-                x_end += dx_right;
+            }
+
+            // If the core vertex is B or C we always end up by drawing BA
+            if a_y != b_y {
+                let (left_x, left_dxdy, right_x, right_dxdy) = if ac_is_left {
+                    (h_fpx, ac_dxdy, b_fpx, ab_dxdy)
+                } else {
+                    (b_fpx, ab_dxdy, h_fpx, ac_dxdy)
+                };
+
+                let rc = RasterCoords {
+                    start_y: b_y,
+                    end_y: a_y,
+                    left_x,
+                    right_x,
+                    left_dxdy,
+                    right_dxdy,
+                };
+
+                self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Up);
             }
         }
     }
+
+    fn rasterize<Transparency, Texture, Shading>(&mut self, rc: RasterCoords, dir: RasterDir)
+    where
+        Transparency: TransparencyMode,
+        Texture: TextureMode,
+        Shading: ShadingMode,
+    {
+        let mut y = rc.start_y;
+        let mut left_x = rc.left_x;
+        let mut right_x = rc.right_x;
+
+        if dir == RasterDir::Up {
+            while y != rc.end_y {
+                // We move first, then we draw.
+                y -= 1;
+                left_x -= rc.left_dxdy;
+                right_x -= rc.right_dxdy;
+
+                if y < self.clip_y_min {
+                    // We left the drawing area
+                    break;
+                }
+
+                if y <= self.clip_y_max {
+                    self.rasterize_line::<Transparency, Texture, Shading>(
+                        y,
+                        left_x.truncate(),
+                        right_x.truncate(),
+                    );
+                }
+            }
+        } else {
+            while y != rc.end_y {
+                if y > self.clip_y_max {
+                    // We left the drawing area
+                    break;
+                }
+
+                if y >= self.clip_y_min {
+                    self.rasterize_line::<Transparency, Texture, Shading>(
+                        y,
+                        left_x.truncate(),
+                        right_x.truncate(),
+                    );
+                }
+
+                y += 1;
+                left_x += rc.left_dxdy;
+                right_x += rc.right_dxdy;
+            }
+        }
+    }
+
+    fn rasterize_line<Transparency, Texture, Shading>(&mut self, y: i32, left_x: i32, right_x: i32)
+    where
+        Transparency: TransparencyMode,
+        Texture: TextureMode,
+        Shading: ShadingMode,
+    {
+        let left_x = max(left_x, self.clip_x_min);
+        let right_x = min(right_x, self.clip_x_max);
+
+        if left_x >= right_x {
+            // Line is either 0-length or clipped
+            return;
+        }
+
+        // XXX fixme
+        let color = Bgr888::from_command(0x00_00ff);
+        for x in left_x..right_x {
+            self.draw_solid_pixel::<Transparency>(x, y, color);
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum RasterDir {
+    /// We drawing lines from top to bottom
+    Down,
+    /// We drawing lines from bottom to top
+    Up,
+}
+
+/// Structure containing the definition of the various coordinates necessary to rasterize a
+/// triangle
+struct RasterCoords {
+    /// Y coordinate of the first line to be drawn
+    start_y: i32,
+    /// Y coordinate of the first line *not* to be drawn
+    end_y: i32,
+    /// X coordinate of the left side of the first line to be drawn
+    left_x: FixedPoint,
+    /// X coordinate of the right side of the first line to be drawn
+    right_x: FixedPoint,
+    /// Value added or subtracted to left_x every time we move down or up one line (respectively)
+    left_dxdy: FixedPoint,
+    /// Value added or subtracted to right_x every time we move down or up one line (respectively)
+    right_dxdy: FixedPoint,
 }
 
 /// Compute the cross-product of (AB) x (AC)
@@ -487,14 +664,18 @@ struct Vertex {
     position: Position,
     color: Bgr888,
     texture: u32,
+    /// The order in which the vertices are received is sometimes important, so we keep track of
+    /// the index in the original command here.
+    index: u8,
 }
 
 impl Vertex {
-    fn new() -> Vertex {
+    fn new(index: u8) -> Vertex {
         Vertex {
             position: Position::new(0, 0),
             color: Bgr888::from_command(0),
             texture: 0,
+            index,
         }
     }
 
@@ -523,7 +704,12 @@ where
     Texture: TextureMode,
     Shading: ShadingMode,
 {
-    let mut vertices = [Vertex::new(), Vertex::new(), Vertex::new(), Vertex::new()];
+    let mut vertices = [
+        Vertex::new(0),
+        Vertex::new(1),
+        Vertex::new(2),
+        Vertex::new(3),
+    ];
 
     let mut index = 0;
     let mut cur_color = Bgr888::black();
@@ -638,7 +824,7 @@ where
     Texture: TextureMode,
     Shading: ShadingMode,
 {
-    let mut vertices = [Vertex::new(), Vertex::new(), Vertex::new()];
+    let mut vertices = [Vertex::new(0), Vertex::new(1), Vertex::new(2)];
 
     let mut index = 0;
     let mut cur_color = Bgr888::black();

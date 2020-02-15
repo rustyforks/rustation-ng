@@ -5,23 +5,51 @@
 #![allow(clippy::suspicious_arithmetic_impl)]
 
 use std::fmt;
-use std::ops::{Add, AddAssign, Div, Sub};
+use std::ops::{Add, AddAssign, Mul, Sub, SubAssign};
 
 /// The number of bits used for the fractional part of a FixedPoint value.
 ///
-/// I'm not really sure how the PSX GPU works internally but if it does use FP the way we do here
-/// it must use *at least* 9bits for the fractional part since it allows drawing up to 512 pixels
-/// in height. Actually for gouraud shading it's probably 10 bits since we can go up to 1024 pixels
-/// horizontally.
-const FIXED_POINT_SHIFT: u32 = 16;
+/// I'm not entirely sure what this value is on the real console (or even if it's really how the
+/// drawing algorithm is really implemented).
+const FIXED_POINT_SHIFT: u32 = 32;
 
 /// Fixed point representation of a number.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FixedPoint(i32);
+pub struct FixedPoint(i64);
 
 impl FixedPoint {
     pub fn new(v: i32) -> FixedPoint {
-        FixedPoint(v << FIXED_POINT_SHIFT)
+        FixedPoint(i64::from(v) << FIXED_POINT_SHIFT)
+    }
+
+    /// Create a new FixedPoint value that's equal to the largest possible value that's less than
+    /// `v + 1`, in other words: `v + 1 - epsilon()`
+    pub fn new_saturated(v: i32) -> FixedPoint {
+        let f = FixedPoint::new(v + 1);
+
+        f - FixedPoint::epsilon()
+    }
+
+    /// Create a new dx/dy slope ratio. The result is rounded to the available precision away from
+    /// 0. `dy` *must* be greater than 0.
+    pub fn new_dxdy(dx: i32, dy: i32) -> FixedPoint {
+        debug_assert!(dy > 0);
+
+        let mut fpdx = FixedPoint::new(dx);
+        let dy = i64::from(dy);
+
+        // We want the division to round away from 0. We know that dy is positive, so the sign of
+        // the result will be that of dx. So if dx is negative we need to do `(dx - dy + 1) / dy`
+        // and if it's positive `(dx + dy - 1) / dy`.
+        let bias = dy - 1;
+
+        if dx > 0 {
+            fpdx.0 += bias;
+        } else {
+            fpdx.0 -= bias;
+        }
+
+        FixedPoint(fpdx.0 / dy)
     }
 
     /// Returns the smallest possible FixedPoint value > 0
@@ -30,39 +58,17 @@ impl FixedPoint {
     }
 
     pub fn truncate(self) -> i32 {
-        self.0 >> FIXED_POINT_SHIFT
+        (self.0 >> FIXED_POINT_SHIFT) as i32
     }
 
     pub fn to_float(self) -> f32 {
-        (self.0 as f32) / ((1 << FIXED_POINT_SHIFT) as f32)
-    }
-
-    pub fn is_positive(self) -> bool {
-        self.0 >= 0
+        (self.0 as f32) / ((1i64 << FIXED_POINT_SHIFT) as f32)
     }
 }
 
 impl fmt::Display for FixedPoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_float())
-    }
-}
-
-impl Div for FixedPoint {
-    type Output = Self;
-
-    fn div(self, rhs: Self) -> Self::Output {
-        let n = (self.0 as i64) << FIXED_POINT_SHIFT;
-        let d = rhs.0 as i64;
-
-        debug_assert!(d != 0);
-
-        let q = n / d;
-
-        debug_assert!(q >= ::std::i32::MIN as i64);
-        debug_assert!(q <= ::std::i32::MAX as i64);
-
-        FixedPoint(q as i32)
     }
 }
 
@@ -88,16 +94,18 @@ impl Sub for FixedPoint {
     }
 }
 
-#[test]
-fn test_divide() {
-    let ten = FixedPoint::new(10);
-    let two = FixedPoint::new(2);
-    let mtwo = FixedPoint::new(-2);
+impl SubAssign for FixedPoint {
+    fn sub_assign(&mut self, other: Self) {
+        *self = *self - other;
+    }
+}
 
-    assert_eq!(ten / two, FixedPoint::new(5));
-    assert_eq!((two / ten).truncate(), 0);
+impl Mul<i32> for FixedPoint {
+    type Output = Self;
 
-    assert_eq!(ten / mtwo, FixedPoint::new(-5));
+    fn mul(self, rhs: i32) -> Self::Output {
+        FixedPoint(self.0 * i64::from(rhs))
+    }
 }
 
 #[test]
@@ -122,4 +130,15 @@ fn test_sub() {
     assert_eq!(two - ten, FixedPoint::new(-8));
     assert_eq!(ten - mtwo, FixedPoint::new(12));
     assert_eq!(mtwo - ten, FixedPoint::new(-12));
+}
+
+#[test]
+fn test_mul_i32() {
+    let ten = FixedPoint::new(10);
+    let two = FixedPoint::new(2);
+
+    assert_eq!(ten * 8, FixedPoint::new(80));
+    assert_eq!(two * 13, FixedPoint::new(26));
+    assert_eq!(two * -13, FixedPoint::new(-26));
+    assert_eq!(two * 0, FixedPoint::new(0));
 }
