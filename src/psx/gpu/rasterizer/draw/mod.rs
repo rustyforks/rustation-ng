@@ -192,7 +192,6 @@ impl Rasterizer {
             unimplemented!();
         } else {
             *vram_pixel = VRamPixel::from_bgr888(color);
-            println!("draw {}x{} {}", x, y, *vram_pixel);
         };
     }
 
@@ -582,7 +581,7 @@ fn cross_product(a: Position, b: Position, c: Position) -> i32 {
 }
 
 /// A single BGR1555 VRAM pixel. In order to make the emulation code simpler and to support
-/// increased color depth we always use xBGR 1888 internally
+/// increased color depth we always use xRGB 1888 internally
 #[derive(Copy, Clone, PartialEq, Eq)]
 struct VRamPixel(u32);
 
@@ -592,7 +591,7 @@ impl VRamPixel {
     }
 
     fn from_bgr888(bgr: Bgr888) -> VRamPixel {
-        VRamPixel(bgr.0)
+        VRamPixel((bgr.red() << 16) | (bgr.green() << 8) | bgr.blue())
     }
 
     fn from_mbgr1555(mbgr: u16) -> VRamPixel {
@@ -607,7 +606,7 @@ impl VRamPixel {
         let g = (g << 3) | (g >> 2);
         let b = (b << 3) | (b >> 2);
 
-        VRamPixel(r | (g << 8) | (b << 16) | (m << 24))
+        VRamPixel(b | (g << 8) | (r << 16) | (m << 24))
     }
 
     fn to_rgb888(self) -> u32 {
@@ -655,6 +654,18 @@ impl Bgr888 {
 
     fn from_command(c: u32) -> Bgr888 {
         Bgr888(c & 0xff_ffff)
+    }
+
+    fn red(self) -> u32 {
+        self.0 & 0xff
+    }
+
+    fn green(self) -> u32 {
+        (self.0 >> 8) & 0xff
+    }
+
+    fn blue(self) -> u32 {
+        (self.0 >> 16) & 0xff
     }
 }
 
