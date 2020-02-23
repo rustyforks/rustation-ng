@@ -10,7 +10,7 @@ use crate::psx::gpu::commands::Shaded;
 use crate::psx::gpu::commands::{NoShading, Position};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureMode, TransparencyMode};
 use crate::psx::gpu::{DrawMode, MaskSettings};
-use fixed_point::FixedPoint;
+use fixed_point::FpCoord;
 use std::cmp::{max, min};
 use std::fmt;
 
@@ -344,27 +344,27 @@ impl Rasterizer {
 
         // Slope of AC. We've already checked that the triangle had non-0 screen height, so we know
         // that this can't be a division by 0
-        let ac_dxdy = FixedPoint::new_dxdy(c_x - a_x, c_y - a_y);
+        let ac_dxdy = FpCoord::new_dxdy(c_x - a_x, c_y - a_y);
 
         // Slope of AB
         let ab_dxdy = if a_y != b_y {
-            FixedPoint::new_dxdy(b_x - a_x, b_y - a_y)
+            FpCoord::new_dxdy(b_x - a_x, b_y - a_y)
         } else {
             // AB is horizontal, we won't have to use this variable
-            FixedPoint::new(0)
+            FpCoord::new(0)
         };
 
         // Slope of BC
         let bc_dxdy = if b_y != c_y {
-            FixedPoint::new_dxdy(c_x - b_x, c_y - b_y)
+            FpCoord::new_dxdy(c_x - b_x, c_y - b_y)
         } else {
             // BC is horizontal, we won't have to use this variable
-            FixedPoint::new(0)
+            FpCoord::new(0)
         };
 
-        let a_fpx = FixedPoint::new_saturated(a_x);
-        let b_fpx = FixedPoint::new_saturated(b_x);
-        let c_fpx = FixedPoint::new_saturated(c_x);
+        let a_fpx = FpCoord::new_saturated(a_x);
+        let b_fpx = FpCoord::new_saturated(b_x);
+        let c_fpx = FpCoord::new_saturated(c_x);
         // Coordinate of the point on AC that has the same y as B
         let h_fpx = a_fpx + ac_dxdy * (b_y - a_y);
 
@@ -566,13 +566,13 @@ struct RasterCoords {
     /// Y coordinate of the first line *not* to be drawn
     end_y: i32,
     /// X coordinate of the left side of the first line to be drawn
-    left_x: FixedPoint,
+    left_x: FpCoord,
     /// X coordinate of the right side of the first line to be drawn
-    right_x: FixedPoint,
+    right_x: FpCoord,
     /// Value added or subtracted to left_x every time we move down or up one line (respectively)
-    left_dxdy: FixedPoint,
+    left_dxdy: FpCoord,
     /// Value added or subtracted to right_x every time we move down or up one line (respectively)
-    right_dxdy: FixedPoint,
+    right_dxdy: FpCoord,
 }
 
 /// Compute the cross-product of (AB) x (AC)
