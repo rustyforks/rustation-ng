@@ -330,7 +330,6 @@ fn triangle_solid_opaque_slant_top_right() {
     let x = VRamPixel::new();
     let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
 
-    // XXX double-check this one, I could've gotten it wrong
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
