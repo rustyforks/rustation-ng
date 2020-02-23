@@ -14,7 +14,7 @@ fn main() {
     let dest_path = Path::new(&out_dir).join("version.rs");
     let mut f = File::create(&dest_path).unwrap();
 
-    let git = env::var("GIT").unwrap_or("git".into());
+    let git = env::var("GIT").unwrap_or_else(|_| "git".into());
 
     let description = Command::new(git).arg("describe").arg("--dirty").output();
 
