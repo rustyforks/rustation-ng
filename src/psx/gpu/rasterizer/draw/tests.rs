@@ -39,12 +39,25 @@ fn vertex_coord(x: i16, y: i16) -> Command {
     Command::Gp0((x as u32) | ((y as u32) << 16))
 }
 
+fn bgr_px(rgb: u32) -> VRamPixel {
+    VRamPixel::from_bgr888(Bgr888::from_command(rgb))
+}
+
+fn mbgr_px(mbgr: u16) -> VRamPixel {
+    VRamPixel::from_mbgr1555(mbgr)
+}
+
 fn check_rasterizer(rasterizer: &Rasterizer, expected: &[&[VRamPixel]]) {
     for (y, line) in expected.iter().enumerate() {
         for (x, &color) in line.iter().enumerate() {
-            let p = rasterizer.vram[y * 1024 + x];
+            let p = rasterizer.vram[y * 1024 + x].to_mbgr1555();
+            let color = color.to_mbgr1555();
 
-            assert_eq!(color, p, "VRAM {}x{}: expected {} got {}", x, y, color, p);
+            assert_eq!(
+                color, p,
+                "VRAM {}x{}: expected 0x{:x} got 0x{:x}",
+                x, y, color, p
+            );
         }
     }
 }
@@ -68,7 +81,7 @@ fn quad_rect_solid_opaque() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x],
@@ -82,6 +95,10 @@ fn quad_rect_solid_opaque() {
 
     check_rasterizer(&rasterizer, &expected);
 }
+
+/*
+ * Triangle rasterization tests
+ */
 
 #[test]
 fn triangle_solid_opaque_pyramid_up() {
@@ -100,7 +117,7 @@ fn triangle_solid_opaque_pyramid_up() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x],
@@ -131,7 +148,7 @@ fn triangle_solid_opaque_pyramid_down() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
@@ -162,7 +179,7 @@ fn triangle_solid_opaque_flat_up() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
@@ -194,7 +211,7 @@ fn triangle_solid_opaque_flat_down() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
@@ -226,7 +243,7 @@ fn triangle_solid_opaque_flat_right() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x],
@@ -261,7 +278,7 @@ fn triangle_solid_opaque_flat_left() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x],
@@ -296,7 +313,7 @@ fn triangle_solid_opaque_slant_top_left() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
@@ -328,7 +345,7 @@ fn triangle_solid_opaque_slant_top_right() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
@@ -360,7 +377,7 @@ fn triangle_solid_opaque_slant_bot_left() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
@@ -392,7 +409,7 @@ fn triangle_solid_opaque_slant_bot_right() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
@@ -424,7 +441,7 @@ fn triangle_solid_opaque_mid_right() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
@@ -458,7 +475,7 @@ fn triangle_solid_opaque_mid_left() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
@@ -494,7 +511,7 @@ fn triangle_solid_opaque_big1() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x],
@@ -540,7 +557,7 @@ fn triangle_solid_opaque_big2() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x],
@@ -597,7 +614,7 @@ fn triangle_solid_opaque_draw_limits() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x],
@@ -638,7 +655,7 @@ fn triangle_solid_opaque_false_friends() {
     rasterizer.run();
 
     let x = VRamPixel::new();
-    let r = VRamPixel::from_bgr888(Bgr888::from_command(0x0000ff));
+    let r = bgr_px(0x0000ff);
 
     let expected: &[&[VRamPixel]] = &[
         &[x, x, x, x, x, x],
@@ -654,6 +671,134 @@ fn triangle_solid_opaque_false_friends() {
         &[x, r, r, r, x, x],
         &[x, r, r, r, r, x],
         &[x, x, x, x, x, x],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
+
+/*
+ * Gouraud shading tests
+ */
+
+#[test]
+fn gouraud_rgb_right() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        Command::Gp0(0x300000ff),
+        vertex_coord(1, 0),
+        Command::Gp0(0x0000ff00),
+        vertex_coord(1, 9),
+        Command::Gp0(0x00ff0000),
+        vertex_coord(9, 9),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let p = mbgr_px;
+
+    let expected: &[&[VRamPixel]] = &[
+        &[p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0)],
+        &[
+            p(0),
+            p(0x007c),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+        ],
+        &[
+            p(0),
+            p(0x00f8),
+            p(0x1078),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+        ],
+        &[
+            p(0),
+            p(0x0155),
+            p(0x10d5),
+            p(0x2055),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+        ],
+        &[
+            p(0),
+            p(0x01d1),
+            p(0x1151),
+            p(0x20d1),
+            p(0x3051),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+        ],
+        &[
+            p(0),
+            p(0x022e),
+            p(0x11ae),
+            p(0x212e),
+            p(0x30ae),
+            p(0x402e),
+            p(0),
+            p(0),
+            p(0),
+            p(0),
+        ],
+        &[
+            p(0),
+            p(0x02aa),
+            p(0x122a),
+            p(0x21aa),
+            p(0x312a),
+            p(0x40aa),
+            p(0x4c2a),
+            p(0),
+            p(0),
+            p(0),
+        ],
+        &[
+            p(0),
+            p(0x0307),
+            p(0x1287),
+            p(0x2207),
+            p(0x3187),
+            p(0x4107),
+            p(0x4c87),
+            p(0x5c07),
+            p(0),
+            p(0),
+        ],
+        &[
+            p(0),
+            p(0x0383),
+            p(0x1303),
+            p(0x2283),
+            p(0x3203),
+            p(0x4183),
+            p(0x4d03),
+            p(0x5c83),
+            p(0x6c03),
+            p(0),
+        ],
+        &[p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0)],
     ];
 
     check_rasterizer(&rasterizer, &expected);

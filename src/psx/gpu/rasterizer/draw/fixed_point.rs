@@ -5,21 +5,21 @@
 #![allow(clippy::suspicious_arithmetic_impl)]
 
 use std::fmt;
-use std::ops::{Add, AddAssign, Mul, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
 /// The number of bits used for the fractional part of a FpCoord value.
 ///
 /// I'm not entirely sure what this value is on the real console (or even if it's really how the
 /// drawing algorithm is really implemented).
-const FIXED_POINT_SHIFT: u32 = 32;
+const FP_COORD_SHIFT: u32 = 32;
 
-/// Fixed point representation of a number.
+/// Fixed point representation of a screen coordinate
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FpCoord(i64);
 
 impl FpCoord {
     pub fn new(v: i32) -> FpCoord {
-        FpCoord(i64::from(v) << FIXED_POINT_SHIFT)
+        FpCoord(i64::from(v) << FP_COORD_SHIFT)
     }
 
     /// Create a new FpCoord value that's equal to the largest possible value that's less than
@@ -58,11 +58,11 @@ impl FpCoord {
     }
 
     pub fn truncate(self) -> i32 {
-        (self.0 >> FIXED_POINT_SHIFT) as i32
+        (self.0 >> FP_COORD_SHIFT) as i32
     }
 
     pub fn to_float(self) -> f32 {
-        (self.0 as f32) / ((1i64 << FIXED_POINT_SHIFT) as f32)
+        (self.0 as f32) / ((1i64 << FP_COORD_SHIFT) as f32)
     }
 }
 
@@ -105,6 +105,80 @@ impl Mul<i32> for FpCoord {
 
     fn mul(self, rhs: i32) -> Self::Output {
         FpCoord(self.0 * i64::from(rhs))
+    }
+}
+
+/// The number of bits used for the fractional part of a FpVar value.
+///
+/// I'm not entirely sure what this value is on the real console (or even if it's really how the
+/// drawing algorithm is really implemented).
+///
+/// Mednafen uses 12bits for the fractional part
+const FP_VAR_SHIFT: u32 = 12;
+
+/// Fixed point representation of an interpolated variable (i.e. Gouraud shading color component or
+/// texture sampling coordinate)
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FpVar(i32);
+
+impl FpVar {
+    pub fn new(v: i32) -> FpVar {
+        let fv = FpVar(v << FP_VAR_SHIFT);
+
+        debug_assert!(fv.truncate() == v);
+
+        fv
+    }
+
+    /// Create a new FpVar equal to v + 0.5
+    pub fn new_center(v: i32) -> FpVar {
+        let mut f = FpVar::new(v);
+
+        f.0 += 1 << (FP_VAR_SHIFT - 1);
+
+        f
+    }
+
+    pub fn truncate(self) -> i32 {
+        self.0 >> FP_VAR_SHIFT
+    }
+}
+
+impl Add for FpVar {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        FpVar(self.0 + other.0)
+    }
+}
+
+impl AddAssign for FpVar {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl Sub for FpVar {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        FpVar(self.0 - other.0)
+    }
+}
+
+impl Div<i32> for FpVar {
+    type Output = Self;
+
+    fn div(self, rhs: i32) -> Self::Output {
+        FpVar(self.0 / rhs)
+    }
+}
+
+impl Mul<i32> for FpVar {
+    type Output = Self;
+
+    fn mul(self, rhs: i32) -> Self::Output {
+        FpVar(self.0 * rhs)
     }
 }
 

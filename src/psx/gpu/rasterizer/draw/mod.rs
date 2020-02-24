@@ -10,7 +10,7 @@ use crate::psx::gpu::commands::Shaded;
 use crate::psx::gpu::commands::{NoShading, Position};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureMode, TransparencyMode};
 use crate::psx::gpu::{DrawMode, MaskSettings};
-use fixed_point::FpCoord;
+use fixed_point::{FpCoord, FpVar};
 use std::cmp::{max, min};
 use std::fmt;
 
@@ -295,7 +295,7 @@ impl Rasterizer {
 
         // Find the left side of the bounding box and the index of the core vertex. The core vertex
         // is the one we'll start drawing from.
-        let (x_min, core_index) = vertices
+        let core_vertex = vertices
             .iter()
             .min_by(|v0, v1| {
                 // Here's the trick: the "core" vertex is the leftmost one. If two vertices are
@@ -306,8 +306,9 @@ impl Rasterizer {
                     .cmp(&v1.position.x)
                     .then_with(|| v1.index.cmp(&v0.index))
             })
-            .map(|core_vertex| (core_vertex.position.x, core_vertex.index))
             .unwrap();
+
+        let x_min = core_vertex.position.x;
 
         let x_max = vertices.iter().map(|v| v.position.x).max().unwrap();
 
@@ -329,6 +330,12 @@ impl Rasterizer {
             // to draw
             return;
         }
+
+        let deltas = RasterVarDeltas::new::<Texture, Shading>(xproduct, &vertices);
+        // Initialize the variables with the core vertex values, then move to 0, 0. This way we'll
+        // then be able to interpolate the value of the variables for any absolute coordinates
+        let mut vars = RasterVars::new::<Texture>(core_vertex);
+        vars.translate_by::<Texture, Shading>(&deltas, -core_vertex.x(), -core_vertex.y());
 
         // True if AC is the left edge and AB + BC are the right edges, false if it's the other way
         // around
@@ -369,7 +376,7 @@ impl Rasterizer {
         let h_fpx = a_fpx + ac_dxdy * (b_y - a_y);
 
         // The draw order depends on the core_vertex.
-        if core_index == a.index {
+        if core_vertex.index == a.index {
             // We draw AB then BC
 
             if a_y != b_y {
@@ -389,7 +396,12 @@ impl Rasterizer {
                     right_dxdy,
                 };
 
-                self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Down);
+                self.rasterize::<Transparency, Texture, Shading>(
+                    rc,
+                    &vars,
+                    &deltas,
+                    RasterDir::Down,
+                );
             }
 
             if b_y != c_y {
@@ -409,13 +421,18 @@ impl Rasterizer {
                     right_dxdy,
                 };
 
-                self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Down);
+                self.rasterize::<Transparency, Texture, Shading>(
+                    rc,
+                    &vars,
+                    &deltas,
+                    RasterDir::Down,
+                );
             }
         } else {
             // Core vertex is B or C
 
             if b_y != c_y {
-                if core_index == b.index {
+                if core_vertex.index == b.index {
                     // Draw BC
                     let (left_x, left_dxdy, right_x, right_dxdy) = if ac_is_left {
                         (h_fpx, ac_dxdy, b_fpx, bc_dxdy)
@@ -432,7 +449,12 @@ impl Rasterizer {
                         right_dxdy,
                     };
 
-                    self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Down);
+                    self.rasterize::<Transparency, Texture, Shading>(
+                        rc,
+                        &vars,
+                        &deltas,
+                        RasterDir::Down,
+                    );
                 } else {
                     // Core vertex is C. Draw CB.
                     let (left_dxdy, right_dxdy) = if ac_is_left {
@@ -450,7 +472,12 @@ impl Rasterizer {
                         right_dxdy,
                     };
 
-                    self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Up);
+                    self.rasterize::<Transparency, Texture, Shading>(
+                        rc,
+                        &vars,
+                        &deltas,
+                        RasterDir::Up,
+                    );
                 }
             }
 
@@ -471,13 +498,18 @@ impl Rasterizer {
                     right_dxdy,
                 };
 
-                self.rasterize::<Transparency, Texture, Shading>(rc, RasterDir::Up);
+                self.rasterize::<Transparency, Texture, Shading>(rc, &vars, &deltas, RasterDir::Up);
             }
         }
     }
 
-    fn rasterize<Transparency, Texture, Shading>(&mut self, rc: RasterCoords, dir: RasterDir)
-    where
+    fn rasterize<Transparency, Texture, Shading>(
+        &mut self,
+        rc: RasterCoords,
+        vars: &RasterVars,
+        deltas: &RasterVarDeltas,
+        dir: RasterDir,
+    ) where
         Transparency: TransparencyMode,
         Texture: TextureMode,
         Shading: ShadingMode,
@@ -503,6 +535,8 @@ impl Rasterizer {
                         y,
                         left_x.truncate(),
                         right_x.truncate(),
+                        vars.clone(),
+                        deltas,
                     );
                 }
             }
@@ -518,6 +552,8 @@ impl Rasterizer {
                         y,
                         left_x.truncate(),
                         right_x.truncate(),
+                        vars.clone(),
+                        deltas,
                     );
                 }
 
@@ -528,24 +564,32 @@ impl Rasterizer {
         }
     }
 
-    fn rasterize_line<Transparency, Texture, Shading>(&mut self, y: i32, left_x: i32, right_x: i32)
-    where
+    fn rasterize_line<Transparency, Texture, Shading>(
+        &mut self,
+        y: i32,
+        left_x: i32,
+        right_x: i32,
+        mut vars: RasterVars,
+        deltas: &RasterVarDeltas,
+    ) where
         Transparency: TransparencyMode,
         Texture: TextureMode,
         Shading: ShadingMode,
     {
-        let left_x = max(left_x, self.clip_x_min);
-        let right_x = min(right_x, self.clip_x_max);
+        let start_x = max(left_x, self.clip_x_min);
+        let end_x = min(right_x, self.clip_x_max);
 
-        if left_x >= right_x {
+        if start_x >= end_x {
             // Line is either 0-length or clipped
             return;
         }
 
-        // XXX fixme
-        let color = Bgr888::from_command(0x00_00ff);
-        for x in left_x..right_x {
-            self.draw_solid_pixel::<Transparency>(x, y, color);
+        // We "move" the variables to the start of the line
+        vars.translate_by::<Texture, Shading>(deltas, start_x, y);
+
+        for x in start_x..end_x {
+            self.draw_solid_pixel::<Transparency>(x, y, vars.color());
+            vars.translate_right::<Texture, Shading>(deltas);
         }
     }
 }
@@ -575,6 +619,157 @@ struct RasterCoords {
     right_dxdy: FpCoord,
 }
 
+/// Structure containing the various delta values for Gouraud shading and texture mapping
+struct RasterVarDeltas {
+    /// Value added or subtracted to the red component every time we move along the X axis
+    drdx: FpVar,
+    /// Value added or subtracted to the red component every time we move along the Y axis
+    drdy: FpVar,
+    /// Value added or subtracted to the green component every time we move along the X axis
+    dgdx: FpVar,
+    /// Value added or subtracted to the green component every time we move along the Y axis
+    dgdy: FpVar,
+    /// Value added or subtracted to the blue component every time we move along the X axis
+    dbdx: FpVar,
+    /// Value added or subtracted to the blue component every time we move along the Y axis
+    dbdy: FpVar,
+}
+
+impl RasterVarDeltas {
+    fn new<Texture, Shading>(xproduct: i32, vertices: &[Vertex; 3]) -> RasterVarDeltas
+    where
+        Texture: TextureMode,
+        Shading: ShadingMode,
+    {
+        debug_assert!(xproduct != 0);
+
+        let mut d = RasterVarDeltas {
+            drdx: FpVar::new(0),
+            drdy: FpVar::new(0),
+            dgdx: FpVar::new(0),
+            dgdy: FpVar::new(0),
+            dbdx: FpVar::new(0),
+            dbdy: FpVar::new(0),
+        };
+
+        if Shading::is_shaded() {
+            // Compute the gradient deltas for every component along both axes
+            d.drdx = Self::compute_delta(xproduct, vertices, |v| v.red(), |v| v.y());
+            d.drdy = Self::compute_delta(xproduct, vertices, |v| v.x(), |v| v.red());
+            d.dgdx = Self::compute_delta(xproduct, vertices, |v| v.green(), |v| v.y());
+            d.dgdy = Self::compute_delta(xproduct, vertices, |v| v.x(), |v| v.green());
+            d.dbdx = Self::compute_delta(xproduct, vertices, |v| v.blue(), |v| v.y());
+            d.dbdy = Self::compute_delta(xproduct, vertices, |v| v.x(), |v| v.blue());
+        }
+
+        if Texture::is_textured() {
+            unimplemented!();
+        }
+
+        d
+    }
+
+    fn compute_delta<X, Y>(xproduct: i32, vertices: &[Vertex; 3], get_x: X, get_y: Y) -> FpVar
+    where
+        X: Fn(&Vertex) -> i32,
+        Y: Fn(&Vertex) -> i32,
+    {
+        let xp = cross_product_with(&vertices[0], &vertices[1], &vertices[2], get_x, get_y);
+
+        FpVar::new(xp) / xproduct
+    }
+}
+
+/// Variables used during rasterization
+#[derive(Debug, Clone)]
+struct RasterVars {
+    /// Red shading component
+    red: FpVar,
+    /// Green shading component
+    green: FpVar,
+    /// Blue shading component
+    blue: FpVar,
+}
+
+impl RasterVars {
+    fn new<Texture>(v: &Vertex) -> RasterVars
+    where
+        Texture: TextureMode,
+    {
+        if Texture::is_textured() {
+            unimplemented!();
+        }
+
+        // We set the red/green/blue even if shading is disabled since they'll be used for solid
+        // shading as well
+        RasterVars {
+            red: FpVar::new_center(v.red()),
+            green: FpVar::new_center(v.green()),
+            blue: FpVar::new_center(v.blue()),
+        }
+    }
+
+    fn translate_by<Texture, Shading>(&mut self, deltas: &RasterVarDeltas, x_off: i32, y_off: i32)
+    where
+        Texture: TextureMode,
+        Shading: ShadingMode,
+    {
+        if Texture::is_textured() {
+            unimplemented!();
+        }
+
+        if Shading::is_shaded() {
+            self.red += deltas.drdx * x_off;
+            self.red += deltas.drdy * y_off;
+            self.green += deltas.dgdx * x_off;
+            self.green += deltas.dgdy * y_off;
+            self.blue += deltas.dbdx * x_off;
+            self.blue += deltas.dbdy * y_off;
+        }
+    }
+
+    /// Move var one pixel to the right
+    fn translate_right<Texture, Shading>(&mut self, deltas: &RasterVarDeltas)
+    where
+        Texture: TextureMode,
+        Shading: ShadingMode,
+    {
+        if Texture::is_textured() {
+            unimplemented!();
+        }
+
+        if Shading::is_shaded() {
+            self.red += deltas.drdx;
+            self.green += deltas.dgdx;
+            self.blue += deltas.dbdx;
+        }
+    }
+
+    fn color(&self) -> Bgr888 {
+        let r = self.red.truncate() as u8;
+        let b = self.blue.truncate() as u8;
+        let g = self.green.truncate() as u8;
+
+        Bgr888::from_rgb(r, g, b)
+    }
+}
+
+/// Compute the cross-product of (AB) x (AC) using the provided getters for x and y
+fn cross_product_with<X, Y>(a: &Vertex, b: &Vertex, c: &Vertex, get_x: X, get_y: Y) -> i32
+where
+    X: Fn(&Vertex) -> i32,
+    Y: Fn(&Vertex) -> i32,
+{
+    let a_x = get_x(a);
+    let b_x = get_x(b);
+    let c_x = get_x(c);
+    let a_y = get_y(a);
+    let b_y = get_y(b);
+    let c_y = get_y(c);
+
+    (b_x - a_x) * (c_y - a_y) - (c_x - a_x) * (b_y - a_y)
+}
+
 /// Compute the cross-product of (AB) x (AC)
 fn cross_product(a: Position, b: Position, c: Position) -> i32 {
     (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)
@@ -600,7 +795,7 @@ impl VRamPixel {
         let b = ((mbgr >> 10) & 0x1f) as u32;
         let m = ((mbgr >> 15) & 1) as u32;
 
-        // We want to extend to RGB888 so we copy the 3 MBS to the LSBs (this way black remains
+        // We want to extend to RGB888 so we copy the 3 MSBs to the LSBs (this way black remains
         // black and white remains white)
         let r = (r << 3) | (r >> 2);
         let g = (g << 3) | (g >> 2);
@@ -613,8 +808,18 @@ impl VRamPixel {
         self.0 & 0xff_ff_ff
     }
 
+    #[allow(dead_code)]
+    fn to_mbgr1555(self) -> u16 {
+        let m = self.mask() as u16;
+        let r = (self.red() >> 3) as u16;
+        let g = (self.green() >> 3) as u16;
+        let b = (self.blue() >> 3) as u16;
+
+        (m << 15) | (b << 10) | (g << 5) | r
+    }
+
     fn red(self) -> u8 {
-        (self.0 & 0xff) as u8
+        (self.0 >> 16) as u8
     }
 
     fn green(self) -> u8 {
@@ -622,7 +827,12 @@ impl VRamPixel {
     }
 
     fn blue(self) -> u8 {
-        (self.0 >> 16) as u8
+        (self.0 & 0xff) as u8
+    }
+
+    #[allow(dead_code)]
+    fn mask(self) -> bool {
+        (self.0 >> 24) != 0
     }
 }
 
@@ -654,6 +864,14 @@ impl Bgr888 {
 
     fn from_command(c: u32) -> Bgr888 {
         Bgr888(c & 0xff_ffff)
+    }
+
+    fn from_rgb(r: u8, g: u8, b: u8) -> Bgr888 {
+        let r = r as u32;
+        let g = g as u32;
+        let b = b as u32;
+
+        Bgr888(r | (g << 8) | (b << 16))
     }
 
     fn red(self) -> u32 {
@@ -692,6 +910,26 @@ impl Vertex {
 
     fn set_position(&mut self, p: u32) {
         self.position = Position::from_command(p);
+    }
+
+    fn x(&self) -> i32 {
+        self.position.x
+    }
+
+    fn y(&self) -> i32 {
+        self.position.y
+    }
+
+    fn red(&self) -> i32 {
+        self.color.red() as i32
+    }
+
+    fn green(&self) -> i32 {
+        self.color.green() as i32
+    }
+
+    fn blue(&self) -> i32 {
+        self.color.blue() as i32
     }
 }
 
