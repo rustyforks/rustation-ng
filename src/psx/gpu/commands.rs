@@ -334,7 +334,11 @@ where
 
         if Texture::is_textured() {
             // Pop texture coordinates
-            psx.gpu.command_pop_to_rasterizer();
+            let tex = psx.gpu.command_pop_to_rasterizer();
+            if v == 1 {
+                // For polygons the 2nd texel contains the new texture page config
+                psx.gpu.draw_mode.update_from_poly(tex);
+            }
         }
     }
 
@@ -380,7 +384,11 @@ where
 
         if Texture::is_textured() {
             // Pop texture coordinates
-            psx.gpu.command_pop_to_rasterizer();
+            let tex = psx.gpu.command_pop_to_rasterizer();
+            if v == 1 {
+                // For polygons the 2nd texel contains the new texture page config
+                psx.gpu.draw_mode.update_from_poly(tex);
+            }
         }
     }
 

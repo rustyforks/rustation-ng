@@ -714,7 +714,7 @@ fn run_next_command(psx: &mut Psx) {
     (command.handler)(psx);
 }
 
-/// Wrapper around the Draw Mode register value (set by GP0[0xe1])
+/// Wrapper around the Draw Mode register value (set by GP0[0xe1] and polygon draw commands)
 struct DrawMode(u32);
 
 impl DrawMode {
@@ -724,6 +724,16 @@ impl DrawMode {
 
     fn set(&mut self, mode: u32) {
         self.0 = mode
+    }
+
+    /// Update from a polygon draw command. When that happens it overwrites the previous value
+    /// globally (i.e. the configuration remains set for any subsequent draw commands, not just the
+    /// current polygon)
+    fn update_from_poly(&mut self, poly_cmd: u32) {
+        // XXX bit 11 (texture_disable) can also be set/cleared, but only if the functionality is
+        // enabled using GP1[0x09]
+        self.0 &= !0x1f;
+        self.0 |= (poly_cmd >> 16) & 0x1f;
     }
 
     fn texture_disable(&self) -> bool {
