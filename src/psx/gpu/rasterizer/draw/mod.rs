@@ -25,7 +25,7 @@ enum State {
 }
 
 pub struct Rasterizer {
-    vram: Box<[VRamPixel; 1024 * 512]>,
+    vram: Box<[Pixel; 1024 * 512]>,
     state: State,
     /// Frame currently being drawn
     cur_frame: Frame,
@@ -57,7 +57,7 @@ impl Rasterizer {
         frame_channel: mpsc::Sender<Frame>,
     ) -> Rasterizer {
         Rasterizer {
-            vram: box_array![VRamPixel::new(); 1024 * 512],
+            vram: box_array![Pixel::black(); 1024 * 512],
             state: State::WaitingForCommand,
             cur_frame: Frame::new(1024, 512),
             command_channel,
@@ -107,8 +107,8 @@ impl Rasterizer {
                                 (h.handler)(self, &params[..len]);
                             }
                             State::VRamStore(ref mut store) => {
-                                let p0 = VRamPixel::from_mbgr1555(*v as u16);
-                                let p1 = VRamPixel::from_mbgr1555((*v >> 16) as u16);
+                                let p0 = Pixel::from_mbgr1555(*v as u16);
+                                let p1 = Pixel::from_mbgr1555((*v >> 16) as u16);
 
                                 for &p in [p0, p1].iter() {
                                     let vram_off = store.target_vram_offset();
@@ -173,7 +173,7 @@ impl Rasterizer {
         self.mask_settings.set(0);
     }
 
-    fn draw_solid_pixel<Transparency>(&mut self, x: i32, y: i32, color: Bgr888)
+    fn draw_solid_pixel<Transparency>(&mut self, x: i32, y: i32, color: Pixel)
     where
         Transparency: TransparencyMode,
     {
@@ -188,7 +188,7 @@ impl Rasterizer {
         if Transparency::is_transparent() {
             unimplemented!();
         } else {
-            *vram_pixel = VRamPixel::from_bgr888(color);
+            *vram_pixel = color;
         };
     }
 
@@ -543,7 +543,7 @@ impl Rasterizer {
             if Texture::is_textured() {
                 let texel = self.get_texel(vars.u(), vars.v());
                 if !texel.is_nul() {
-                    self.draw_solid_pixel::<Transparency>(x, y, texel.to_bgr888());
+                    self.draw_solid_pixel::<Transparency>(x, y, texel);
                 }
             } else {
                 // No texture
@@ -553,7 +553,7 @@ impl Rasterizer {
         }
     }
 
-    fn get_texel(&self, u: u8, v: u8) -> VRamPixel {
+    fn get_texel(&self, u: u8, v: u8) -> Pixel {
         self.tex_mapper.get_texel(u, v, &self.vram)
     }
 }
@@ -740,12 +740,12 @@ impl RasterVars {
         }
     }
 
-    fn color(&self) -> Bgr888 {
+    fn color(&self) -> Pixel {
         let r = self.red.truncate() as u8;
         let b = self.blue.truncate() as u8;
         let g = self.green.truncate() as u8;
 
-        Bgr888::from_rgb(r, g, b)
+        Pixel::from_rgb(r, g, b)
     }
 
     fn u(&self) -> u8 {
@@ -864,7 +864,7 @@ impl TextureMapper {
         self.v_offset += tp_y;
     }
 
-    pub fn get_texel(&self, u: u8, v: u8, vram: &[VRamPixel; 1024 * 512]) -> VRamPixel {
+    pub fn get_texel(&self, u: u8, v: u8, vram: &[Pixel; 1024 * 512]) -> Pixel {
         let pts = u16::from(self.pixel_to_texel_shift);
         let fb_u = u16::from(u & self.u_mask) + self.u_offset;
         let fb_v = u16::from(v & self.v_mask) + self.v_offset;
@@ -904,14 +904,15 @@ impl TextureMapper {
     }
 }
 
-/// A single BGR1555 VRAM pixel. In order to make the emulation code simpler and to support
-/// increased color depth we always use xRGB 1888 internally
+/// Generic representation of a Pixel, used to represent both 24bit 888RGB colors and 1555xRGB VRAM
+/// pixels. Internal representation is a single `u32` containing the values as 8888xRGB, meaning
+/// that it can normally be passed straight to the frontend without conversion
 #[derive(Copy, Clone, PartialEq, Eq)]
-struct VRamPixel(u32);
+struct Pixel(u32);
 
-impl VRamPixel {
-    fn new() -> VRamPixel {
-        VRamPixel(0)
+impl Pixel {
+    fn black() -> Pixel {
+        Pixel(0)
     }
 
     /// For texels this method returns true if the pixel is all zeroes (which means that the pixel
@@ -920,15 +921,7 @@ impl VRamPixel {
         self.0 == 0
     }
 
-    fn from_bgr888(bgr: Bgr888) -> VRamPixel {
-        VRamPixel((bgr.red() << 16) | (bgr.green() << 8) | bgr.blue())
-    }
-
-    fn to_bgr888(self) -> Bgr888 {
-        Bgr888::from_rgb(self.red(), self.green(), self.blue())
-    }
-
-    fn from_mbgr1555(mbgr: u16) -> VRamPixel {
+    fn from_mbgr1555(mbgr: u16) -> Pixel {
         let r = (mbgr & 0x1f) as u32;
         let g = ((mbgr >> 5) & 0x1f) as u32;
         let b = ((mbgr >> 10) & 0x1f) as u32;
@@ -940,7 +933,23 @@ impl VRamPixel {
         let g = (g << 3) | (g >> 2);
         let b = (b << 3) | (b >> 2);
 
-        VRamPixel(b | (g << 8) | (r << 16) | (m << 24))
+        Pixel(b | (g << 8) | (r << 16) | (m << 24))
+    }
+
+    fn from_rgb(r: u8, g: u8, b: u8) -> Pixel {
+        let r = r as u32;
+        let g = g as u32;
+        let b = b as u32;
+
+        Pixel(b | (g << 8) | (r << 16))
+    }
+
+    fn from_command(cmd: u32) -> Pixel {
+        let r = cmd & 0xff;
+        let g = (cmd >> 8) & 0xff;
+        let b = (cmd >> 16) & 0xff;
+
+        Pixel(b | (g << 8) | (r << 16))
     }
 
     fn to_rgb888(self) -> u32 {
@@ -974,7 +983,7 @@ impl VRamPixel {
     }
 }
 
-impl fmt::Display for VRamPixel {
+impl fmt::Display for Pixel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -986,42 +995,9 @@ impl fmt::Display for VRamPixel {
     }
 }
 
-impl fmt::Debug for VRamPixel {
+impl fmt::Debug for Pixel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self)
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-struct Bgr888(u32);
-
-impl Bgr888 {
-    fn black() -> Bgr888 {
-        Bgr888(0)
-    }
-
-    fn from_command(c: u32) -> Bgr888 {
-        Bgr888(c & 0xff_ffff)
-    }
-
-    fn from_rgb(r: u8, g: u8, b: u8) -> Bgr888 {
-        let r = r as u32;
-        let g = g as u32;
-        let b = b as u32;
-
-        Bgr888(r | (g << 8) | (b << 16))
-    }
-
-    fn red(self) -> u32 {
-        self.0 & 0xff
-    }
-
-    fn green(self) -> u32 {
-        (self.0 >> 8) & 0xff
-    }
-
-    fn blue(self) -> u32 {
-        (self.0 >> 16) & 0xff
     }
 }
 
@@ -1029,7 +1005,7 @@ impl Bgr888 {
 #[derive(Debug, Clone)]
 struct Vertex {
     position: Position,
-    color: Bgr888,
+    color: Pixel,
     /// Texture u coordinate, relative to the current texture page
     u: u8,
     /// Texture v coordinate, relative to the current texture page
@@ -1043,7 +1019,7 @@ impl Vertex {
     fn new(index: u8) -> Vertex {
         Vertex {
             position: Position::new(0, 0),
-            color: Bgr888::from_command(0),
+            color: Pixel::from_command(0),
             u: 0,
             v: 0,
             index,
@@ -1108,12 +1084,12 @@ where
     ];
 
     let mut index = 0;
-    let mut cur_color = Bgr888::black();
+    let mut cur_color = Pixel::black();
 
     // Load the vertex data from the command
     for (v, vertex) in vertices.iter_mut().enumerate() {
         if v == 0 || Shading::is_shaded() {
-            cur_color = Bgr888::from_command(params[index]);
+            cur_color = Pixel::from_command(params[index]);
             index += 1;
         }
 
@@ -1164,12 +1140,12 @@ where
     let mut vertices = [Vertex::new(0), Vertex::new(1), Vertex::new(2)];
 
     let mut index = 0;
-    let mut cur_color = Bgr888::black();
+    let mut cur_color = Pixel::black();
 
     // Load the vertex data from the command
     for (v, vertex) in vertices.iter_mut().enumerate() {
         if v == 0 || Shading::is_shaded() {
-            cur_color = Bgr888::from_command(params[index]);
+            cur_color = Pixel::from_command(params[index]);
             index += 1;
         }
         vertex.color = cur_color;

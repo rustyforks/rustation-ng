@@ -3,7 +3,7 @@
 //! Unless otherwise noted the expected output was generated on a real PlayStation (model
 //! SCPH-7502, PAL).
 
-use super::{Bgr888, Command, CommandBuffer, Frame, Rasterizer, Special, VRamPixel};
+use super::{Command, CommandBuffer, Frame, Pixel, Rasterizer, Special};
 use std::sync::mpsc;
 
 fn build_rasterizer() -> (
@@ -39,15 +39,15 @@ fn vertex_coord(x: i16, y: i16) -> Command {
     Command::Gp0((x as u32) | ((y as u32) << 16))
 }
 
-fn bgr_px(rgb: u32) -> VRamPixel {
-    VRamPixel::from_bgr888(Bgr888::from_command(rgb))
+fn bgr_px(bgr: u32) -> Pixel {
+    Pixel::from_command(bgr)
 }
 
-fn mbgr_px(mbgr: u16) -> VRamPixel {
-    VRamPixel::from_mbgr1555(mbgr)
+fn mbgr_px(mbgr: u16) -> Pixel {
+    Pixel::from_mbgr1555(mbgr)
 }
 
-fn check_rasterizer(rasterizer: &Rasterizer, expected: &[&[VRamPixel]]) {
+fn check_rasterizer(rasterizer: &Rasterizer, expected: &[&[Pixel]]) {
     for (y, line) in expected.iter().enumerate() {
         for (x, &color) in line.iter().enumerate() {
             let p = rasterizer.vram[y * 1024 + x].to_mbgr1555();
@@ -80,10 +80,10 @@ fn quad_rect_solid_opaque() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x],
         &[x, x, x, x, x, x],
         &[x, x, r, r, x, x],
@@ -116,10 +116,10 @@ fn triangle_solid_opaque_pyramid_up() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x],
@@ -147,10 +147,10 @@ fn triangle_solid_opaque_pyramid_down() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, r, r, r, r, r, r, x],
@@ -178,10 +178,10 @@ fn triangle_solid_opaque_flat_up() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, r, x, x, x, x],
@@ -210,10 +210,10 @@ fn triangle_solid_opaque_flat_down() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, r, r, r, r, r, r, r, x],
         &[x, x, x, r, r, r, r, r, r, x],
@@ -242,10 +242,10 @@ fn triangle_solid_opaque_flat_right() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x],
@@ -277,10 +277,10 @@ fn triangle_solid_opaque_flat_left() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x],
@@ -312,10 +312,10 @@ fn triangle_solid_opaque_slant_top_left() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
@@ -344,10 +344,10 @@ fn triangle_solid_opaque_slant_top_right() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
@@ -376,10 +376,10 @@ fn triangle_solid_opaque_slant_bot_left() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, r, r, r, r, r, x],
@@ -408,10 +408,10 @@ fn triangle_solid_opaque_slant_bot_right() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, r, r, r, r, r, x, x, x],
@@ -440,10 +440,10 @@ fn triangle_solid_opaque_mid_right() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, x, x],
         &[x, x, r, x, x, x, x, x, x],
@@ -474,10 +474,10 @@ fn triangle_solid_opaque_mid_left() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x, x, x, x, x],
         &[x, x, x, x, x, x, x, r, r, x],
         &[x, x, x, x, x, r, r, r, r, x],
@@ -510,10 +510,10 @@ fn triangle_solid_opaque_big1() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x],
         &[r, x, x, x, x, x],
         &[r, x, x, x, x, x],
@@ -556,10 +556,10 @@ fn triangle_solid_opaque_big2() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x],
         &[r, x, x, x, x, x],
         &[r, x, x, x, x, x],
@@ -613,10 +613,10 @@ fn triangle_solid_opaque_draw_limits() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x],
         &[x, x, x, x, x, x],
         &[x, x, x, x, x, x],
@@ -654,10 +654,10 @@ fn triangle_solid_opaque_false_friends() {
 
     rasterizer.run();
 
-    let x = VRamPixel::new();
+    let x = Pixel::black();
     let r = bgr_px(0x0000ff);
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[x, x, x, x, x, x],
         &[x, x, x, x, x, x],
         &[x, r, x, x, x, x],
@@ -700,7 +700,7 @@ fn gouraud_rgb_right() {
 
     let p = mbgr_px;
 
-    let expected: &[&[VRamPixel]] = &[
+    let expected: &[&[Pixel]] = &[
         &[p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0), p(0)],
         &[
             p(0),
