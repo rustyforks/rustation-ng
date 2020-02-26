@@ -8,8 +8,10 @@ use std::sync::mpsc;
 use super::{Command, CommandBuffer, Frame, Special};
 use crate::psx::gpu::commands::Shaded;
 use crate::psx::gpu::commands::{NoShading, Position};
-use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureMode, TransparencyMode};
-use crate::psx::gpu::{DrawMode, MaskSettings};
+use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending};
+use crate::psx::gpu::commands::{TextureMode, TransparencyMode};
+
+use crate::psx::gpu::{DrawMode, MaskSettings, TextureWindow};
 use fixed_point::{FpCoord, FpVar};
 use std::cmp::{max, min};
 use std::fmt;
@@ -31,8 +33,6 @@ pub struct Rasterizer {
     command_channel: mpsc::Receiver<CommandBuffer>,
     /// Channel used to send completed frames back
     frame_channel: mpsc::Sender<Frame>,
-    /// Draw mode configuration
-    draw_mode: DrawMode,
     /// Left edge of the clipping area
     clip_x_min: i32,
     /// Top edge of the clipping area
@@ -45,10 +45,10 @@ pub struct Rasterizer {
     draw_offset_x: i32,
     /// Vertical drawing offset
     draw_offset_y: i32,
-    /// Texture window settings
-    tex_window: u32,
     /// Mask bit settings
     mask_settings: MaskSettings,
+    /// Texture mapping state
+    tex_mapper: TextureMapper,
 }
 
 impl Rasterizer {
@@ -62,15 +62,14 @@ impl Rasterizer {
             cur_frame: Frame::new(1024, 512),
             command_channel,
             frame_channel,
-            draw_mode: DrawMode::new(),
             clip_x_min: 0,
             clip_y_min: 0,
             clip_x_max: 1,
             clip_y_max: 0,
             draw_offset_x: 0,
             draw_offset_y: 0,
-            tex_window: 0,
             mask_settings: MaskSettings::new(),
+            tex_mapper: TextureMapper::new(),
         }
     }
 
@@ -162,8 +161,6 @@ impl Rasterizer {
     }
 
     fn reset(&mut self) {
-        self.draw_mode.set(0);
-
         self.clip_x_min = 0;
         self.clip_y_min = 0;
         self.clip_x_max = 1;
@@ -172,7 +169,7 @@ impl Rasterizer {
         self.draw_offset_y = 0;
         self.draw_offset_x = 0;
         self.draw_offset_y = 0;
-        self.tex_window = 0;
+        self.tex_mapper.reset();
         self.mask_settings.set(0);
     }
 
@@ -193,51 +190,6 @@ impl Rasterizer {
         } else {
             *vram_pixel = VRamPixel::from_bgr888(color);
         };
-    }
-
-    /// Draw a rectangle of a single solid color
-    fn draw_solid_rect<Transparency>(
-        &mut self,
-        mut top_left: Position,
-        mut width: i32,
-        mut height: i32,
-        color: Bgr888,
-    ) where
-        Transparency: TransparencyMode,
-    {
-        // Clip to drawing area
-        if top_left.x < self.clip_x_min {
-            width -= self.clip_x_min - top_left.x;
-            top_left.x = self.clip_x_min;
-        }
-
-        if top_left.y < self.clip_y_min {
-            height -= self.clip_y_min - top_left.y;
-            top_left.y = self.clip_y_min;
-        }
-
-        if top_left.x + width > self.clip_x_max {
-            width = self.clip_x_max - top_left.x;
-        }
-
-        if top_left.y + height > self.clip_y_max {
-            height = self.clip_y_max - top_left.y;
-        }
-
-        if width <= 0 || height <= 0 {
-            // Nothing to do
-            return;
-        }
-
-        for row in 0..height {
-            let y = top_left.y + row;
-
-            for col in 0..width {
-                let x = top_left.x + col;
-
-                self.draw_solid_pixel::<Transparency>(x, y, color);
-            }
-        }
     }
 
     fn draw_triangle<Transparency, Texture, Shading>(&mut self, mut vertices: [Vertex; 3])
@@ -588,9 +540,21 @@ impl Rasterizer {
         vars.translate_by::<Texture, Shading>(deltas, start_x, y);
 
         for x in start_x..end_x {
-            self.draw_solid_pixel::<Transparency>(x, y, vars.color());
+            if Texture::is_textured() {
+                let texel = self.get_texel(vars.u(), vars.v());
+                if !texel.is_nul() {
+                    self.draw_solid_pixel::<Transparency>(x, y, texel.to_bgr888());
+                }
+            } else {
+                // No texture
+                self.draw_solid_pixel::<Transparency>(x, y, vars.color());
+            }
             vars.translate_right::<Texture, Shading>(deltas);
         }
+    }
+
+    fn get_texel(&self, u: u8, v: u8) -> VRamPixel {
+        self.tex_mapper.get_texel(u, v, &self.vram)
     }
 }
 
@@ -633,6 +597,15 @@ struct RasterVarDeltas {
     dbdx: FpVar,
     /// Value added or subtracted to the blue component every time we move along the Y axis
     dbdy: FpVar,
+
+    /// Value added or subtracted to the texture U coordinate every time we move along the X axis
+    dudx: FpVar,
+    /// Value added or subtracted to the texture U coordinate every time we move along the Y axis
+    dudy: FpVar,
+    /// Value added or subtracted to the texture V coordinate every time we move along the X axis
+    dvdx: FpVar,
+    /// Value added or subtracted to the texture V coordinate every time we move along the Y axis
+    dvdy: FpVar,
 }
 
 impl RasterVarDeltas {
@@ -650,6 +623,10 @@ impl RasterVarDeltas {
             dgdy: FpVar::new(0),
             dbdx: FpVar::new(0),
             dbdy: FpVar::new(0),
+            dudx: FpVar::new(0),
+            dudy: FpVar::new(0),
+            dvdx: FpVar::new(0),
+            dvdy: FpVar::new(0),
         };
 
         if Shading::is_shaded() {
@@ -663,7 +640,10 @@ impl RasterVarDeltas {
         }
 
         if Texture::is_textured() {
-            unimplemented!();
+            d.dudx = Self::compute_delta(xproduct, vertices, |v| i32::from(v.u), |v| v.y());
+            d.dudy = Self::compute_delta(xproduct, vertices, |v| v.x(), |v| i32::from(v.u));
+            d.dvdx = Self::compute_delta(xproduct, vertices, |v| i32::from(v.v), |v| v.y());
+            d.dvdy = Self::compute_delta(xproduct, vertices, |v| v.x(), |v| i32::from(v.v));
         }
 
         d
@@ -689,23 +669,34 @@ struct RasterVars {
     green: FpVar,
     /// Blue shading component
     blue: FpVar,
+    /// Texture U coordinate
+    u: FpVar,
+    /// Texture V coordinate
+    v: FpVar,
 }
 
 impl RasterVars {
-    fn new<Texture>(v: &Vertex) -> RasterVars
+    fn new<Texture>(vertex: &Vertex) -> RasterVars
     where
         Texture: TextureMode,
     {
-        if Texture::is_textured() {
-            unimplemented!();
-        }
+        let (u, v) = if Texture::is_textured() {
+            (
+                FpVar::new_center(i32::from(vertex.u)),
+                FpVar::new_center(i32::from(vertex.v)),
+            )
+        } else {
+            (FpVar::new(0), FpVar::new(0))
+        };
 
         // We set the red/green/blue even if shading is disabled since they'll be used for solid
         // shading as well
         RasterVars {
-            red: FpVar::new_center(v.red()),
-            green: FpVar::new_center(v.green()),
-            blue: FpVar::new_center(v.blue()),
+            red: FpVar::new_center(vertex.red()),
+            green: FpVar::new_center(vertex.green()),
+            blue: FpVar::new_center(vertex.blue()),
+            u,
+            v,
         }
     }
 
@@ -715,7 +706,10 @@ impl RasterVars {
         Shading: ShadingMode,
     {
         if Texture::is_textured() {
-            unimplemented!();
+            self.u += deltas.dudx * x_off;
+            self.u += deltas.dudy * y_off;
+            self.v += deltas.dvdx * x_off;
+            self.v += deltas.dvdy * y_off;
         }
 
         if Shading::is_shaded() {
@@ -735,7 +729,8 @@ impl RasterVars {
         Shading: ShadingMode,
     {
         if Texture::is_textured() {
-            unimplemented!();
+            self.u += deltas.dudx;
+            self.v += deltas.dvdx;
         }
 
         if Shading::is_shaded() {
@@ -751,6 +746,14 @@ impl RasterVars {
         let g = self.green.truncate() as u8;
 
         Bgr888::from_rgb(r, g, b)
+    }
+
+    fn u(&self) -> u8 {
+        self.u.truncate() as u8
+    }
+
+    fn v(&self) -> u8 {
+        self.v.truncate() as u8
     }
 }
 
@@ -775,6 +778,132 @@ fn cross_product(a: Position, b: Position, c: Position) -> i32 {
     (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)
 }
 
+/// Structure keeping track of the state needed to convert the extrapolated 8bit U/V values of the
+/// rasterizer into absolute coordinates in VRAM. The mapping is non-trivial because the PSX GPU
+/// uses 256x256 texture pages, coordinate masking and CLUTs of various depths.
+struct TextureMapper {
+    /// Draw mode configuration
+    draw_mode: DrawMode,
+    /// Texture window settings
+    tex_window: TextureWindow,
+    /// AND mask applied to U coordinates
+    u_mask: u8,
+    /// AND mask applied to V coordinates
+    v_mask: u8,
+    /// Value added to U coordinates to find the raw (unpaletted) texel value in VRAM. This value
+    /// is a texel offset, not a VRAM pixel offset. Texel size can be 4, 8 or 16bits per pixel,
+    /// VRAM pixels on the other hand are always 16bits wide (natively)
+    u_offset: u16,
+    /// Value added to V coordinates to find the raw (unpaletted) texel value in VRAM
+    v_offset: u16,
+    /// Shift value to convert a number of texels into a number of VRAM pixels. In other words, you
+    /// have `(1 << pixel_to_texel_shift)` texels per VRAM pixel.
+    pixel_to_texel_shift: u8,
+    /// Offset of the start of the CLUT in VRAM
+    clut_off: u32,
+}
+
+impl TextureMapper {
+    pub fn new() -> TextureMapper {
+        TextureMapper {
+            draw_mode: DrawMode::new(),
+            tex_window: TextureWindow::new(),
+            u_mask: 0,
+            v_mask: 0,
+            u_offset: 0,
+            v_offset: 0,
+            pixel_to_texel_shift: 0,
+            clut_off: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.draw_mode.set(0);
+        self.tex_window.set(0);
+        self.update_texture_params();
+    }
+
+    pub fn set_clut(&mut self, clut: u32) {
+        let clut = clut >> 16;
+
+        let clut_x = (clut & 0x3f) << 4;
+        let clut_y = (clut >> 6) & 0x1ff;
+
+        self.clut_off = clut_y * 1024 + clut_x;
+    }
+
+    pub fn set_draw_mode(&mut self, mode: u32) {
+        self.draw_mode.set(mode);
+        self.update_texture_params();
+    }
+
+    pub fn update_mode_from_poly(&mut self, mode: u32) {
+        self.draw_mode.update_from_poly(mode);
+        self.update_texture_params();
+    }
+
+    pub fn set_tex_window(&mut self, tw: u32) {
+        self.tex_window.set(tw);
+        self.update_texture_params();
+    }
+
+    fn update_texture_params(&mut self) {
+        self.pixel_to_texel_shift = self.draw_mode.pixel_to_texel_shift();
+        self.u_mask = self.tex_window.u_mask();
+        self.v_mask = self.tex_window.v_mask();
+
+        self.u_offset = u16::from(self.tex_window.u_offset());
+        self.v_offset = u16::from(self.tex_window.v_offset());
+
+        // Add texture page offset.
+        let tp_x = self.draw_mode.texture_page_x();
+        let tp_y = self.draw_mode.texture_page_y();
+
+        // `texture_page_x` is in number of VRAM pixels, convert it to a number of texels
+        self.u_offset += tp_x << self.pixel_to_texel_shift;
+        self.v_offset += tp_y;
+    }
+
+    pub fn get_texel(&self, u: u8, v: u8, vram: &[VRamPixel; 1024 * 512]) -> VRamPixel {
+        let pts = u16::from(self.pixel_to_texel_shift);
+        let fb_u = u16::from(u & self.u_mask) + self.u_offset;
+        let fb_v = u16::from(v & self.v_mask) + self.v_offset;
+
+        let fb_x = (fb_u >> pts) & 0x3ff;
+        let fb_y = fb_v;
+
+        let fb_off = fb_y * 1024 + fb_x;
+        let raw = vram[fb_off as usize];
+
+        if pts == 0 {
+            // True color mode, we return the texture value as-is
+            return raw;
+        }
+
+        // We're using a 4 or 8bpp paletted texture
+        let raw = raw.to_mbgr1555();
+
+        // XXX should we cache some of this in `update_texture_params`?
+
+        // 4 for 4bpp, 8 for 8bpp
+        let bits_per_texel = 16 >> pts;
+        // 3 for 4bpp, 1 for 8bpp
+        let u_mask = pts + (pts >> 1);
+        // 2 for 4bpp, 3 for 8bpp
+        let u_mul = 4 - pts;
+        // 0, 4, 8 or 12 for 4bpp, 0 or 8 for 8bpp
+        let u_shift = (fb_u & u_mask) << u_mul;
+        // 0xf for 4bpp, 0xff for 8bpp
+        let key_mask = (1 << bits_per_texel) - 1;
+
+        let clut_key = (raw >> u_shift) & key_mask;
+
+        let fb_pos = self.clut_off + u32::from(clut_key);
+
+        vram[fb_pos as usize]
+    }
+}
+
 /// A single BGR1555 VRAM pixel. In order to make the emulation code simpler and to support
 /// increased color depth we always use xRGB 1888 internally
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -785,8 +914,18 @@ impl VRamPixel {
         VRamPixel(0)
     }
 
+    /// For texels this method returns true if the pixel is all zeroes (which means that the pixel
+    /// shouldn't be drawn)
+    fn is_nul(self) -> bool {
+        self.0 == 0
+    }
+
     fn from_bgr888(bgr: Bgr888) -> VRamPixel {
         VRamPixel((bgr.red() << 16) | (bgr.green() << 8) | bgr.blue())
+    }
+
+    fn to_bgr888(self) -> Bgr888 {
+        Bgr888::from_rgb(self.red(), self.green(), self.blue())
     }
 
     fn from_mbgr1555(mbgr: u16) -> VRamPixel {
@@ -808,7 +947,6 @@ impl VRamPixel {
         self.0 & 0xff_ff_ff
     }
 
-    #[allow(dead_code)]
     fn to_mbgr1555(self) -> u16 {
         let m = self.mask() as u16;
         let r = (self.red() >> 3) as u16;
@@ -892,7 +1030,10 @@ impl Bgr888 {
 struct Vertex {
     position: Position,
     color: Bgr888,
-    texture: u32,
+    /// Texture u coordinate, relative to the current texture page
+    u: u8,
+    /// Texture v coordinate, relative to the current texture page
+    v: u8,
     /// The order in which the vertices are received is sometimes important, so we keep track of
     /// the index in the original command here.
     index: u8,
@@ -903,13 +1044,19 @@ impl Vertex {
         Vertex {
             position: Position::new(0, 0),
             color: Bgr888::from_command(0),
-            texture: 0,
+            u: 0,
+            v: 0,
             index,
         }
     }
 
     fn set_position(&mut self, p: u32) {
         self.position = Position::from_command(p);
+    }
+
+    fn set_texture_uv(&mut self, uv: u32) {
+        self.u = uv as u8;
+        self.v = (uv >> 8) as u8;
     }
 
     fn x(&self) -> i32 {
@@ -980,73 +1127,14 @@ where
         vertex.position.y += rasterizer.draw_offset_y;
 
         if Texture::is_textured() {
-            vertex.texture = params[index];
-            index += 1;
-        }
-    }
-
-    let ax = vertices[0].position.x;
-    let bx = vertices[1].position.x;
-    let cx = vertices[2].position.x;
-    let dx = vertices[3].position.x;
-    let ay = vertices[0].position.y;
-    let by = vertices[1].position.y;
-    let cy = vertices[2].position.y;
-    let dy = vertices[3].position.y;
-
-    // See if the quad is really a rect (i.e. the top and bottom sides are perfectly horizontal and
-    // the left and right sides are perfectly vertical). It's fairly common for PSX games to draw
-    // rects using quads for a variety of reasons, so it's probably worth optimizing this special
-    // case.
-    let is_rect = if ax == bx {
-        // We have a rect if we're in the following configuration:
-        //    A -- C
-        //    |    |
-        //    B -- D
-        // Potentially mirrored vertically and/or horizontally
-        (ay == cy) && (cx == dx) && (dy == by)
-    } else if ay == by {
-        // We have a rect if we're in the following configuration:
-        //    A -- B
-        //    |    |
-        //    C -- D
-        // Potentially mirrored vertically and/or horizontally
-        (ax == cx) && (cy == dy) && (dx == bx)
-    } else {
-        false
-    };
-
-    if is_rect {
-        // Order coords so that the vertices end up in this order:
-        //         A -- B
-        //         |    |
-        //         C -- D
-        vertices.sort_by(|a, b| {
-            let ay = a.position.y;
-            let by = b.position.y;
-
-            if ay != by {
-                ay.cmp(&by)
-            } else {
-                a.position.x.cmp(&b.position.x)
+            if v == 0 {
+                rasterizer.tex_mapper.set_clut(params[index]);
+            } else if v == 1 {
+                // Update texture page
+                rasterizer.tex_mapper.update_mode_from_poly(params[index]);
             }
-        });
-
-        let width = vertices[1].position.x - vertices[0].position.x;
-        let left = vertices[0].position.x;
-        let height = vertices[2].position.y - vertices[0].position.y;
-        let top = vertices[0].position.y;
-        let top_left = Position::new(left, top);
-
-        if Texture::is_textured() || Shading::is_shaded() {
-            // We should check if the texture is "square" as well, otherwise it might be simpler to
-            // use the normal triangle-drawing code?
-            unimplemented!();
-        } else {
-            let color = vertices[0].color;
-
-            rasterizer.draw_solid_rect::<Transparency>(top_left, width, height, color);
-            return;
+            vertex.set_texture_uv(params[index]);
+            index += 1;
         }
     }
 
@@ -1094,7 +1182,13 @@ where
         vertex.position.y += rasterizer.draw_offset_y;
 
         if Texture::is_textured() {
-            vertex.texture = params[index];
+            if v == 0 {
+                rasterizer.tex_mapper.set_clut(params[index]);
+            } else if v == 1 {
+                // Update texture page
+                rasterizer.tex_mapper.update_mode_from_poly(params[index]);
+            }
+            vertex.set_texture_uv(params[index]);
             index += 1;
         }
     }
@@ -1185,7 +1279,7 @@ fn cmd_vram_load(rasterizer: &mut Rasterizer, params: &[u32]) {
 }
 
 fn cmd_tex_window(rasterizer: &mut Rasterizer, params: &[u32]) {
-    rasterizer.tex_window = params[0] & 0xf_ffff;
+    rasterizer.tex_mapper.set_tex_window(params[0]);
 }
 
 fn cmd_clip_top_left(rasterizer: &mut Rasterizer, params: &[u32]) {
@@ -1209,7 +1303,7 @@ fn cmd_clip_bot_right(rasterizer: &mut Rasterizer, params: &[u32]) {
 fn cmd_draw_mode(rasterizer: &mut Rasterizer, params: &[u32]) {
     let mode = params[0];
 
-    rasterizer.draw_mode.set(mode);
+    rasterizer.tex_mapper.set_draw_mode(mode);
 }
 
 fn cmd_draw_offset(rasterizer: &mut Rasterizer, params: &[u32]) {
@@ -1420,8 +1514,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, TextureBlending, NoShading>,
+        len: 9,
     },
     CommandHandler {
         handler: cmd_unimplemented,

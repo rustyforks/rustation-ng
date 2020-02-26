@@ -533,7 +533,8 @@ fn cmd_draw_mode(psx: &mut Psx) {
 }
 
 fn cmd_tex_window(psx: &mut Psx) {
-    psx.gpu.tex_window = psx.gpu.command_pop_to_rasterizer() & 0xf_ffff;
+    let tw = psx.gpu.command_pop_to_rasterizer();
+    psx.gpu.tex_window.set(tw);
 }
 
 fn cmd_clip_top_left(psx: &mut Psx) {
@@ -861,8 +862,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, TextureBlending, NoShading>,
+        len: 9,
         fifo_len: 1,
         out_of_band: false,
     },

@@ -90,7 +90,7 @@ pub struct Gpu {
     /// Vertical drawing offset
     draw_offset_y: i32,
     /// Texture window settings
-    tex_window: u32,
+    tex_window: TextureWindow,
     /// Mask bit settings
     mask_settings: MaskSettings,
     /// Start Display area (top-left corner)
@@ -136,7 +136,7 @@ impl Gpu {
             clip_y_max: 0,
             draw_offset_x: 0,
             draw_offset_y: 0,
-            tex_window: 0,
+            tex_window: TextureWindow::new(),
             mask_settings: MaskSettings::new(),
             display_area_start: 0,
             display_off: true,
@@ -181,7 +181,7 @@ impl Gpu {
         self.clip_y_max = 0;
         self.draw_offset_x = 0;
         self.draw_offset_y = 0;
-        self.tex_window = 0;
+        self.tex_window.set(0);
         self.mask_settings.set(0);
         self.display_area_start = 0;
 
@@ -715,6 +715,7 @@ fn run_next_command(psx: &mut Psx) {
 }
 
 /// Wrapper around the Draw Mode register value (set by GP0[0xe1] and polygon draw commands)
+#[derive(Copy, Clone)]
 struct DrawMode(u32);
 
 impl DrawMode {
@@ -723,7 +724,7 @@ impl DrawMode {
     }
 
     fn set(&mut self, mode: u32) {
-        self.0 = mode
+        self.0 = mode;
     }
 
     /// Update from a polygon draw command. When that happens it overwrites the previous value
@@ -736,8 +737,75 @@ impl DrawMode {
         self.0 |= (poly_cmd >> 16) & 0x1f;
     }
 
-    fn texture_disable(&self) -> bool {
+    fn texture_disable(self) -> bool {
         self.0 & (1 << 11) != 0
+    }
+
+    /// Coordinate of the left side of the texture page in VRAM
+    fn texture_page_x(self) -> u16 {
+        let x = (self.0 & 0xf) as u16;
+
+        x << 6
+    }
+
+    /// Coordinate of the top side of the texture page in VRAM
+    fn texture_page_y(self) -> u16 {
+        let y = ((self.0 >> 4) & 1) as u16;
+
+        y << 8
+    }
+
+    fn pixel_to_texel_shift(self) -> u8 {
+        match (self.0 >> 7) & 3 {
+            0 => 2, // Paletted 4bpp
+            1 => 1, // Paletted 8bpp
+            2 => 0, // True Color 1555BGR, 16bits per pixel
+            _ => 0, // XXX double-check if 3 is also truecolor.
+        }
+    }
+}
+
+/// Wrapper around the Texture Window register value (set by GP0[0xe2])
+#[derive(Copy, Clone)]
+struct TextureWindow(u32);
+
+impl TextureWindow {
+    fn new() -> TextureWindow {
+        TextureWindow(0)
+    }
+
+    fn set(&mut self, tw: u32) {
+        self.0 = tw;
+    }
+
+    /// Mask to be ANDed to U coordinates
+    fn u_mask(self) -> u8 {
+        let m = (self.0 & 0x1f) as u8;
+
+        // 8 pixel steps
+        !(m << 3)
+    }
+
+    /// Mask to be ANDed to V coordinates
+    fn v_mask(self) -> u8 {
+        let m = ((self.0 >> 5) & 0x1f) as u8;
+
+        // 8 pixel steps
+        !(m << 3)
+    }
+
+    /// Offset to be added to U coordinates after applying `u_mask`
+    fn u_offset(self) -> u8 {
+        let off = ((self.0 >> 10) & 0x1f) as u8;
+
+        (off << 3) & self.u_mask()
+    }
+
+    /// Offset to be added to V coordinates after applying `v_mask`
+    fn v_offset(self) -> u8 {
+        let off = ((self.0 >> 10) & 0x1f) as u8;
+
+        (off << 3) & self.v_mask()
     }
 }
 
