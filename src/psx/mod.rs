@@ -199,6 +199,12 @@ impl Psx {
             return gpu::load(self, offset);
         }
 
+        if let Some(_offset) = map::CDROM.contains(abs_addr) {
+            self.tick(6 * T::width() as i32);
+            // return cdrom::load(self, offset);
+            unimplemented!()
+        }
+
         if let Some(off) = map::IRQ_CONTROL.contains(abs_addr) {
             self.tick(1);
 
@@ -576,6 +582,9 @@ pub mod map {
 
     /// Timer registers
     pub const TIMERS: Range = Range(0x1f80_1100, 0x30);
+
+    /// CDROM controller
+    pub const CDROM: Range = Range(0x1f80_1800, 4);
 
     /// GPU Registers
     pub const GPU: Range = Range(0x1f80_1810, 8);

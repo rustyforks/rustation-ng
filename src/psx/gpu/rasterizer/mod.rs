@@ -106,8 +106,8 @@ pub fn start() -> Handle {
     let (frame_sender, frame_receiver) = mpsc::channel();
 
     let builder = thread::Builder::new()
-        .name("Rustation GPU rasterizer".to_string())
-        .stack_size(32 * 1024);
+        .name("RSX GPU".to_string())
+        .stack_size(1024 * 1024);
 
     let handle = builder
         .spawn(move || {

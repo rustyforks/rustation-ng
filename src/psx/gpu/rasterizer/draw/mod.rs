@@ -542,6 +542,7 @@ impl Rasterizer {
         for x in start_x..end_x {
             if Texture::is_textured() {
                 let texel = self.get_texel(vars.u(), vars.v());
+                // If the pixel is equal to 0 (including mask bit) then we don't draw it
                 if !texel.is_nul() {
                     self.draw_solid_pixel::<Transparency>(x, y, texel);
                 }

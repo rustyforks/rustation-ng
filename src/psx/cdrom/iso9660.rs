@@ -2,7 +2,6 @@
 
 use cdimage::bcd::Bcd;
 use cdimage::msf::Msf;
-use cdimage::sector::Sector;
 use cdimage::{CdError, Image};
 
 /// Structure representing an ISO9660 directory
@@ -30,12 +29,12 @@ impl Directory {
             None => return Err(Error::BadExtent(extent_location)),
         };
 
-        let mut msf = image.track_msf(Bcd::one(), track_msf)?;
-
-        let mut sector = Sector::empty();
+        let toc = image.toc();
+        let track = toc.track(Bcd::one())?;
+        let mut msf = track.absolute_msf(track_msf)?;
 
         while extent_len > 0 {
-            image.read_sector(&mut sector, msf)?;
+            let sector = image.read_sector(msf)?;
 
             let data = sector.mode2_xa_payload()?;
 
@@ -156,12 +155,12 @@ impl Entry {
             None => return Err(Error::BadExtent(extent_location)),
         };
 
-        let mut msf = image.track_msf(Bcd::one(), track_msf)?;
-
-        let mut sector = Sector::empty();
+        let toc = image.toc();
+        let track = toc.track(Bcd::one())?;
+        let mut msf = track.absolute_msf(track_msf)?;
 
         while extent_len > 0 {
-            image.read_sector(&mut sector, msf)?;
+            let sector = image.read_sector(msf)?;
 
             let data = sector.mode2_xa_payload()?;
 
@@ -210,13 +209,15 @@ impl From<CdError> for Error {
 pub fn open_image(image: &mut dyn Image) -> Result<Directory, Error> {
     // The first 16 sectors are the "system area" which is ignored by the ISO filesystem. The
     // Volume Descriptor Set should start at 00:00:16 in track 01
-    let mut msf = image.track_msf(Bcd::one(), Msf::from_bcd(0, 0, 0x16).unwrap())?;
+    let toc = image.toc();
+    let track = toc.track(Bcd::one())?;
+    let mut msf = track.absolute_msf(Msf::from_bcd(0, 0, 0x16).unwrap())?;
 
-    let mut sector = Sector::empty();
+    let mut sector;
 
     // Look for the primary volume descriptor
     loop {
-        image.read_sector(&mut sector, msf)?;
+        sector = image.read_sector(msf)?;
 
         let volume_descriptor = sector.mode2_xa_payload()?;
 

@@ -2,31 +2,34 @@ use std::fmt;
 
 use cdimage::bcd::Bcd;
 use cdimage::msf::Msf;
-use cdimage::sector::Sector;
 use cdimage::Image;
 
 use super::iso9660;
 use crate::error::{Error, Result};
 use crate::psx::gpu::VideoStandard;
 
+mod cache;
+
 /// PlayStation disc.
 ///
 /// XXX: add support for CD-DA? Not really useful but shouldn't be very hard either. We need to
 /// support audio tracks anyway...
 pub struct Disc {
-    /// Image file
+    /// Disc image
     #[allow(dead_code)]
-    image: Box<dyn Image>,
+    cache: cache::Cache,
     /// Disc serial number
     serial: SerialNumber,
 }
 
 impl Disc {
     /// Reify a disc using `image` as a backend.
-    pub fn new(mut image: Box<dyn Image>) -> Result<Disc> {
-        let serial = extract_serial_number(&mut *image)?;
+    pub fn new(image: Box<dyn Image + Send>) -> Result<Disc> {
+        let mut cache = cache::Cache::new(image);
 
-        let disc = Disc { image, serial };
+        let serial = extract_serial_number(&mut cache)?;
+
+        let disc = Disc { cache, serial };
 
         Ok(disc)
     }
@@ -42,11 +45,6 @@ impl Disc {
 
     pub fn serial_number(&self) -> SerialNumber {
         self.serial
-    }
-
-    #[allow(dead_code)]
-    pub fn image(&mut self) -> &mut dyn Image {
-        &mut *self.image
     }
 }
 
@@ -137,11 +135,11 @@ impl fmt::Display for SerialNumber {
 pub fn extract_system_region(image: &mut dyn Image) -> Result<Region> {
     // In order to identify the type of disc we're going to use sector 00:00:04 from Track01 which
     // should contain the "Licensed by..."  string.
-    let msf = image.track_msf(Bcd::one(), Msf::from_bcd(0, 0, 4).unwrap())?;
+    let toc = image.toc();
+    let track = toc.track(Bcd::one())?;
+    let msf = track.absolute_msf(Msf::from_bcd(0, 0, 4).unwrap())?;
 
-    let mut sector = Sector::empty();
-
-    image.read_sector(&mut sector, msf)?;
+    let sector = image.read_sector(msf)?;
 
     // On the discs I've tried we always have an ASCII license string in the first 76 data bytes.
     // We'll see if it holds true for all the discs out there...
