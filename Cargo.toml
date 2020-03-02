@@ -36,6 +36,7 @@ overflow-checks = false
 [dependencies]
 libc = "0.2"
 shaman = "0.1"
+fnv = "1.0"
 
 [dependencies.log]
 version = "0.4"

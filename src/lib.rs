@@ -20,6 +20,7 @@ extern crate libc;
 #[macro_use]
 extern crate log;
 extern crate cdimage;
+extern crate fnv;
 extern crate shaman;
 
 mod assembler;

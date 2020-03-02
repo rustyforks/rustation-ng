@@ -5,7 +5,6 @@
 use cdimage::msf::Msf;
 use cdimage::sector::Sector;
 use cdimage::{CdResult, Image, Toc};
-use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 
@@ -122,7 +121,7 @@ impl Image for Cache {
     }
 }
 
-type SectorCache = BTreeMap<Msf, CdResult<Sector>>;
+type SectorCache = fnv::FnvHashMap<Msf, CdResult<Sector>>;
 
 /// The shared state between the main thread and the prefetcher
 struct Reader {
@@ -139,7 +138,7 @@ struct Reader {
 impl Reader {
     fn new() -> Reader {
         Reader {
-            sectors: SectorCache::new(),
+            sectors: SectorCache::with_capacity_and_hasher(CACHE_CAPACITY, Default::default()),
             prefetch_remaining: 0,
             prefetch_next: Msf::zero(),
             quit: false,
@@ -197,3 +196,7 @@ fn run_prefetcher(mut image: Box<dyn Image>, reader: Arc<(Mutex<Reader>, Condvar
 
 /// Number of sectors to read ahead
 const PREFETCH_READAHEAD_SECTORS: u32 = 75;
+
+/// Initial capacity of the cache. We'll be able to put that many elements before reallocating.
+/// For now we just allow caching an entire 74mn disc. Probably overkill bur RAM it cheap.
+const CACHE_CAPACITY: usize = 74 * 60 * 75;
