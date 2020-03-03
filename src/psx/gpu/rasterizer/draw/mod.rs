@@ -223,10 +223,12 @@ impl Rasterizer {
         // Note that since we order A, B and C by Y coordinate it's possible for B to be on either
         // side of the triangle (see `ac_is_left` below)
         //
-        // In order to draw it simply we need to break it into two triangles by drawing an
-        // horizontal line at B. Then we can simply iterate on each line from A to B, with the line
-        // width increasing by a constant amount at every step. Then we can do the same thing from
-        // B to C
+        // In order to draw it simply we need to break it into two sub-triangles by splitting the
+        // full triangle with an horizontal line at B.
+        //
+        // To make matters more complicated the sub-triangle draw order (and whether they're draw
+        // top-to-bottom or bottom-to-top) depends on the coordinates of the vertices and the order
+        // in which they're received by the GPU (see how core_vertex is determined below).
         //
         // Of course in some situations we'll end up with "flat" triangles, where one edge is
         // perfectly horizontal and A.x == B.x or C.x == B.x, in which case one of these
