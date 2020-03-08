@@ -16,7 +16,6 @@ mod cache;
 /// support audio tracks anyway...
 pub struct Disc {
     /// Disc image
-    #[allow(dead_code)]
     cache: cache::Cache,
     /// Disc serial number
     serial: SerialNumber,
@@ -45,6 +44,10 @@ impl Disc {
 
     pub fn serial_number(&self) -> SerialNumber {
         self.serial
+    }
+
+    pub fn image(&mut self) -> &mut dyn Image {
+        &mut self.cache
     }
 }
 

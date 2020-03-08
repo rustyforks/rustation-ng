@@ -1,7 +1,7 @@
 //! The PlayStation DMA, that can be used to copy data between the RAM and various devices (GPU,
 //! CD drive, MDEC, SPU etc...)
 
-use super::{gpu, irq, sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{cdrom, gpu, irq, sync, AccessWidth, Addressable, CycleCount, Psx};
 use irq::IrqState;
 use std::ops::{Index, IndexMut};
 
@@ -322,8 +322,10 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                 let v = psx.ram.load(cur_addr);
                 port_store(psx, port, v);
             } else {
-                let v = port_load(psx, port);
+                let (v, read_delay) = port_load(psx, port);
                 psx.ram.store(cur_addr, v);
+
+                psx.dma[port].clock_counter -= read_delay;
             }
 
             psx.dma[port].cur_address = 0xff_ffff
@@ -387,6 +389,8 @@ fn can_run(psx: &Psx, port: Port, write: bool) -> bool {
             // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
             // `true`
             Port::Otc => psx.dma[port].control.is_started(),
+            // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
+            Port::CdRom => true,
             _ => unimplemented!("Can read {:?}?", port),
         }
     }
@@ -400,21 +404,25 @@ fn port_store(psx: &mut Psx, port: Port, v: u32) {
     }
 }
 
-/// Perform a DMA port read
-fn port_load(psx: &mut Psx, port: Port) -> u32 {
+/// Perform a DMA port read and returns the value alongside with the delay penalty for the read
+fn port_load(psx: &mut Psx, port: Port) -> (u32, CycleCount) {
     match port {
         Port::Otc => {
             let channel = &psx.dma[port];
 
-            if channel.remaining_words == 1 {
+            let v = if channel.remaining_words == 1 {
                 // Last entry contains the end of table marker
                 0xff_ffff
             } else {
                 // Pointer to the previous entry
                 channel.cur_address.wrapping_sub(4) & 0x1f_ffff
-            }
+            };
+
+            (v, 0)
         }
-        _ => unimplemented!("DMA port store {:?}", port),
+        // XXX latency taken from mednafen
+        Port::CdRom => (cdrom::dma_load(psx), 8),
+        _ => unimplemented!("DMA port load {:?}", port),
     }
 }
 

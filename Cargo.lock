@@ -21,7 +21,7 @@ dependencies = [
 [[package]]
 name = "cdimage"
 version = "0.1.0"
-source = "git+https://github.com/simias/cdimage#74019bc2c83edcf974e0424625d07bd25c0ed4b0"
+source = "git+https://github.com/simias/cdimage#47071b4abc8efb47870e34ae9d0810fa6712a748"
 dependencies = [
  "arrayref 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",

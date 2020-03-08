@@ -41,6 +41,7 @@ pub struct Psx {
     dma: dma::Dma,
     timers: timers::Timers,
     gpu: gpu::Gpu,
+    cdrom: cdrom::CdRom,
     /// Memory control registers
     mem_control: [u32; 9],
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
@@ -55,13 +56,17 @@ pub struct Psx {
 }
 
 impl Psx {
-    pub fn new(disc: disc::Disc, bios: bios::Bios) -> Result<Psx> {
+    pub fn new_with_disc(disc: disc::Disc, bios: bios::Bios) -> Result<Psx> {
         let standard = disc.region().video_standard();
 
-        Ok(Psx::new_with_bios(bios, standard))
+        Ok(Psx::new_with_bios(Some(disc), bios, standard))
     }
 
-    pub fn new_with_bios(bios: bios::Bios, standard: gpu::VideoStandard) -> Psx {
+    pub fn new_with_bios(
+        disc: Option<disc::Disc>,
+        bios: bios::Bios,
+        standard: gpu::VideoStandard,
+    ) -> Psx {
         Psx {
             cycle_counter: 0,
             frame_done: false,
@@ -75,6 +80,7 @@ impl Psx {
             dma: dma::Dma::new(),
             timers: timers::Timers::new(),
             gpu: gpu::Gpu::new(standard),
+            cdrom: cdrom::CdRom::new(disc),
             mem_control: [0; 9],
             ram_size: 0,
             cache_control: 0,
@@ -199,10 +205,9 @@ impl Psx {
             return gpu::load(self, offset);
         }
 
-        if let Some(_offset) = map::CDROM.contains(abs_addr) {
+        if let Some(offset) = map::CDROM.contains(abs_addr) {
             self.tick(6 * T::width() as i32);
-            // return cdrom::load(self, offset);
-            unimplemented!()
+            return cdrom::load(self, offset);
         }
 
         if let Some(off) = map::IRQ_CONTROL.contains(abs_addr) {
@@ -287,6 +292,11 @@ impl Psx {
 
         if let Some(offset) = map::GPU.contains(abs_addr) {
             gpu::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::CDROM.contains(abs_addr) {
+            cdrom::store(self, offset, val);
             return;
         }
 

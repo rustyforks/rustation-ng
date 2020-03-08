@@ -88,7 +88,7 @@ impl Context {
 
         let bios = find_bios(|md| md.region == region)?;
 
-        let psx = psx::Psx::new(disc, bios)?;
+        let psx = psx::Psx::new_with_disc(disc, bios)?;
 
         Ok(psx)
     }
