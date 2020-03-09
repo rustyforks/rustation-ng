@@ -457,6 +457,7 @@ fn execute_command(psx: &mut Psx, command: u8) {
         // ReadN
         0x06 => (0, 0, commands::read),
         0x09 => (0, 0, commands::pause),
+        0x0a => (0, 0, commands::init),
         0x0e => (1, 1, commands::set_mode),
         0x15 => (0, 0, commands::seek_l),
         0x19 => (1, 1, commands::test),
@@ -632,6 +633,39 @@ mod commands {
         psx.cdrom.controller.push_drive_status();
 
         timings::PAUSE_RX_PUSH
+    }
+
+    /// Reinitialize the CD ROM controller
+    pub fn init(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+
+        // XXX I think? Needs testing
+        controller.read_state = ReadState::Idle;
+        controller.read_pending = false;
+
+        controller.schedule_async_response(900_000, async_init);
+
+        controller.push_drive_status();
+    }
+
+    fn async_init(psx: &mut Psx) -> CycleCount {
+        let controller = &mut psx.cdrom.controller;
+
+        controller.position = Msf::zero();
+        controller.seek_target = Msf::zero();
+        controller.read_state = ReadState::Idle;
+        controller.double_speed = false;
+        controller.xa_adpcm_to_spu = false;
+        controller.read_whole_sector = true;
+        controller.sector_size_override = false;
+        controller.filter_enabled = false;
+        controller.report_interrupts = false;
+        controller.autopause = false;
+        controller.cdda_mode = false;
+
+        controller.push_drive_status();
+
+        timings::INIT_RX_PUSH
     }
 
     /// Tell the CDROM controller where the next seek should take us (but do not physically perform
@@ -865,4 +899,8 @@ mod timings {
     /// Delay between the asynchronous RX_CLEAR and first param push for the asynchronous Pause
     /// response
     pub const PAUSE_RX_PUSH: CycleCount = 1_700;
+
+    /// Delay between the asynchronous RX_CLEAR and first param push for the asynchronous Init
+    /// response
+    pub const INIT_RX_PUSH: CycleCount = 1_700;
 }
