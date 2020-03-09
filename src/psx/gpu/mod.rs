@@ -97,6 +97,8 @@ pub struct Gpu {
     display_area_start: u32,
     /// True if the display is disabled,
     display_off: bool,
+    /// Next word returned by the GPUREAD command
+    read_word: u32,
 }
 
 impl Gpu {
@@ -140,6 +142,7 @@ impl Gpu {
             mask_settings: MaskSettings::new(),
             display_area_start: 0,
             display_off: true,
+            read_word: 0,
         };
 
         gpu.refresh_lines_per_field();
@@ -395,6 +398,36 @@ impl Gpu {
     fn draw_time(&mut self, time: CycleCount) {
         self.draw_time_budget -= time;
     }
+
+    /// Return various GPU state information in the GPUREAD register
+    fn gp1_get_info(&mut self, val: u32) {
+        // XXX what happens if we're in the middle of a framebuffer read?
+        let v = match val & 0xf {
+            3 => {
+                let top = self.clip_y_min as u32;
+                let left = self.clip_x_min as u32;
+
+                left | (top << 10)
+            }
+            4 => {
+                let bottom = self.clip_y_max as u32;
+                let right = (self.clip_x_max - 1) as u32;
+
+                right | (bottom << 10)
+            }
+            5 => {
+                let x = (self.draw_offset_x as u32) & 0x7ff;
+                let y = (self.draw_offset_y as u32) & 0x7ff;
+
+                x | (y << 11)
+            }
+            // GPU version. Seems to always be 2?
+            7 => 2,
+            _ => unimplemented!("Unsupported GP1 info command {:08x}", val),
+        };
+
+        self.read_word = v;
+    }
 }
 
 pub fn run(psx: &mut Psx) {
@@ -612,8 +645,10 @@ fn read(psx: &mut Psx) -> u32 {
         // XXX implement me
         0
     } else {
-        warn!("Unhandled GPU read");
-        0
+        // XXX I'm not really sure about this one. Is the read_word normally pushed in the FIFO?
+        // What happens if you send a GP1[0x10] and then immediately attempt to read the
+        // framebuffer? Needs more testing
+        psx.gpu.read_word
     }
 }
 
@@ -646,6 +681,7 @@ fn gp1(psx: &mut Psx, val: u32) {
             psx.gpu.display_line_end = ((val >> 10) & 0x3ff) as u16;
         }
         0x08 => psx.gpu.display_mode.set(val & 0xff_ffff),
+        0x10 => psx.gpu.gp1_get_info(val),
         _ => unimplemented!("GP1 0x{:08x}", val),
     }
 }
