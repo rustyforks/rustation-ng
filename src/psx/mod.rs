@@ -9,6 +9,7 @@ pub mod cpu;
 pub mod debugger;
 mod dma;
 mod gpu;
+mod gte;
 mod irq;
 mod spu;
 mod sync;
@@ -34,6 +35,7 @@ pub struct Psx {
     sync: sync::Synchronizer,
     pub cpu: cpu::Cpu,
     pub cop0: cop0::Cop0,
+    gte: gte::Gte,
     irq: irq::InterruptState,
     ram: Ram,
     bios: bios::Bios,
@@ -73,6 +75,7 @@ impl Psx {
             sync: sync::Synchronizer::new(),
             cpu: cpu::Cpu::new(),
             cop0: cop0::Cop0::new(),
+            gte: gte::Gte::new(),
             irq: irq::InterruptState::new(),
             ram: Ram::new(),
             bios,

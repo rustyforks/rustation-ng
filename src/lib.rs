@@ -15,6 +15,8 @@
 // the vast majority of the time our types are actually constrained by the original
 // hardware, so using "as" casts is not a problem the vast majority of the time.
 #![allow(clippy::cast_lossless)]
+// I seem to get weird false positive in the GTE code for this one
+#![allow(clippy::redundant_closure_call)]
 
 extern crate libc;
 #[macro_use]

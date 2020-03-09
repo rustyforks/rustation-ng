@@ -875,7 +875,7 @@ impl TextureMapper {
         let fb_x = (fb_u >> pts) & 0x3ff;
         let fb_y = fb_v;
 
-        let fb_off = fb_y * 1024 + fb_x;
+        let fb_off = usize::from(fb_y) * 1024 + usize::from(fb_x);
         let raw = vram[fb_off as usize];
 
         if pts == 0 {

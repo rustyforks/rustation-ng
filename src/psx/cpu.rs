@@ -1198,8 +1198,83 @@ fn op_cop1(psx: &mut Psx, _: Instruction) {
 }
 
 /// Coprocessor 2 opcode (GTE)
-fn op_cop2(_psx: &mut Psx, _instruction: Instruction) {
-    panic!("Encountered GTE instruction");
+fn op_cop2(psx: &mut Psx, instruction: Instruction) {
+    // XXX: we should check that the GTE is enabled in cop0's status register, otherwise the cop2
+    // instructions seem to freeze the CPU (or maybe raise an exception?). Furthermore it seems
+    // that one has to wait at least two cycles (tested with two nops) after raising the flag in
+    // the status register before the GTE can be accessed.
+    let cop_opcode = instruction.cop_opcode();
+
+    if cop_opcode & 0x10 != 0 {
+        // GTE command
+
+        psx.cpu.delayed_load();
+
+        // XXX handle GTE command duration
+        psx.gte.command(instruction.0);
+    } else {
+        match cop_opcode {
+            0b00000 => op_mfc2(psx, instruction),
+            0b00010 => op_cfc2(psx, instruction),
+            0b00100 => op_mtc2(psx, instruction),
+            0b00110 => op_ctc2(psx, instruction),
+            n => unimplemented!("GTE opcode {:x}", n),
+        }
+    }
+}
+
+/// Move From Coprocessor 2 Data register
+fn op_mfc2(psx: &mut Psx, instruction: Instruction) {
+    let cpu_r = instruction.t();
+    let cop_r = instruction.d().0;
+
+    let v = psx.gte.data(cop_r);
+
+    // XXX handle delay
+    let delay = 0;
+    psx.cpu.delayed_load_chain(cpu_r, v, delay, false);
+}
+
+/// Move From Coprocessor 2 Control register
+fn op_cfc2(psx: &mut Psx, instruction: Instruction) {
+    let cpu_r = instruction.t();
+    let cop_r = instruction.d().0;
+
+    let v = psx.gte.control(cop_r);
+
+    // XXX handle delay
+    let delay = 0;
+    psx.cpu.delayed_load_chain(cpu_r, v, delay, false);
+}
+
+/// Move To Coprocessor 2 Data register
+fn op_mtc2(psx: &mut Psx, instruction: Instruction) {
+    // Mednafen doesn't force the register sync if a load was in progress here. It doesn't make a
+    // lot of sense to me, maybe it's a mistake or maybe it compensates from something else. For
+    // the time being just do whatever mednafen does.
+    let cpu_r = instruction.t();
+    let cop_r = instruction.d().0;
+
+    let v = psx.cpu.reg(cpu_r);
+
+    psx.cpu.delayed_load();
+
+    psx.gte.set_data(cop_r, v);
+}
+
+/// Move To Coprocessor 2 Control register
+fn op_ctc2(psx: &mut Psx, instruction: Instruction) {
+    // Mednafen doesn't force the register sync if a load was in progress here. It doesn't make a
+    // lot of sense to me, maybe it's a mistake or maybe it compensates from something else. For
+    // the time being just do whatever mednafen does.
+    let cpu_r = instruction.t();
+    let cop_r = instruction.d().0;
+
+    let v = psx.cpu.reg(cpu_r);
+
+    psx.cpu.delayed_load();
+
+    psx.gte.set_control(cop_r, v);
 }
 
 /// Coprocessor 3 opcode (does not exist on the PlayStation)
@@ -1502,7 +1577,7 @@ fn op_lwc1(psx: &mut Psx, _: Instruction) {
 /// Load Word in Coprocessor 2
 fn op_lwc2(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let cop_r = instruction.t();
+    let cop_r = instruction.t().0;
     let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
@@ -1511,9 +1586,10 @@ fn op_lwc2(psx: &mut Psx, instruction: Instruction) {
 
     // Address must be 32bit aligned
     if addr % 4 == 0 {
+        // XXX how should we handle duration here? No absorb?
         let (v, _duration) = load::<u32>(psx, addr);
 
-        panic!("Implement LWC2 0x{:x} to Cop2 R{}", v, cop_r.0);
+        psx.gte.set_data(cop_r, v);
     } else {
         exception(psx, Exception::LoadAddressError);
     }
@@ -1552,13 +1628,13 @@ fn op_swc1(psx: &mut Psx, _: Instruction) {
 /// Store Word in Coprocessor 2
 fn op_swc2(psx: &mut Psx, instruction: Instruction) {
     let i = instruction.imm_se();
-    let cop_r = instruction.t();
+    let cop_r = instruction.t().0;
     let s = reg_dep(psx, instruction.s());
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
     // XXX read from GTE
-    let v: u32 = 0xbad;
+    let v = psx.gte.data(cop_r);
 
     psx.cpu.delayed_load();
 
@@ -1568,8 +1644,6 @@ fn op_swc2(psx: &mut Psx, instruction: Instruction) {
     } else {
         exception(psx, Exception::LoadAddressError);
     }
-
-    panic!("Implement SWC2 from Cop2 R{}", cop_r.0);
 }
 
 /// Store Word in Coprocessor 3

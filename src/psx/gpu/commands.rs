@@ -790,8 +790,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0x20
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, NoTexture, NoShading>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -2153,7 +2153,7 @@ fn check_poly_callbacks() {
     use crate::psx::{bios, gpu, Psx};
 
     let dummy_bios = bios::Bios::new_dummy();
-    let mut dummy_psx = Psx::new_with_bios(dummy_bios, gpu::VideoStandard::Pal);
+    let mut dummy_psx = Psx::new_with_bios(None, dummy_bios, gpu::VideoStandard::Pal);
 
     for op in 0x20..=0x3f {
         let cmd = &GP0_COMMANDS[op];
