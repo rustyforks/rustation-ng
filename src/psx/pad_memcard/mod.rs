@@ -250,8 +250,8 @@ fn run_controller(psx: &mut Psx) {
 
                     psx.pad_memcard.response = r;
                     psx.pad_memcard.rx_not_empty = true;
-                    // XXX For now pretend that the DSR pulse follows
-                    // immediately after the last byte, probably not accurate.
+                    // XXX For now pretend that the DSR pulse follows immediately after the last
+                    // byte, probably not accurate.
                     psx.pad_memcard.dsr = dsr;
 
                     if dsr {

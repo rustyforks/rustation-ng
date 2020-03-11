@@ -59,6 +59,10 @@ pub struct Controller {
     report_interrupts: bool,
     /// True if the ADPCM filter is enabled
     filter_enabled: bool,
+    /// If ADPCM filtering is enabled only sectors with this file number are processed
+    filter_file: u8,
+    /// If ADPCM filtering is enabled only sectors with this channel number are processed
+    filter_channel: u8,
     /// PRNG to simulate the pseudo-random CD controller timings (from the host's perspective)
     rand: SimpleRand,
     /// Last raw sector read from the disc image
@@ -88,6 +92,8 @@ impl Controller {
             autopause: false,
             report_interrupts: false,
             filter_enabled: false,
+            filter_file: 0,
+            filter_channel: 0,
             rand: SimpleRand::new(),
             sector: Sector::empty(),
         }
@@ -458,6 +464,9 @@ fn execute_command(psx: &mut Psx, command: u8) {
         0x06 => (0, 0, commands::read),
         0x09 => (0, 0, commands::pause),
         0x0a => (0, 0, commands::init),
+        0x0b => (0, 0, commands::mute),
+        0x0c => (0, 0, commands::demute),
+        0x0d => (2, 2, commands::set_filter),
         0x0e => (1, 1, commands::set_mode),
         0x15 => (0, 0, commands::seek_l),
         0x19 => (1, 1, commands::test),
@@ -585,6 +594,27 @@ mod commands {
         push_response(psx, status);
     }
 
+    /// Tell the CDROM controller where the next seek should take us (but do not physically perform
+    /// the seek yet)
+    pub fn set_loc(psx: &mut Psx) {
+        // Parameters are in BCD.
+        let m = pop_param(psx);
+        let s = pop_param(psx);
+        let f = pop_param(psx);
+
+        let controller = &mut psx.cdrom.controller;
+
+        controller.seek_target = match Msf::from_bcd(m, s, f) {
+            Some(m) => m,
+            // XXX: what happens if invalid BCD is used?
+            None => panic!("Invalid MSF in set loc: {:02x}:{:02x}:{:02x}", m, s, f),
+        };
+
+        controller.seek_target_pending = true;
+
+        controller.push_drive_status();
+    }
+
     /// Start data read sequence. This is the implementation for both ReadN and ReadS, apparently
     /// the only difference between the two is that ReadN will retry in case of an error while
     /// ReadS will continue to the next sector (useful for streaming audio/movies). In our emulator
@@ -668,25 +698,26 @@ mod commands {
         timings::INIT_RX_PUSH
     }
 
-    /// Tell the CDROM controller where the next seek should take us (but do not physically perform
-    /// the seek yet)
-    pub fn set_loc(psx: &mut Psx) {
-        // Parameters are in BCD.
-        let m = pop_param(psx);
-        let s = pop_param(psx);
-        let f = pop_param(psx);
-
+    /// Mute CDROM audio playback
+    pub fn mute(psx: &mut Psx) {
         let controller = &mut psx.cdrom.controller;
 
-        controller.seek_target = match Msf::from_bcd(m, s, f) {
-            Some(m) => m,
-            // XXX: what happens if invalid BCD is used?
-            None => panic!("Invalid MSF in set loc: {:02x}:{:02x}:{:02x}", m, s, f),
-        };
+        controller.push_drive_status();
+    }
 
-        controller.seek_target_pending = true;
+    /// Demute CDROM audio playback
+    pub fn demute(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
 
         controller.push_drive_status();
+    }
+
+    /// Filter for ADPCM sectors
+    pub fn set_filter(psx: &mut Psx) {
+        psx.cdrom.controller.filter_file = pop_param(psx);
+        psx.cdrom.controller.filter_channel = pop_param(psx);
+
+        psx.cdrom.controller.push_drive_status();
     }
 
     /// Configure the behaviour of the CDROM drive
