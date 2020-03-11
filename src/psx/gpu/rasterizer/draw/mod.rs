@@ -1257,6 +1257,32 @@ fn cmd_vram_load(rasterizer: &mut Rasterizer, params: &[u32]) {
     warn!("Implement VRAM load");
 }
 
+/// Fill a rectangle with a solid color
+fn cmd_fill_rect(rasterizer: &mut Rasterizer, params: &[u32]) {
+    let color = Pixel::from_command(params[0]);
+    let dst = params[1];
+    let dim = params[2];
+
+    let start_x = dst & 0x3f0;
+    let start_y = (dst >> 16) & 0x3ff;
+
+    let width = ((dim & 0x3ff) + 0xf) & !0xf;
+    let height = (dim >> 16) & 0x1ff;
+
+    for y in 0..height {
+        let y_pos = (start_y + y) & 511;
+        for x in 0..width {
+            // Fill rect is supposed to ignore clip space and mask completely.
+            //
+            // XXX Probably worth adding a test just in case.
+            let x_pos = (start_x + x) & 1023;
+
+            let vram_index = y_pos * 1024 + x_pos;
+            rasterizer.vram[vram_index as usize] = color;
+        }
+    }
+}
+
 fn cmd_tex_window(rasterizer: &mut Rasterizer, params: &[u32]) {
     rasterizer.tex_mapper.set_tex_window(params[0]);
 }
@@ -1323,8 +1349,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_fill_rect,
+        len: 3,
     },
     CommandHandler {
         handler: cmd_unimplemented,

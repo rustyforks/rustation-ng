@@ -486,7 +486,7 @@ pub fn run(psx: &mut Psx) {
         delta = 128;
     }
 
-    sync::next_event(psx, GPUSYNC, delta as i32);
+    sync::next_event(psx, GPUSYNC, delta as CycleCount);
 }
 
 /// Called when we reach the end of line (just after the HSYNC)

@@ -577,6 +577,22 @@ fn cmd_clear_cache(psx: &mut Psx) {
     psx.gpu.command_pop_to_rasterizer();
 }
 
+/// Fill a rectangle with a solid color
+fn cmd_fill_rect(psx: &mut Psx) {
+    let _color = psx.gpu.command_pop_to_rasterizer();
+    let _dst = psx.gpu.command_pop_to_rasterizer();
+    let dim = psx.gpu.command_pop_to_rasterizer();
+
+    // Rounding equation taken from Mednafen
+    let width = ((dim & 0x3ff) + 0xf) & !0xf;
+    let height = (dim >> 16) & 0x1ff;
+
+    let line_delay = (width >> 3) + 9;
+    let delay = height * line_delay;
+
+    psx.gpu.draw_time(46 + delay as CycleCount);
+}
+
 /// Does nothing, but with style
 fn cmd_nop(psx: &mut Psx) {
     // Pop the FIFO.
@@ -608,9 +624,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_fill_rect,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
