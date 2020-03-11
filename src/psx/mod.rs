@@ -11,6 +11,7 @@ mod dma;
 mod gpu;
 mod gte;
 mod irq;
+pub mod pad_memcard;
 mod spu;
 mod sync;
 mod timers;
@@ -44,6 +45,7 @@ pub struct Psx {
     timers: timers::Timers,
     gpu: gpu::Gpu,
     cdrom: cdrom::CdRom,
+    pub pad_memcard: pad_memcard::PadMemCard,
     /// Memory control registers
     mem_control: [u32; 9],
     /// Contents of the RAM_SIZE register which is probably a configuration register for the memory
@@ -84,6 +86,7 @@ impl Psx {
             timers: timers::Timers::new(),
             gpu: gpu::Gpu::new(standard),
             cdrom: cdrom::CdRom::new(disc),
+            pad_memcard: pad_memcard::PadMemCard::new(),
             mem_control: [0; 9],
             ram_size: 0,
             cache_control: 0,
@@ -208,6 +211,12 @@ impl Psx {
             return gpu::load(self, offset);
         }
 
+        if let Some(offset) = map::PAD_MEMCARD.contains(abs_addr) {
+            self.tick(1);
+            // TODO
+            return pad_memcard::load(self, offset);
+        }
+
         if let Some(offset) = map::CDROM.contains(abs_addr) {
             self.tick(6 * T::width() as i32);
             return cdrom::load(self, offset);
@@ -295,6 +304,11 @@ impl Psx {
 
         if let Some(offset) = map::GPU.contains(abs_addr) {
             gpu::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::PAD_MEMCARD.contains(abs_addr) {
+            pad_memcard::store(self, offset, val);
             return;
         }
 
@@ -583,6 +597,9 @@ pub mod map {
 
     /// Memory latency and expansion mapping
     pub const MEM_CONTROL: Range = Range(0x1f80_1000, 36);
+
+    /// Gamepad and memory card controller
+    pub const PAD_MEMCARD: Range = Range(0x1f80_1040, 32);
 
     /// Register that has something to do with RAM configuration, configured by the BIOS
     pub const RAM_SIZE: Range = Range(0x1f80_1060, 4);

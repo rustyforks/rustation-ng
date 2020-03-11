@@ -1,4 +1,4 @@
-use super::{cdrom, dma, gpu, spu, timers, CycleCount, Psx};
+use super::{cdrom, dma, gpu, pad_memcard, spu, timers, CycleCount, Psx};
 
 /// Tokens used to keep track of the progress of each module individually
 pub enum SyncToken {
@@ -7,6 +7,7 @@ pub enum SyncToken {
     Spu,
     Dma,
     CdRom,
+    PadMemCard,
 
     NumTokens,
 }
@@ -102,6 +103,10 @@ pub fn handle_events(psx: &mut Psx) {
 
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::CdRom as usize] {
             cdrom::run(psx);
+        }
+
+        if psx.sync.first_event >= psx.sync.next_event[SyncToken::PadMemCard as usize] {
+            pad_memcard::run(psx);
         }
 
         psx.cycle_counter += event_delta;

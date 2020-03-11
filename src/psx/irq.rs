@@ -52,13 +52,14 @@ pub fn trigger(psx: &mut Psx, which: Interrupt) {
 
 pub fn set_mask(psx: &mut Psx, mask: u16) {
     // Temporary hack: trigger an error if a non-implemented interrupt is requested
-    let supported: [Interrupt; 6] = [
+    let supported: [Interrupt; 7] = [
         Interrupt::VBlank,
         Interrupt::CdRom,
         Interrupt::Dma,
         Interrupt::Timer0,
         Interrupt::Timer1,
         Interrupt::Timer2,
+        Interrupt::PadMemCard,
     ];
 
     let rem = supported
