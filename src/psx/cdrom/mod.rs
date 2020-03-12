@@ -52,6 +52,8 @@ pub struct CdRom {
     rx_active: bool,
     /// The drive controller itself, running on a separate chip.
     controller: Controller,
+    /// CDROM audio mixer connected to the SPU
+    mixer: Mixer,
 }
 
 impl CdRom {
@@ -68,6 +70,7 @@ impl CdRom {
             rx_index: 0,
             rx_active: false,
             controller: Controller::new(disc),
+            mixer: Mixer::new(),
         }
     }
 
@@ -227,6 +230,8 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                 psx.cdrom.set_command(v);
                 maybe_start_command(psx);
             }
+            // ATV2 register
+            3 => psx.cdrom.mixer.cd_right_to_spu_right = v,
             _ => unimplemented!(
                 "Store to CD register {}.{}: 0x{:x}",
                 off,
@@ -237,12 +242,11 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
         2 => match psx.cdrom.index {
             0 => psx.cdrom.push_parameter(v),
             1 => irq_set_mask(psx, v),
-            _ => unimplemented!(
-                "Store to CD register {}.{}: 0x{:x}",
-                off,
-                psx.cdrom.index,
-                val.as_u32()
-            ),
+            // ATV0 register
+            2 => psx.cdrom.mixer.cd_left_to_spu_left = v,
+            // ATV3 register
+            3 => psx.cdrom.mixer.cd_right_to_spu_left = v,
+            _ => unreachable!(),
         },
         3 => match psx.cdrom.index {
             0 => psx.cdrom.set_host_chip_control(v),
@@ -258,12 +262,11 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                     unimplemented!("HCLRCTL {:x}", v);
                 }
             }
-            _ => unimplemented!(
-                "Store to CD register {}.{}: 0x{:x}",
-                off,
-                psx.cdrom.index,
-                val.as_u32()
-            ),
+            // ATV1 register
+            2 => psx.cdrom.mixer.cd_left_to_spu_right = v,
+            // ADPCTL register
+            3 => warn!("CDROM Mixer apply {:02x}", v),
+            _ => unreachable!(),
         },
         _ => unimplemented!(
             "Store to CD register {}.{}: 0x{:x}",
@@ -370,5 +373,27 @@ fn maybe_process_async_response(psx: &mut Psx) {
 fn maybe_notify_read(psx: &mut Psx) {
     if psx.cdrom.irq_flags == 0 {
         controller::maybe_notify_read(psx);
+    }
+}
+
+/// CD-DA Audio playback mixer. The CDROM's audio stereo output can be mixed arbitrarily before
+/// reaching the SPU stereo input.
+struct Mixer {
+    cd_left_to_spu_left: u8,
+    cd_left_to_spu_right: u8,
+    cd_right_to_spu_left: u8,
+    cd_right_to_spu_right: u8,
+}
+
+impl Mixer {
+    fn new() -> Mixer {
+        Mixer {
+            // XXX are those the correct reset values? The registers are write only so it's not
+            // straightforward to test.
+            cd_left_to_spu_left: 0,
+            cd_left_to_spu_right: 0,
+            cd_right_to_spu_left: 0,
+            cd_right_to_spu_right: 0,
+        }
     }
 }
