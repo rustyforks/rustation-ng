@@ -468,9 +468,12 @@ fn execute_command(psx: &mut Psx, command: u8) {
         0x0c => (0, 0, commands::demute),
         0x0d => (2, 2, commands::set_filter),
         0x0e => (1, 1, commands::set_mode),
+        0x11 => (0, 0, commands::get_loc_p),
         0x15 => (0, 0, commands::seek_l),
         0x19 => (1, 1, commands::test),
         0x1a => (0, 0, commands::get_id),
+        // ReadS
+        0x1b => (0, 0, commands::read),
         0x1e => (0, 0, commands::read_toc),
         c => unimplemented!("Unhandled CD command 0x{:02x}", c),
     };
@@ -577,32 +580,22 @@ mod commands {
     use super::disc::Region;
     use super::{timings, CycleCount, IrqCode, Msf, Psx, ReadState};
 
-    fn pop_param(psx: &mut Psx) -> u8 {
-        debug_assert!(!psx.cdrom.controller.params.is_empty());
-        psx.cdrom.controller.params.pop()
-    }
-
-    fn push_response(psx: &mut Psx, b: u8) {
-        debug_assert!(!psx.cdrom.controller.response.is_full());
-        psx.cdrom.controller.response.push(b);
-    }
-
     /// Read the drive's status byte
     pub fn get_stat(psx: &mut Psx) {
-        let status = psx.cdrom.controller.drive_status();
+        let controller = &mut psx.cdrom.controller;
 
-        push_response(psx, status);
+        controller.push_drive_status();
     }
 
     /// Tell the CDROM controller where the next seek should take us (but do not physically perform
     /// the seek yet)
     pub fn set_loc(psx: &mut Psx) {
-        // Parameters are in BCD.
-        let m = pop_param(psx);
-        let s = pop_param(psx);
-        let f = pop_param(psx);
-
         let controller = &mut psx.cdrom.controller;
+
+        // Parameters are in BCD.
+        let m = controller.params.pop();
+        let s = controller.params.pop();
+        let f = controller.params.pop();
 
         controller.seek_target = match Msf::from_bcd(m, s, f) {
             Some(m) => m,
@@ -714,17 +707,19 @@ mod commands {
 
     /// Filter for ADPCM sectors
     pub fn set_filter(psx: &mut Psx) {
-        psx.cdrom.controller.filter_file = pop_param(psx);
-        psx.cdrom.controller.filter_channel = pop_param(psx);
+        let controller = &mut psx.cdrom.controller;
 
-        psx.cdrom.controller.push_drive_status();
+        controller.filter_file = controller.params.pop();
+        controller.filter_channel = controller.params.pop();
+
+        controller.push_drive_status();
     }
 
     /// Configure the behaviour of the CDROM drive
     pub fn set_mode(psx: &mut Psx) {
-        let mode = pop_param(psx);
-
         let controller = &mut psx.cdrom.controller;
+
+        let mode = controller.params.pop();
 
         controller.double_speed = (mode >> 7) & 1 != 0;
         controller.xa_adpcm_to_spu = (mode >> 6) & 1 != 0;
@@ -744,6 +739,46 @@ mod commands {
         }
 
         controller.push_drive_status();
+    }
+
+    /// Get the current position of the drive head by returning the contents of the Q subchannel
+    pub fn get_loc_p(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+
+        if controller.position < Msf::from_bcd(0x00, 0x02, 0x00).unwrap() {
+            // The values returned in the track 01 pregap are strange, The absolute MSF seems
+            // correct but the track MSF looks like garbage.
+            //
+            // For instance after seeking at 00:01:25 the track MSF returned by GetLocP is 00:00:49
+            // with my PAL Spyro disc.
+            unimplemented!("GetLocP while in track1 pregap");
+        }
+
+        // Fixme: All this data should be extracted from the subchannel Q (when available in
+        // cdimage).
+
+        let metadata = controller.sector.metadata();
+
+        // The position returned by get_loc_p seems to be ahead of the currently read sector
+        // *sometimes*. Probably because of the way the subchannel data is buffered? Let's not
+        // worry about it for now.
+        let abs_msf = metadata.msf;
+
+        // Position within the current track
+        let track_msf = metadata.track_msf;
+
+        let track = metadata.track;
+        let index = metadata.index;
+
+        let (track_m, track_s, track_f) = track_msf.into_bcd();
+
+        let (abs_m, abs_s, abs_f) = abs_msf.into_bcd();
+
+        let response_bcd = [track, index, track_m, track_s, track_f, abs_m, abs_s, abs_f];
+
+        for v in &response_bcd {
+            controller.response.push(v.bcd());
+        }
     }
 
     /// Execute seek. Target is given by previous "set_loc" command.
@@ -773,18 +808,22 @@ mod commands {
 
     /// The test command can do a whole bunch of stuff, the first parameter says what
     pub fn test(psx: &mut Psx) {
-        match pop_param(psx) {
+        let controller = &mut psx.cdrom.controller;
+
+        match controller.params.pop() {
             0x20 => test_version(psx),
             n => unimplemented!("Unhandled CD test subcommand 0x{:x}", n),
         }
     }
 
     fn test_version(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+
         // Values returned by my PAL SCPH-7502 console:
-        push_response(psx, 0x98); // Year
-        push_response(psx, 0x06); // Month
-        push_response(psx, 0x10); // Day
-        push_response(psx, 0xc3); // Version
+        controller.response.push(0x98); // Year
+        controller.response.push(0x06); // Month
+        controller.response.push(0x10); // Day
+        controller.response.push(0xc3); // Version
     }
 
     /// Read the CD-ROM's identification string. This is how the BIOS checks that the disc is an

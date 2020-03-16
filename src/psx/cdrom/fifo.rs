@@ -58,6 +58,8 @@ impl Fifo {
     }
 
     pub fn pop(&mut self) -> u8 {
+        debug_assert!(!self.is_empty());
+
         let idx = (self.read_idx & 0xf) as usize;
 
         self.read_idx = self.read_idx.wrapping_add(1) & 0x1f;
