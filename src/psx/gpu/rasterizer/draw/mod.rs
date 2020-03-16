@@ -7,7 +7,7 @@ use std::sync::mpsc;
 
 use super::{Command, CommandBuffer, Frame, Special};
 use crate::psx::gpu::commands::Shaded;
-use crate::psx::gpu::commands::{NoShading, Position};
+use crate::psx::gpu::commands::{NoShading, Position, Transparent};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending};
 use crate::psx::gpu::commands::{TextureMode, TransparencyMode};
 
@@ -1511,7 +1511,7 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
+        handler: cmd_handle_poly_quad::<Transparent, NoTexture, NoShading>,
         len: 5,
     },
     CommandHandler {
@@ -1552,8 +1552,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, TextureBlending, Shaded>,
+        len: 9,
     },
     CommandHandler {
         handler: cmd_unimplemented,
@@ -1584,8 +1584,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, TextureBlending, Shaded>,
+        len: 12,
     },
     CommandHandler {
         handler: cmd_unimplemented,
