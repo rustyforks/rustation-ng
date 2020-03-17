@@ -3,7 +3,7 @@
 //! The timings code is copied from mednafen
 
 use super::cop0::Exception;
-use super::{cop0, debugger, AccessWidth, Addressable, CycleCount, Psx};
+use super::{cop0, debugger, map, AccessWidth, Addressable, CycleCount, Psx};
 
 use std::fmt;
 
@@ -417,11 +417,23 @@ fn store<T: Addressable>(psx: &mut Psx, addr: u32, v: T) {
 
 /// Execute a memory read and return the value alongside with the number of cycles necessary for
 /// the load to complete;
-fn load<T: Addressable>(psx: &mut Psx, addr: u32) -> (T, u8) {
+fn load<T: Addressable>(psx: &mut Psx, addr: u32, from_lwc: bool) -> (T, u8) {
     // Any pending load must terminate before we attempt to start a new one
     psx.cpu.load_sync();
 
     debugger::memory_read(psx, addr);
+
+    // The Scratch Pad is the CPU data cache, it therefore has very low latency and needs to be
+    // special-cased
+    {
+        // XXX Scratch Pad can't be accessed through uncached address space, so this is a bit too
+        // aggressive.
+        let abs_addr = map::mask_region(addr);
+
+        if let Some(offset) = map::SCRATCH_PAD.contains(abs_addr) {
+            return (psx.scratch_pad.load(offset), 0);
+        }
+    }
 
     if psx.cpu.load.is_none() {
         // From mednafen: apparently the CPU manages to schedule loads faster if they happen in a
@@ -434,7 +446,8 @@ fn load<T: Addressable>(psx: &mut Psx, addr: u32) -> (T, u8) {
     let v = psx.load(addr);
 
     // From mednafen: delay to complete the load
-    psx.tick(2);
+    let d = if from_lwc { 1 } else { 2 };
+    psx.tick(d);
 
     // Compute the duration of the load. The CPU (if possible) keeps executing instructions
     // while the load takes place, so effectively at this point `psx.cpu.cycle_counter` is too far
@@ -1294,7 +1307,7 @@ fn op_lb(psx: &mut Psx, instruction: Instruction) {
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
-    let (v, duration) = load::<u8>(psx, addr);
+    let (v, duration) = load::<u8>(psx, addr, false);
 
     // Cast as i8 to force sign extension
     let v = v as i8;
@@ -1312,7 +1325,7 @@ fn op_lh(psx: &mut Psx, instruction: Instruction) {
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
     if addr % 2 == 0 {
-        let (v, duration) = load::<u16>(psx, addr);
+        let (v, duration) = load::<u16>(psx, addr, false);
 
         // Cast as i16 to force sign extension
         let v = v as i16;
@@ -1345,7 +1358,7 @@ fn op_lwl(psx: &mut Psx, instruction: Instruction) {
 
     // Next we load the *aligned* word containing the first addressed byte
     let aligned_addr = addr & !3;
-    let (aligned_word, duration) = load::<u32>(psx, aligned_addr);
+    let (aligned_word, duration) = load::<u32>(psx, aligned_addr, false);
 
     // Depending on the address alignment we fetch the 1, 2, 3 or 4 *most* significant bytes and
     // put them in the target register.
@@ -1371,7 +1384,7 @@ fn op_lw(psx: &mut Psx, instruction: Instruction) {
 
     // Address must be 32bit aligned
     if addr % 4 == 0 {
-        let (v, duration) = load(psx, addr);
+        let (v, duration) = load(psx, addr, false);
 
         psx.cpu.delayed_load_chain(t, v, duration, true);
     } else {
@@ -1388,7 +1401,7 @@ fn op_lbu(psx: &mut Psx, instruction: Instruction) {
 
     let addr = psx.cpu.reg(s).wrapping_add(i);
 
-    let (v, duration) = load::<u8>(psx, addr);
+    let (v, duration) = load::<u8>(psx, addr, false);
 
     // Put the load in the delay slot
     psx.cpu.delayed_load_chain(t, u32::from(v), duration, true);
@@ -1404,7 +1417,7 @@ fn op_lhu(psx: &mut Psx, instruction: Instruction) {
 
     // Address must be 16bit aligned
     if addr % 2 == 0 {
-        let (v, duration) = load::<u16>(psx, addr);
+        let (v, duration) = load::<u16>(psx, addr, false);
 
         // Put the load in the delay slot
         psx.cpu.delayed_load_chain(t, u32::from(v), duration, true);
@@ -1434,7 +1447,7 @@ fn op_lwr(psx: &mut Psx, instruction: Instruction) {
 
     // Next we load the *aligned* word containing the first addressed byte
     let aligned_addr = addr & !3;
-    let (aligned_word, duration) = load::<u32>(psx, aligned_addr);
+    let (aligned_word, duration) = load::<u32>(psx, aligned_addr, false);
 
     // Depending on the address alignment we fetch the 1, 2, 3 or 4 *least* significant bytes and
     // put them in the target register.
@@ -1494,7 +1507,7 @@ fn op_swl(psx: &mut Psx, instruction: Instruction) {
 
     let aligned_addr = addr & !3;
     // Load the current value for the aligned word at the target address
-    let (cur, _) = load::<u32>(psx, aligned_addr);
+    let (cur, _) = load::<u32>(psx, aligned_addr, false);
 
     let new = match addr & 3 {
         0 => (cur & 0xffff_ff00) | (v >> 24),
@@ -1539,7 +1552,7 @@ fn op_swr(psx: &mut Psx, instruction: Instruction) {
 
     let aligned_addr = addr & !3;
     // Load the current value for the aligned word at the target address
-    let (cur, _) = load::<u32>(psx, aligned_addr);
+    let (cur, _) = load::<u32>(psx, aligned_addr, false);
 
     let new = match addr & 3 {
         0 => v,
@@ -1587,7 +1600,7 @@ fn op_lwc2(psx: &mut Psx, instruction: Instruction) {
     // Address must be 32bit aligned
     if addr % 4 == 0 {
         // XXX how should we handle duration here? No absorb?
-        let (v, _duration) = load::<u32>(psx, addr);
+        let (v, _duration) = load::<u32>(psx, addr, true);
 
         psx.gte.set_data(cop_r, v);
     } else {

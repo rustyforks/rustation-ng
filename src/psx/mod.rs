@@ -39,6 +39,7 @@ pub struct Psx {
     gte: gte::Gte,
     irq: irq::InterruptState,
     ram: Ram,
+    scratch_pad: ScratchPad,
     bios: bios::Bios,
     spu: spu::Spu,
     dma: dma::Dma,
@@ -80,6 +81,7 @@ impl Psx {
             gte: gte::Gte::new(),
             irq: irq::InterruptState::new(),
             ram: Ram::new(),
+            scratch_pad: ScratchPad::new(),
             bios,
             spu: spu::Spu::new(),
             dma: dma::Dma::new(),
@@ -285,6 +287,10 @@ impl Psx {
         if let Some(offset) = map::RAM.contains(abs_addr) {
             self.ram.store(offset, val);
             return;
+        }
+
+        if let Some(offset) = map::SCRATCH_PAD.contains(abs_addr) {
+            return self.scratch_pad.store(offset, val);
         }
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
@@ -542,6 +548,53 @@ impl Ram {
 /// System RAM: 2MB
 const RAM_SIZE: usize = 2 * 1024 * 1024;
 
+/// Scratch Pad (data cache used as fast RAM)
+struct ScratchPad {
+    data: Box<[u8; SCRATCH_PAD_SIZE]>,
+}
+
+impl ScratchPad {
+    /// Instantiate Scratch Pad
+    pub fn new() -> ScratchPad {
+        ScratchPad {
+            data: box_array![0; SCRATCH_PAD_SIZE],
+        }
+    }
+
+    /// Fetch the little endian value at `offset`
+    pub fn load<T: Addressable>(&self, offset: u32) -> T {
+        // The two MSBs are ignored, the 2MB RAM is mirrored four times over the first 8MB of
+        // address space
+        let offset = (offset & 0x1f_ffff) as usize;
+
+        let mut v = 0;
+
+        for i in 0..T::width() as usize {
+            let b = u32::from(self.data[offset + i]);
+
+            v |= b << (i * 8)
+        }
+
+        Addressable::from_u32(v)
+    }
+
+    /// Store the 32bit little endian word `val` into `offset`
+    pub fn store<T: Addressable>(&mut self, offset: u32, val: T) {
+        // The two MSBs are ignored, the 2MB RAM is mirrored four times over the first 8MB of
+        // address space
+        let offset = (offset & 0x1f_ffff) as usize;
+
+        let val = val.as_u32();
+
+        for i in 0..T::width() as usize {
+            self.data[offset + i] = (val >> (i * 8)) as u8;
+        }
+    }
+}
+
+/// Scratch Pad (data cache): 1KB
+const SCRATCH_PAD_SIZE: usize = 1024;
+
 pub mod map {
     //! PlayStation memory map
 
@@ -594,6 +647,9 @@ pub mod map {
 
     /// BIOS ROM. Read-only, significantly slower to access than system RAM
     pub const BIOS: Range = Range(0x1fc0_0000, 512 * 1024);
+
+    /// ScratchPad: data cache used as a fast 1kB RAM
+    pub const SCRATCH_PAD: Range = Range(0x1f80_0000, 1024);
 
     /// Memory latency and expansion mapping
     pub const MEM_CONTROL: Range = Range(0x1f80_1000, 36);
