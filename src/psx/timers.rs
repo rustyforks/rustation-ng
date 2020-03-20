@@ -22,6 +22,8 @@ pub struct Timers {
     in_hsync: bool,
     /// True if the GPU is currently in a VSync
     in_vsync: bool,
+    /// For Timer2: divider for SysClockDiv8
+    divider_8: CycleCount,
 }
 
 impl Timers {
@@ -30,6 +32,7 @@ impl Timers {
             timers: [Timer::new(), Timer::new(), Timer::new()],
             in_hsync: false,
             in_vsync: false,
+            divider_8: 0,
         }
     }
 
@@ -60,7 +63,12 @@ impl Timers {
             let source = self.clock_source(which);
             let sync_mode = self.sync_mode(which);
 
-            if let Some(d) = self[which].next_irq(source, sync_mode) {
+            if let Some(mut d) = self[which].next_irq(source, sync_mode) {
+                if source == Clock::CpuDiv8 {
+                    d *= 8;
+                    d -= self.divider_8;
+                }
+
                 let new_d = match delta {
                     None => d,
                     Some(delta) => min(d, delta),
@@ -74,21 +82,34 @@ impl Timers {
     }
 
     /// Run the timer `which` for `cpu_cycles`. Returns true if an interrupt was triggered.
-    fn run_cpu(&mut self, which: usize, cpu_cycles: u32) -> bool {
+    fn run_cpu(&mut self, which: usize, cpu_cycles: CycleCount) -> bool {
         let source = self.clock_source(which);
+
+        if which == 2 {
+            // Run the /8 divider
+            // XXX I think this runs all the time, even when an other source is selected but I
+            // haven't double-checked it.
+            self.divider_8 += cpu_cycles;
+            let ticks = self.divider_8 / 8;
+            self.divider_8 &= 7;
+
+            if source == Clock::CpuDiv8 {
+                return self[which].run(ticks);
+            }
+        }
 
         self[which].run_cpu(source, cpu_cycles)
     }
 
     /// Run the timer `which` for `gpu_cycles`. Returns true if an interrupt was triggered.
-    fn run_gpu_clock(&mut self, which: usize, gpu_cycles: u32) -> bool {
+    fn run_gpu_clock(&mut self, which: usize, gpu_cycles: CycleCount) -> bool {
         let source = self.clock_source(which);
 
         self[which].run_gpu_clock(source, gpu_cycles)
     }
 
     /// Run the timer `which` for `hsync_cycles`. Returns true if an interrupt was triggered.
-    fn run_gpu_hsync(&mut self, which: usize, hsync_cycles: u32) -> bool {
+    fn run_gpu_hsync(&mut self, which: usize, hsync_cycles: CycleCount) -> bool {
         let source = self.clock_source(which);
 
         self[which].run_gpu_hsync(source, hsync_cycles)
@@ -174,7 +195,7 @@ pub struct Timer {
     /// The counter is really 16bit but we use a wider value to avoid overflows (since we might
     /// overshoot by a few cycles before we handle the overflow in `run`). It also makes the code
     /// dealing with `set_overflow` and `set_target` simpler.
-    counter: u32,
+    counter: CycleCount,
     target: u16,
     /// If the IRQ is configured to be oneshot in `Mode` we don't re-trigger.
     irq_inhibit: bool,
@@ -194,12 +215,12 @@ impl Timer {
     }
 
     fn counter(&self) -> u16 {
-        debug_assert!(self.counter <= 0xffff);
+        debug_assert!(self.counter >= 0 && self.counter <= 0xffff);
         self.counter as u16
     }
 
     fn write_counter(&mut self, val: u16) {
-        self.counter = u32::from(val);
+        self.counter = CycleCount::from(val);
         self.irq_inhibit = false;
     }
 
@@ -234,7 +255,7 @@ impl Timer {
 
     /// Returns true if `counter` equals `target`
     fn target_match(&self) -> bool {
-        u32::from(self.target) == self.counter
+        CycleCount::from(self.target) == self.counter
     }
 
     /// Called when a target mach occurred. Returns `true` if the interrupt has been triggered.
@@ -245,7 +266,7 @@ impl Timer {
             if self.target == 0 {
                 self.counter = 0;
             } else {
-                self.counter %= u32::from(self.target);
+                self.counter %= CycleCount::from(self.target);
             }
         }
 
@@ -308,7 +329,7 @@ impl Timer {
             return None;
         }
 
-        let target = u32::from(self.target);
+        let target = CycleCount::from(self.target);
 
         // Value of the counter the on the next event
         let event_counter = if self.counter > target {
@@ -341,15 +362,11 @@ impl Timer {
             delta = 1;
         }
 
-        if source == Clock::CpuDiv8 {
-            unimplemented!("Implement SysClockDiv8");
-        }
-
         Some(delta as CycleCount)
     }
 
     /// Advance the counter by `cycles`. Returns true if an interrupt has been triggered
-    fn run(&mut self, cycles: u32) -> bool {
+    fn run(&mut self, cycles: CycleCount) -> bool {
         if self.mode.reset_counter_on_target() && self.target == 0 && self.target_match() {
             // This is a weird situation, we need to reset the counter to 0 when we reach the
             // target, the target is 0, and we've reached it.
@@ -368,7 +385,7 @@ impl Timer {
 
         self.counter += cycles;
 
-        let target = u32::from(self.target);
+        let target = CycleCount::from(self.target);
 
         let target_irq = if before_counter < target && self.counter >= target {
             // We reached the target
@@ -392,12 +409,12 @@ impl Timer {
     }
 
     /// Run the timer for `cpu_cycles` cycles. Returns true if an interrupt has been triggered.
-    fn run_cpu(&mut self, source: Clock, cpu_cycles: u32) -> bool {
+    fn run_cpu(&mut self, source: Clock, cpu_cycles: CycleCount) -> bool {
         let mut cycles = cpu_cycles;
 
         if source == Clock::CpuDiv8 {
-            // TODO Mednafen runs the divider even when the timer is not currently using it
-            unimplemented!("Implement CpuDiv8");
+            // Should be handled by Timer::run_cpu directly
+            unreachable!();
         }
 
         if source == Clock::GpuPixClk || source == Clock::GpuHSync {
@@ -410,7 +427,7 @@ impl Timer {
     }
 
     /// Run the timer for `gpu_cycles` cycles. Returns true if an interrupt has been triggered.
-    fn run_gpu_clock(&mut self, source: Clock, gpu_cycles: u32) -> bool {
+    fn run_gpu_clock(&mut self, source: Clock, gpu_cycles: CycleCount) -> bool {
         if source == Clock::GpuPixClk {
             self.run(gpu_cycles)
         } else {
@@ -420,7 +437,7 @@ impl Timer {
     }
 
     /// Run the timer for `hsync_cycles` cycles. Returns true if an interrupt has been triggered.
-    fn run_gpu_hsync(&mut self, source: Clock, hsync_cycles: u32) -> bool {
+    fn run_gpu_hsync(&mut self, source: Clock, hsync_cycles: CycleCount) -> bool {
         if source == Clock::GpuHSync {
             self.run(hsync_cycles)
         } else {
@@ -482,7 +499,7 @@ fn run_timers(psx: &mut Psx) {
     let elapsed = sync::resync(psx, TIMERSYNC);
 
     for (which, &irq) in TIMER_IRQ.iter().enumerate() {
-        if psx.timers.run_cpu(which, elapsed as u32) {
+        if psx.timers.run_cpu(which, elapsed) {
             irq::trigger(psx, irq);
         }
     }
@@ -494,7 +511,7 @@ pub fn run(psx: &mut Psx) {
 }
 
 /// Called from the GPU to advance the counters working on the GPU Pixel Clock
-pub fn run_gpu_clocks(psx: &mut Psx, gpu_clock_cycles: u32) {
+pub fn run_gpu_clocks(psx: &mut Psx, gpu_clock_cycles: CycleCount) {
     // Only Timer 0 can work on the GPU clock
     let which = 0;
 

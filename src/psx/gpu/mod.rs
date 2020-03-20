@@ -439,7 +439,7 @@ pub fn run(psx: &mut Psx) {
 
     let mut elapsed_gpu_cycles = psx.gpu.tick(elapsed);
 
-    timers::run_gpu_clocks(psx, elapsed_gpu_cycles as u32);
+    timers::run_gpu_clocks(psx, elapsed_gpu_cycles);
 
     while elapsed_gpu_cycles >= psx.gpu.cycles_to_line_event {
         elapsed_gpu_cycles -= psx.gpu.cycles_to_line_event;
