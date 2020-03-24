@@ -769,8 +769,8 @@ impl DrawMode {
     fn update_from_poly(&mut self, poly_cmd: u32) {
         // XXX bit 11 (texture_disable) can also be set/cleared, but only if the functionality is
         // enabled using GP1[0x09]
-        self.0 &= !0x1f;
-        self.0 |= (poly_cmd >> 16) & 0x1f;
+        self.0 &= !0x8ff;
+        self.0 |= (poly_cmd >> 16) & 0x8ff;
     }
 
     fn texture_disable(self) -> bool {
