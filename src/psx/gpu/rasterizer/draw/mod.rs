@@ -546,7 +546,14 @@ impl Rasterizer {
                 let texel = self.get_texel(vars.u(), vars.v());
                 // If the pixel is equal to 0 (including mask bit) then we don't draw it
                 if !texel.is_nul() {
-                    self.draw_solid_pixel::<Transparency>(x, y, texel);
+                    if Texture::is_raw_texture() {
+                        self.draw_solid_pixel::<Transparency>(x, y, texel);
+                    } else {
+                        // Texture blending: the final color is a combination of the texel and
+                        // the computed gouraud color
+                        let blend = texel.blend(vars.color());
+                        self.draw_solid_pixel::<Transparency>(x, y, blend);
+                    }
                 }
             } else {
                 // No texture
@@ -980,9 +987,41 @@ impl Pixel {
         (self.0 & 0xff) as u8
     }
 
-    #[allow(dead_code)]
     fn mask(self) -> bool {
         (self.0 >> 24) != 0
+    }
+
+    /// Perform texture blending
+    fn blend(self, gouraud: Pixel) -> Pixel {
+        let t_r = self.red() as u32;
+        let t_g = self.green() as u32;
+        let t_b = self.blue() as u32;
+
+        let g_r = gouraud.red() as u32;
+        let g_g = gouraud.green() as u32;
+        let g_b = gouraud.blue() as u32;
+
+        // In order to normalize the value we should be shifting by 8, but texture blending
+        // actually doubles the value, hence the - 1.
+        let mut r = (t_r * g_r) >> (8 - 1);
+        let mut g = (t_g * g_g) >> (8 - 1);
+        let mut b = (t_b * g_b) >> (8 - 1);
+
+        // XXX Mednafen combines the saturation with the dithering lookup which is quite clever.
+        // That would mean lowering the dithering here however.
+        if r > 0xff {
+            r = 0xff;
+        }
+        if g > 0xff {
+            g = 0xff;
+        }
+        if b > 0xff {
+            b = 0xff;
+        }
+
+        let mask = self.0 & 0xff00_0000;
+
+        Pixel(mask | b | (g << 8) | (r << 16))
     }
 }
 
