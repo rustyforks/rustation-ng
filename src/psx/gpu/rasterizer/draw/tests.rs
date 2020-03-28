@@ -803,3 +803,32 @@ fn gouraud_rgb_right() {
 
     check_rasterizer(&rasterizer, &expected);
 }
+
+/// Test for an overflow issue in Spyro (PAL)
+#[test]
+fn test_overflow() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        // Clip top-left
+        Command::Gp0(0xe3000000),
+        // Clip bot-right
+        Command::Gp0(0xe4000000 | (0xff << 10) | 0x1ff),
+        // Draw offset
+        Command::Gp0(0xe5000000),
+        // Quad
+        Command::Gp0(0x387ecbff),
+        Command::Gp0(0x00890145),
+        Command::Gp0(0x009c6e62),
+        Command::Gp0(0x00910141),
+        Command::Gp0(0x0055afff),
+        Command::Gp0(0x009d0133),
+        Command::Gp0(0x00a57670),
+        Command::Gp0(0x00a4012b),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+}

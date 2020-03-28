@@ -148,7 +148,7 @@ impl Add for FpVar {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        FpVar(self.0 + other.0)
+        FpVar(self.0.wrapping_add(other.0))
     }
 }
 
@@ -162,7 +162,7 @@ impl Sub for FpVar {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self::Output {
-        FpVar(self.0 - other.0)
+        FpVar(self.0.wrapping_sub(other.0))
     }
 }
 
@@ -178,7 +178,7 @@ impl Mul<i32> for FpVar {
     type Output = Self;
 
     fn mul(self, rhs: i32) -> Self::Output {
-        FpVar(self.0 * rhs)
+        FpVar(self.0.wrapping_mul(rhs))
     }
 }
 
