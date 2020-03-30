@@ -1220,7 +1220,7 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     Command {
         handler: cmd_handle_rect_variable::<Opaque, TextureBlending>,
         len: 4,
-        fifo_len: 4,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
