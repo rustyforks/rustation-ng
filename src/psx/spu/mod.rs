@@ -1,6 +1,7 @@
 //! Sound Processing Unit
 
 mod fifo;
+mod fir;
 
 use super::{cpu, sync, AccessWidth, Addressable, CycleCount, Psx};
 use fifo::DecoderFifo;
@@ -637,8 +638,15 @@ impl Voice {
     /// Returns the next "raw" decoded sample for this voice, meaning the post-ADPCM decode and
     /// resampling but pre-ADSR.
     fn next_raw_sample(&self) -> i32 {
-        // TODO: implement 4-tap FIR filter
-        i32::from(self.decoder_fifo[0])
+        let phase = (self.phase >> 4) as u8;
+        let samples = [
+            self.decoder_fifo[0],
+            self.decoder_fifo[1],
+            self.decoder_fifo[2],
+            self.decoder_fifo[3],
+        ];
+
+        fir::filter(phase, samples)
     }
 
     /// Apply the Attack Decay Sustain Release envelope to a sample
