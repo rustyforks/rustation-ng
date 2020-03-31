@@ -93,16 +93,18 @@ pub fn handle_events(psx: &mut Psx) {
             timers::run(psx);
         }
 
-        if psx.sync.first_event >= psx.sync.next_event[SyncToken::Spu as usize] {
-            spu::run(psx);
-        }
-
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::Dma as usize] {
             dma::run(psx);
         }
 
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::CdRom as usize] {
             cdrom::run(psx);
+        }
+
+        // SPU sync must come after CDROM since we could be playing back CD audio and we don't want
+        // to starve
+        if psx.sync.first_event >= psx.sync.next_event[SyncToken::Spu as usize] {
+            spu::run(psx);
         }
 
         if psx.sync.first_event >= psx.sync.next_event[SyncToken::PadMemCard as usize] {

@@ -1,6 +1,10 @@
 //! Sound Processing Unit
 
+mod fifo;
+
 use super::{cpu, sync, AccessWidth, Addressable, CycleCount, Psx};
+use fifo::DecoderFifo;
+use std::ops::{Index, IndexMut};
 
 const SPUSYNC: sync::SyncToken = sync::SyncToken::Spu;
 
@@ -22,11 +26,27 @@ pub struct Spu {
     main_volume: [VolumeSweep; 2],
     /// The 24 individual voices
     voices: [Voice; 24],
+    /// Which voices should be started (bitfield, one bit per voice)
+    voice_start: u32,
+    /// Which voices should be stopped (bitfield, one bit per voice)
+    voice_stop: u32,
+    /// Configures which voices output LFSR noise (bitfield, one bit per voice)
+    noise_mode: u32,
+    /// Configures which voices are frequency modulated (bitfield, one bit per voice)
+    frequency_modulated: u32,
+    /// Status bits, cleared on start, set to 1 when loop_end is reached (bitfield, one bit per
+    /// voice)
+    voice_looped: u32,
     /// Most of the SPU's register behave like a R/W RAM, so to simplify the emulation we just
     /// store most registers in a big buffer
     regs: [u16; 320],
     /// SPU internal RAM, 16bit wide
     ram: [u16; SPU_RAM_SIZE],
+    /// Output audio buffer. Sent to the frontend when filled. Size must be a multiple of 2 since
+    /// we always store pairs of stereo samples.
+    audio_buffer: [i16; 2048],
+    /// Write pointer into the audio_buffer
+    audio_buffer_index: u32,
 }
 
 impl Spu {
@@ -63,8 +83,15 @@ impl Spu {
                 Voice::new(),
                 Voice::new(),
             ],
+            voice_start: 0,
+            voice_stop: 0,
+            noise_mode: 0,
+            frequency_modulated: 0,
+            voice_looped: 0,
             regs: [0; 320],
             ram: [0; SPU_RAM_SIZE],
+            audio_buffer: [0; 2048],
+            audio_buffer_index: 0,
         }
     }
 
@@ -73,12 +100,15 @@ impl Spu {
         self.regs[regmap::CONTROL]
     }
 
-    fn irq_enabled(&self) -> bool {
-        let control = self.control();
+    /// True if the "SPU enable" bit is set in the control register
+    fn enabled(&self) -> bool {
+        self.control() & (1 << 15) != 0
+    }
 
+    fn irq_enabled(&self) -> bool {
         // No$ says that the bit 6 (IRQ9) is "only when bit15=1", I'm not sure what that means.
         // Mednafen doesn't appear to put any condition on the interrupt bit.
-        control & (1 << 6) != 0
+        self.control() & (1 << 6) != 0
     }
 
     /// Update the status register
@@ -99,6 +129,40 @@ impl Spu {
 
         self.regs[regmap::STATUS] = status;
     }
+
+    /// Returns true if `voice` is configured to output LFSR noise
+    fn is_noise(&self, voice: u8) -> bool {
+        self.noise_mode & (1 << voice) != 0
+    }
+
+    /// Returns true if frequency modulation is enabled for `voice`
+    fn is_frequency_modulated(&self, voice: u8) -> bool {
+        self.frequency_modulated & (1 << voice) != 0
+    }
+
+    /// Returns true if voice should be started
+    fn is_voice_started(&self, voice: u8) -> bool {
+        self.voice_start & (1 << voice) != 0
+    }
+
+    /// Returns true if voice should be stopped
+    fn is_voice_stopped(&self, voice: u8) -> bool {
+        self.voice_stop & (1 << voice) != 0
+    }
+}
+
+impl Index<u8> for Spu {
+    type Output = Voice;
+
+    fn index(&self, port: u8) -> &Self::Output {
+        &self.voices[port as usize]
+    }
+}
+
+impl IndexMut<u8> for Spu {
+    fn index_mut(&mut self, port: u8) -> &mut Self::Output {
+        &mut self.voices[port as usize]
+    }
 }
 
 /// Run the SPU until it's caught up with the CPU
@@ -118,12 +182,166 @@ pub fn run(psx: &mut Psx) {
     sync::next_event(psx, SPUSYNC, SPU_FREQ_DIVIDER - elapsed);
 }
 
+/// Put the provided stereo pair in the output buffer and flush it if necessary
+fn output_samples(psx: &mut Psx, left: i16, right: i16) {
+    let idx = psx.spu.audio_buffer_index as usize;
+
+    psx.spu.audio_buffer[idx] = left;
+    psx.spu.audio_buffer[idx + 1] = right;
+
+    psx.spu.audio_buffer_index += 2;
+
+    if psx.spu.audio_buffer_index as usize >= psx.spu.audio_buffer.len() {
+        // Buffer is done, send it to the frontend
+        (psx.audio_callback)(&psx.spu.audio_buffer);
+        psx.spu.audio_buffer_index = 0;
+    }
+}
+
 /// Emulate one cycle of the SPU
 fn run_cycle(psx: &mut Psx) {
     psx.spu.update_status();
 
+    // Sum of the left and right voice volume levels
+    let mut left_mix = 0;
+    let mut right_mix = 0;
+
+    for voice in 0..24 {
+        let (left, right) = run_voice_cycle(psx, voice);
+
+        left_mix += left;
+        right_mix += right;
+    }
+
+    // Voice start/stop should've been processed by `run_voice_cycle`
+    psx.spu.voice_start = 0;
+    psx.spu.voice_stop = 0;
+
     psx.spu.capture_index += 1;
     psx.spu.capture_index &= 0x1ff;
+
+    output_samples(psx, saturate_to_i16(left_mix), saturate_to_i16(right_mix));
+}
+
+/// Run `voice` for one cycle and return a pair of stereo samples
+fn run_voice_cycle(psx: &mut Psx, voice: u8) -> (i32, i32) {
+    // There's no "enable" flag for the voices, they're effectively always running. Unused voices
+    // are just muted. Beyond that the ADPCM decoder is always running, even when the voice is in
+    // "noise" mode and the output isn't used. This is important when the SPU interrupt is enabled.
+    run_voice_decoder(psx, voice);
+
+    let raw_sample = if psx.spu.is_noise(voice) {
+        // TODO: implement noise LFSR
+        unimplemented!()
+    } else {
+        psx.spu[voice].next_raw_sample()
+    };
+
+    let sample = psx.spu[voice].apply_enveloppe(raw_sample);
+
+    // Voices 1 and 3 write their samples back into SPU RAM (what No$ refers to as "capture")
+    if voice == 1 {
+        ram_write(psx, 0x400 | psx.spu.capture_index, sample as u16);
+    } else if voice == 3 {
+        ram_write(psx, 0x600 | psx.spu.capture_index, sample as u16);
+    }
+
+    let (left, right) = psx.spu[voice].apply_stereo(sample);
+
+    // XXX Run sweep
+
+    if psx.spu[voice].start_delay > 0 {
+        // We're still in the start delay, we don't run the envelope or frequency sweep yet
+        psx.spu[voice].start_delay -= 1;
+    } else {
+        // XXX run envelope
+
+        let mut step = u32::from(psx.spu[voice].step_length);
+
+        if psx.spu.is_frequency_modulated(voice) {
+            // Voice 0 cannot be frequency modulated
+            debug_assert!(voice != 0);
+
+            unimplemented!();
+        }
+
+        if step > 0x3fff {
+            step = 0x3fff;
+        }
+
+        psx.spu[voice].consume_samples(step as u16);
+    }
+
+    if psx.spu.is_voice_stopped(voice) {
+        psx.spu[voice].release();
+    }
+
+    if psx.spu.is_voice_started(voice) {
+        psx.spu[voice].restart();
+        psx.spu.voice_looped &= !(1 << voice);
+    }
+
+    if !psx.spu.enabled() {
+        // XXX Mednafen doesn't reset the ADSR divider in this situation
+        psx.spu[voice].release();
+        psx.spu[voice].mute();
+    }
+
+    (left, right)
+}
+
+/// Run the ADPCM decoder for one cycle
+fn run_voice_decoder(psx: &mut Psx, voice: u8) {
+    // XXX This value of 11 is taken from Mednafen. Technically we only consume 4 samples (at most)
+    // per cycle so >= 4 would do the trick but apparently the original hardware decodes ahead.
+    // This is important if the IRQ is enabled since it means that it would trigger a bit earlier
+    // when the block is read.
+    //
+    // This is still not entirely cycle accurate, so we could be improved further with more
+    // testing. Mednafen's codebase has a few comments giving hints on what could be done. More
+    // testing required.
+    if psx.spu[voice].decoder_fifo.len() >= 11 {
+        // We have enough data in the decoder FIFO, no need to decode more
+        if psx.spu.irq_enabled() {
+            // Test prev address
+            unimplemented!();
+        }
+    } else {
+        // True if we're starting a new ADPCM block
+        let new_block = psx.spu[voice].cur_index % 8 == 0;
+
+        if new_block {
+            // Check if looping has been requested in the previous block
+            if psx.spu[voice].maybe_loop() {
+                psx.spu.voice_looped |= 1 << voice;
+
+                // Mednafen doesn't apply the "release and mute" block flag if we're in noise
+                // mode. No$ doesn't seem to mention this corner case, but I suppose that it makes
+                // sense to ignore decoder envelope changes if we don't use the data.
+                if !psx.spu.is_noise(voice) {
+                    psx.spu[voice].maybe_release();
+                }
+            }
+        }
+
+        if psx.spu.irq_enabled() {
+            // Test current address
+            unimplemented!();
+        }
+
+        if new_block {
+            // We're starting a new block
+            let header = ram_read(psx, psx.spu[voice].cur_index);
+
+            psx.spu[voice].set_block_header(header);
+            psx.spu[voice].next_index();
+        }
+
+        // Decode 4 samples
+        let encoded = ram_read(psx, psx.spu[voice].cur_index);
+        psx.spu[voice].next_index();
+        psx.spu[voice].decode(encoded);
+    }
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
@@ -150,14 +368,29 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::voice::VOLUME_RIGHT => voice.volume[1].set_config(val),
             regmap::voice::ADPCM_STEP_LENGTH => voice.step_length = val,
             regmap::voice::ADPCM_START_INDEX => voice.set_start_index(to_ram_index(val)),
-            regmap::voice::ADPCM_ADSR_LO => voice.adsr.set_lo(val),
-            regmap::voice::ADPCM_ADSR_HI => voice.adsr.set_hi(val),
+            regmap::voice::ADPCM_ADSR_LO => voice.adsr.set_conf_lo(val),
+            regmap::voice::ADPCM_ADSR_HI => voice.adsr.set_conf_hi(val),
+            regmap::voice::CURRENT_ADSR_VOLUME => unimplemented!(),
+            regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
             _ => (),
         }
     } else {
         match index {
             regmap::MAIN_VOLUME_LEFT => psx.spu.main_volume[0].set_config(val),
             regmap::MAIN_VOLUME_RIGHT => psx.spu.main_volume[1].set_config(val),
+            regmap::VOICE_ON_LO => to_lo(&mut psx.spu.voice_start, val),
+            regmap::VOICE_ON_HI => to_hi(&mut psx.spu.voice_start, val),
+            regmap::VOICE_OFF_LO => to_lo(&mut psx.spu.voice_stop, val),
+            regmap::VOICE_OFF_HI => to_hi(&mut psx.spu.voice_stop, val),
+            regmap::VOICE_FM_MOD_EN_LO => {
+                // Voice 0 cannot be frequency modulated
+                to_lo(&mut psx.spu.noise_mode, val & !1);
+            }
+            regmap::VOICE_FM_MOD_EN_HI => to_hi(&mut psx.spu.noise_mode, val),
+            regmap::VOICE_NOISE_EN_LO => to_lo(&mut psx.spu.noise_mode, val),
+            regmap::VOICE_NOISE_EN_HI => to_hi(&mut psx.spu.noise_mode, val),
+            regmap::VOICE_STATUS_LO => to_lo(&mut psx.spu.voice_looped, val),
+            regmap::VOICE_STATUS_HI => to_hi(&mut psx.spu.voice_looped, val),
             regmap::TRANSFER_START_INDEX => psx.spu.ram_index = to_ram_index(val),
             regmap::TRANSFER_FIFO => transfer(psx, val),
             regmap::CONTROL => {
@@ -203,14 +436,14 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
         let voice = &psx.spu.voices[index >> 3];
 
         match index & 7 {
-            regmap::voice::CURRENT_ADSR_VOLUME => voice.level(),
+            regmap::voice::CURRENT_ADSR_VOLUME => voice.level() as u16,
             regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
             _ => reg_v,
         }
     } else {
         match index {
-            regmap::VOICE_STATUS_LO => unimplemented!(),
-            regmap::VOICE_STATUS_HI => unimplemented!(),
+            regmap::VOICE_STATUS_LO => psx.spu.voice_looped as u16,
+            regmap::VOICE_STATUS_HI => (psx.spu.voice_looped >> 16) as u16,
             regmap::TRANSFER_FIFO => unimplemented!(),
             regmap::CURRENT_VOLUME_LEFT => unimplemented!(),
             regmap::CURRENT_VOLUME_RIGHT => unimplemented!(),
@@ -246,6 +479,14 @@ fn ram_write(psx: &mut Psx, index: RamIndex, val: u16) {
     psx.spu.ram[index] = val;
 }
 
+fn ram_read(psx: &mut Psx, index: RamIndex) -> u16 {
+    let index = index as usize;
+
+    debug_assert!(index < psx.spu.ram.len());
+
+    psx.spu.ram[index]
+}
+
 /// Trigger an IRQ if it's enabled in the control register and `addr` is equal to the `irq_addr`
 fn check_for_irq(psx: &mut Psx, index: RamIndex) {
     if psx.spu.irq_enabled() && index == psx.spu.irq_addr {
@@ -254,14 +495,34 @@ fn check_for_irq(psx: &mut Psx, index: RamIndex) {
     }
 }
 
-struct Voice {
-    /// Voice volume, left and riht
+pub struct Voice {
+    /// Voice volume, left and right
     volume: [VolumeSweep; 2],
+    /// Attack Decay Sustain Release envelope
     adsr: Adsr,
     /// This value configures how fast the samples are played on this voice, which effectively
     /// changes the frequency of the output audio.
+    ///
+    /// The value is a 14 bit fixed point integer with 12 fractional bits
     step_length: u16,
+    /// Remaining fractional steps carried between cycles, giving up the effective phase of the
+    /// voice. 12 fractional bits.
+    phase: u16,
+    /// Value `cur_index` will take upon voice start
     start_index: RamIndex,
+    /// Current index in SPU RAM for this voice
+    cur_index: RamIndex,
+    /// Target address for `cur_index` when an ADPCM block requests looping
+    loop_index: RamIndex,
+    /// Header for the current ADPCM block
+    block_header: AdpcmHeader,
+    /// Last two ADPCM-decoded samples, used to extrapolate the next one
+    last_samples: [i16; 2],
+    /// FIFO containing the samples that have been decoded but not yet output
+    decoder_fifo: DecoderFifo,
+    /// Delay (in SPU cycles) between the moment a voice is enabled and the moment the envelope
+    /// and frequency functions start running
+    start_delay: u8,
 }
 
 impl Voice {
@@ -270,8 +531,45 @@ impl Voice {
             volume: [VolumeSweep::new(), VolumeSweep::new()],
             adsr: Adsr::new(),
             step_length: 0,
+            phase: 0,
             start_index: 0,
+            cur_index: 0,
+            loop_index: 0,
+            block_header: AdpcmHeader(0),
+            last_samples: [0; 2],
+            decoder_fifo: DecoderFifo::new(),
+            start_delay: 0,
         }
+    }
+
+    /// Perform a loop if it was requested by the previously decoded block. Returns `true` if a
+    /// loop has taken place
+    fn maybe_loop(&mut self) -> bool {
+        let do_loop = self.block_header.loop_end();
+
+        if do_loop {
+            self.cur_index = self.loop_index & !7;
+        }
+
+        do_loop
+    }
+
+    /// Release if it was requested by the previously decoded block. Should only be called if the
+    /// block also requested looping.
+    fn maybe_release(&mut self) {
+        debug_assert!(self.block_header.loop_end());
+        if self.block_header.loop_release_and_mute() {
+            // XXX Mednafen only change the ADSR step and doesn't reset the divider but there's
+            // a comment wondering if it should be reset too. To keep the code simpler here I
+            // simply call the same function used when a voice is stopped.
+            self.adsr.release();
+            self.adsr.level = 0;
+        }
+    }
+
+    /// Increment `cur_index`, wrapping to 0 if we've reached the end of the SPU RAM
+    fn next_index(&mut self) {
+        self.cur_index = (self.cur_index + 1) % SPU_RAM_SIZE as u32;
     }
 
     fn set_start_index(&mut self, addr: RamIndex) {
@@ -279,9 +577,127 @@ impl Voice {
         self.start_index = addr & !7;
     }
 
-    fn level(&self) -> u16 {
-        // TODO
-        0
+    fn level(&self) -> i16 {
+        self.adsr.level
+    }
+
+    fn set_block_header(&mut self, header: u16) {
+        self.block_header = AdpcmHeader(header);
+
+        if self.block_header.loop_start() {
+            self.loop_index = self.cur_index;
+        }
+    }
+
+    /// Decode 4 samples from an ADPCM block
+    fn decode(&mut self, mut encoded: u16) {
+        let (wp, wn) = self.block_header.weights();
+        let mut shift = self.block_header.shift();
+
+        // Taken from Mednafen: normally the shift value should be between 0 and 12 since otherwise
+        // you lose precision. Apparently when that happens we only keep the sign bit and extend it
+        // 8 times.
+        //
+        // XXX Should probably be tested on real hardware and added as a test.
+        if shift > 12 {
+            encoded &= 0x8888;
+            shift = 8;
+        }
+
+        // Decode the four 4bit samples
+        for _ in 0..4 {
+            // Extract the 4 bits and convert to signed to get proper sign extension when shifting
+            let mut sample = (encoded & 0xf000) as i16;
+            // Prepare the sample for the next iteration
+            encoded >>= 4;
+
+            sample >>= shift;
+
+            let mut sample = i32::from(sample);
+
+            // Previous sample
+            let sample_1 = self.last_samples[0] as i32;
+            // Antepenultimate sample
+            let sample_2 = self.last_samples[1] as i32;
+
+            // Extrapolate with sample -1 using the positive weight
+            sample += (sample_1 * wp) >> 6;
+            // Extrapolate with sample -2 using the negative weight
+            sample += (sample_2 * wn) >> 6;
+
+            let sample = saturate_to_i16(sample);
+            self.decoder_fifo.push(sample);
+
+            // Shift `last_samples` for the next sample
+            self.last_samples[1] = self.last_samples[0];
+            self.last_samples[0] = sample;
+        }
+    }
+
+    /// Returns the next "raw" decoded sample for this voice, meaning the post-ADPCM decode and
+    /// resampling but pre-ADSR.
+    fn next_raw_sample(&self) -> i32 {
+        // TODO: implement 4-tap FIR filter
+        i32::from(self.decoder_fifo[0])
+    }
+
+    /// Apply the Attack Decay Sustain Release envelope to a sample
+    fn apply_enveloppe(&self, sample: i32) -> i32 {
+        let level = i32::from(self.adsr.level);
+
+        (sample * level) >> 15
+    }
+
+    /// Apply left and right volume levels
+    fn apply_stereo(&self, sample: i32) -> (i32, i32) {
+        // XXX TODO
+        let left_vol = 0x4000i32;
+        let right_vol = 0x4000i32;
+
+        ((sample * left_vol) >> 15, (sample * right_vol) >> 15)
+    }
+
+    /// Reinitialize voice
+    fn restart(&mut self) {
+        self.adsr.attack();
+        self.phase = 0;
+        self.cur_index = self.start_index & !7;
+        self.block_header = AdpcmHeader(0);
+        self.last_samples = [0; 2];
+        self.decoder_fifo.clear();
+        self.start_delay = 4;
+    }
+
+    /// Put the ADSR enveloppe in "release" state if it's not already
+    fn release(&mut self) {
+        self.adsr.release();
+    }
+
+    /// Set the envelope's volume to 0
+    fn mute(&mut self) {
+        self.adsr.level = 0;
+    }
+
+    fn consume_samples(&mut self, step: u16) {
+        let step = self.phase + step;
+
+        // Update phase with the remaining fractional part
+        self.phase = step & 0xfff;
+
+        // Consume samples as needed
+        let consumed = step >> 12;
+        self.decoder_fifo.discard(consumed as usize);
+    }
+}
+
+/// Saturating cast from i32 to i16
+fn saturate_to_i16(v: i32) -> i16 {
+    if v < i16::min_value() as i32 {
+        i16::min_value()
+    } else if v > i16::max_value() as i32 {
+        i16::max_value()
+    } else {
+        v as i16
     }
 }
 
@@ -298,12 +714,45 @@ impl VolumeSweep {
     }
 }
 
-/// Attack Delay Sustain Release envelope configuration
-struct Adsr(u32);
+/// Attack Decay Sustain Release envelope
+struct Adsr {
+    config: AdsrConfig,
+    /// Current audio level for this envelope
+    level: i16,
+}
 
 impl Adsr {
     fn new() -> Adsr {
-        Adsr(0)
+        Adsr {
+            config: AdsrConfig::new(),
+            level: 0,
+        }
+    }
+
+    fn set_conf_lo(&mut self, v: u16) {
+        self.config.set_lo(v);
+    }
+
+    fn set_conf_hi(&mut self, v: u16) {
+        self.config.set_hi(v);
+    }
+
+    fn release(&mut self) {
+        // XXX TODO
+        self.level = 0;
+    }
+
+    fn attack(&mut self) {
+        // XXX TODO
+        self.level = 0x4000;
+    }
+}
+
+struct AdsrConfig(u32);
+
+impl AdsrConfig {
+    fn new() -> AdsrConfig {
+        AdsrConfig(0)
     }
 
     fn set_lo(&mut self, v: u16) {
@@ -312,6 +761,62 @@ impl Adsr {
 
     fn set_hi(&mut self, v: u16) {
         to_hi(&mut self.0, v);
+    }
+}
+
+/// The first two bytes of a 16-byte ADPCM block
+#[derive(Copy, Clone)]
+struct AdpcmHeader(u16);
+
+impl AdpcmHeader {
+    /// If true the current block is the last one of the loop sequence
+    fn loop_end(self) -> bool {
+        self.0 & (1 << 8) != 0
+    }
+
+    /// If true (and loop_end() is also true) we must release the envelope and set the volume
+    /// to 0
+    fn loop_release_and_mute(self) -> bool {
+        // Shouldn't be called if `loop_end` is false
+        debug_assert!(self.loop_end());
+        self.0 & (1 << 8) != 0
+    }
+
+    /// If true the current block is the target for a subsequent loop_end block.
+    fn loop_start(self) -> bool {
+        self.0 & (1 << 10) != 0
+    }
+
+    /// Returns the pair of positive and negative weights described in the header
+    fn weights(self) -> (i32, i32) {
+        // Weights taken from No$, Mednafen use the same values.
+        let w: [(i32, i32); 16] = [
+            (0, 0),
+            (60, 0),
+            (115, -52),
+            (98, -55),
+            (122, -60),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+            (0, 0),
+        ];
+
+        let off = (self.0 >> 4) & 0xf;
+
+        w[off as usize]
+    }
+
+    /// Right shift value to apply to extended encoded samples
+    fn shift(self) -> u8 {
+        (self.0 & 0xf) as u8
     }
 }
 

@@ -118,7 +118,12 @@ impl Context {
 
         let bios = find_bios(|md| md.region == region)?;
 
-        let psx = psx::Psx::new_with_disc(disc, bios)?;
+        let audio_callback = Box::new(|samples: &[i16]| {
+            debug_assert!(samples.len() % 2 == 0);
+            libretro::send_audio_samples(samples);
+        });
+
+        let psx = psx::Psx::new_with_disc(audio_callback, disc, bios)?;
 
         Ok(psx)
     }

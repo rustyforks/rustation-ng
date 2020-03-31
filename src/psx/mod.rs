@@ -58,16 +58,29 @@ pub struct Psx {
     dma_timing_penalty: CycleCount,
     /// When this variable is `true` the CPU is stopped for DMA operation
     cpu_stalled_for_dma: bool,
+    /// Audio callback
+    audio_callback: Box<dyn FnMut(&[i16])>,
 }
 
 impl Psx {
-    pub fn new_with_disc(disc: disc::Disc, bios: bios::Bios) -> Result<Psx> {
+    pub fn new_with_disc(
+        audio_callback: Box<dyn FnMut(&[i16])>,
+        disc: disc::Disc,
+        bios: bios::Bios,
+    ) -> Result<Psx> {
         let standard = disc.region().video_standard();
 
-        Ok(Psx::new_with_bios(Some(disc), bios, standard))
+        Ok(Psx::new_with_bios(
+            audio_callback,
+            Some(disc),
+            bios,
+            standard,
+        ))
     }
 
     pub fn new_with_bios(
+        audio_callback: Box<dyn FnMut(&[i16])>,
+
         disc: Option<disc::Disc>,
         bios: bios::Bios,
         standard: gpu::VideoStandard,
@@ -94,6 +107,7 @@ impl Psx {
             cache_control: 0,
             dma_timing_penalty: 0,
             cpu_stalled_for_dma: false,
+            audio_callback,
         }
     }
 
