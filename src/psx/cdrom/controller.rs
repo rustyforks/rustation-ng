@@ -358,14 +358,16 @@ pub fn predict_next_sync(psx: &mut Psx) -> CycleCount {
     let mut next_sync = 1_000_000;
 
     // Check for command completion
-    if controller.in_command() && controller.sequence_timer < next_sync {
-        next_sync = controller.sequence_timer;
-    }
-
-    // Check for async response
-    if let Some((delay, _)) = controller.async_response {
-        if delay < next_sync {
-            next_sync = delay;
+    if controller.in_command() {
+        if controller.sequence_timer < next_sync {
+            next_sync = controller.sequence_timer;
+        }
+    } else {
+        // Check for async response.
+        if let Some((delay, _)) = controller.async_response {
+            if delay < next_sync {
+                next_sync = delay;
+            }
         }
     }
 

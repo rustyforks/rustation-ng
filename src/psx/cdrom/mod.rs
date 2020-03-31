@@ -280,7 +280,10 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
 }
 
 pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
-    // XXX Mefnafen doesn't call `run` here, should we?
+    // XXX Mefnafen doesn't call `run` here for better performance and it doesn't really matter
+    // because it forces a sync for every audio cycle. If we start batching the audio we'll
+    // probably want to change that
+
     let v = match off {
         0 => psx.cdrom.host_status(),
         1 => {
