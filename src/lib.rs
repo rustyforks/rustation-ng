@@ -17,6 +17,9 @@
 #![allow(clippy::cast_lossless)]
 // I seem to get weird false positive in the GTE code for this one
 #![allow(clippy::redundant_closure_call)]
+// Wants to rewrite some numeric comparison chains as match when it doesn't make a lot of sense
+// IMO.
+#![allow(clippy::comparison_chain)]
 
 extern crate libc;
 #[macro_use]
