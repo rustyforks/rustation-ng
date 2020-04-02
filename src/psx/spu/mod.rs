@@ -368,6 +368,16 @@ fn run_voice_decoder(psx: &mut Psx, voice: u8) {
     }
 }
 
+/// Handle DMA writes
+pub fn dma_store(psx: &mut Psx, v: u32) {
+    let w1 = v as u16;
+    let w2 = (v >> 16) as u16;
+
+    // XXX Mednafen only checks for IRQ after the 2nd word.
+    transfer(psx, w1);
+    transfer(psx, w2);
+}
+
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
     // This is probably very heavy handed, mednafen only syncs from the CD code and never on
     // register access

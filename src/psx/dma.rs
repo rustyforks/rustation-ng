@@ -1,7 +1,7 @@
 //! The PlayStation DMA, that can be used to copy data between the RAM and various devices (GPU,
 //! CD drive, MDEC, SPU etc...)
 
-use super::{cdrom, gpu, irq, sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{cdrom, gpu, irq, spu, sync, AccessWidth, Addressable, CycleCount, Psx};
 use irq::IrqState;
 use std::ops::{Index, IndexMut};
 
@@ -318,15 +318,16 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                 unimplemented!("DMA address overflow");
             }
 
-            if control.is_from_ram() {
+            let delay = if control.is_from_ram() {
                 let v = psx.ram.load(cur_addr);
-                port_store(psx, port, v);
+                port_store(psx, port, v)
             } else {
                 let (v, read_delay) = port_load(psx, port);
                 psx.ram.store(cur_addr, v);
+                read_delay
+            };
 
-                psx.dma[port].clock_counter -= read_delay;
-            }
+            psx.dma[port].clock_counter -= delay;
 
             psx.dma[port].cur_address = 0xff_ffff
                 & if control.is_backwards() {
@@ -381,11 +382,13 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
 fn can_run(psx: &Psx, port: Port, write: bool) -> bool {
     if write {
         match port {
+            Port::Spu => true,
             Port::Gpu => psx.gpu.dma_can_write(),
             _ => unimplemented!("Can write {:?}?", port),
         }
     } else {
         match port {
+            Port::Spu => true,
             // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
             // `true`
             Port::Otc => psx.dma[port].control.is_started(),
@@ -396,10 +399,20 @@ fn can_run(psx: &Psx, port: Port, write: bool) -> bool {
     }
 }
 
-/// Perform a DMA port write
-fn port_store(psx: &mut Psx, port: Port, v: u32) {
+/// Perform a DMA port write. Returns the overhead of the write
+fn port_store(psx: &mut Psx, port: Port, v: u32) -> CycleCount {
     match port {
-        Port::Gpu => gpu::dma_store(psx, v),
+        Port::Spu => {
+            spu::dma_store(psx, v);
+            // XXX Mednafen has a long comment explaining where this value comes from (and mention
+            // that the average should be closer to 96). This is of course a wildly inaccurate
+            // approximation but let's not worry about that for the time being.
+            47
+        }
+        Port::Gpu => {
+            gpu::dma_store(psx, v);
+            0
+        }
         _ => unimplemented!("DMA port store {:?}", port),
     }
 }
