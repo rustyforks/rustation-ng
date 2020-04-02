@@ -404,8 +404,11 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::voice::ADPCM_START_INDEX => voice.set_start_index(to_ram_index(val)),
             regmap::voice::ADPCM_ADSR_LO => voice.adsr.set_conf_lo(val),
             regmap::voice::ADPCM_ADSR_HI => voice.adsr.set_conf_hi(val),
-            regmap::voice::CURRENT_ADSR_VOLUME => unimplemented!(),
-            regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
+            regmap::voice::CURRENT_ADSR_VOLUME => voice.set_level(val as i16),
+            regmap::voice::ADPCM_REPEAT_INDEX => {
+                let loop_index = (RamIndex::from(val) << 2) & 0x3_ffff;
+                voice.set_loop_index(loop_index);
+            }
             _ => (),
         }
     } else if index < 0x100 {
@@ -485,7 +488,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
 
         match index & 7 {
             regmap::voice::CURRENT_ADSR_VOLUME => voice.level() as u16,
-            regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
+            regmap::voice::ADPCM_REPEAT_INDEX => (voice.loop_index >> 2) as u16,
             _ => reg_v,
         }
     } else if index < 0x100 {
@@ -566,6 +569,9 @@ pub struct Voice {
     cur_index: RamIndex,
     /// Target address for `cur_index` when an ADPCM block requests looping
     loop_index: RamIndex,
+    /// True if `loop_index` has been configured through the register interface and any ADPCM loop
+    /// block should be ignored.
+    loop_index_force: bool,
     /// Header for the current ADPCM block
     block_header: AdpcmHeader,
     /// Last two ADPCM-decoded samples, used to extrapolate the next one
@@ -588,6 +594,7 @@ impl Voice {
             start_index: 0,
             cur_index: 0,
             loop_index: 0,
+            loop_index_force: false,
             block_header: AdpcmHeader(0),
             last_samples: [0; 2],
             decoder_fifo: DecoderFifo::new(),
@@ -630,6 +637,10 @@ impl Voice {
         self.start_index = addr & !7;
     }
 
+    fn set_level(&mut self, level: i16) {
+        self.adsr.set_level(level)
+    }
+
     fn level(&self) -> i16 {
         self.adsr.level
     }
@@ -637,9 +648,14 @@ impl Voice {
     fn set_block_header(&mut self, header: u16) {
         self.block_header = AdpcmHeader(header);
 
-        if self.block_header.loop_start() {
+        if !self.loop_index_force && self.block_header.loop_start() {
             self.loop_index = self.cur_index;
         }
+    }
+
+    fn set_loop_index(&mut self, loop_index: RamIndex) {
+        self.loop_index = loop_index;
+        self.loop_index_force = true;
     }
 
     /// Decode 4 samples from an ADPCM block
@@ -733,6 +749,7 @@ impl Voice {
         self.last_samples = [0; 2];
         self.decoder_fifo.clear();
         self.start_delay = 4;
+        self.loop_index_force = false;
     }
 
     /// Put the ADSR enveloppe in "release" state if it's not already
@@ -859,6 +876,10 @@ impl Adsr {
         adsr.refresh_params();
 
         adsr
+    }
+
+    fn set_level(&mut self, level: i16) {
+        self.level = level;
     }
 
     fn run_cycle(&mut self) {
