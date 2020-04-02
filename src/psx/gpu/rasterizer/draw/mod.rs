@@ -186,7 +186,8 @@ impl Rasterizer {
 
         // XXX implement masking
         if Transparency::is_transparent() {
-            unimplemented!();
+            // XXX TODO
+            *vram_pixel = Pixel::from_rgb(0xff, 0, 0);
         } else {
             *vram_pixel = color;
         };

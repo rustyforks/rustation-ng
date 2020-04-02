@@ -297,11 +297,6 @@ where
         npixels
     };
 
-    debug!(
-        "Draw triangle {:?}: npixels: {}, draw_time: {}",
-        coords, npixels, draw_time
-    );
-
     draw_time
 }
 
@@ -470,11 +465,6 @@ where
         // "base" time above. Not sure what's up with that.
         draw_time = (draw_time * 3) / 2
     };
-
-    debug!(
-        "Draw rectangle {:?} {}x{}: draw_time: {}",
-        top_left_corner, width, height, draw_time
-    );
 
     draw_time
 }
