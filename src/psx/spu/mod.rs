@@ -476,12 +476,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
         match index & 7 {
             regmap::voice::CURRENT_ADSR_VOLUME => voice.level() as u16,
             regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
-            _ => unimplemented!(
-                "SPU load index {:x} (off = {:x}, abs = {:x})",
-                index,
-                off,
-                0x1f80_1c00 + off
-            ),
+            _ => reg_v,
         }
     } else if index < 0x100 {
         match index {
