@@ -653,11 +653,9 @@ impl Voice {
         }
 
         // Decode the four 4bit samples
-        for _ in 0..4 {
+        for i in 0..4 {
             // Extract the 4 bits and convert to signed to get proper sign extension when shifting
-            let mut sample = (encoded & 0xf000) as i16;
-            // Prepare the sample for the next iteration
-            encoded >>= 4;
+            let mut sample = (encoded << (12 - i * 4) & 0xf000) as i16;
 
             sample >>= shift;
 
