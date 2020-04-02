@@ -25,8 +25,10 @@ pub struct Spu {
     irq_addr: RamIndex,
     /// True if the interrupt has been triggered and not yet ack'ed
     irq: bool,
-    /// Main volume, left and right
-    main_volume: [VolumeSweep; 2],
+    /// Main volume, left
+    main_volume_left: Volume,
+    /// Main volume, right
+    main_volume_right: Volume,
     /// The 24 individual voices
     voices: [Voice; 24],
     /// Which voices should be started (bitfield, one bit per voice)
@@ -34,9 +36,11 @@ pub struct Spu {
     /// Which voices should be stopped (bitfield, one bit per voice)
     voice_stop: u32,
     /// Configures which voices output LFSR noise (bitfield, one bit per voice)
-    noise_mode: u32,
+    voice_noise: u32,
+    /// Configures which voices are fed to the reverberation module (bitfield, one bit per voice)
+    voice_reverb: u32,
     /// Configures which voices are frequency modulated (bitfield, one bit per voice)
-    frequency_modulated: u32,
+    voice_frequency_modulated: u32,
     /// Status bits, cleared on start, set to 1 when loop_end is reached (bitfield, one bit per
     /// voice)
     voice_looped: u32,
@@ -59,7 +63,8 @@ impl Spu {
             capture_index: 0,
             irq_addr: 0,
             irq: false,
-            main_volume: [VolumeSweep::new(), VolumeSweep::new()],
+            main_volume_left: Volume::new(),
+            main_volume_right: Volume::new(),
             voices: [
                 Voice::new(),
                 Voice::new(),
@@ -88,8 +93,9 @@ impl Spu {
             ],
             voice_start: 0,
             voice_stop: 0,
-            noise_mode: 0,
-            frequency_modulated: 0,
+            voice_noise: 0,
+            voice_reverb: 0,
+            voice_frequency_modulated: 0,
             voice_looped: 0,
             regs: [0; 320],
             ram: [0; SPU_RAM_SIZE],
@@ -135,12 +141,12 @@ impl Spu {
 
     /// Returns true if `voice` is configured to output LFSR noise
     fn is_noise(&self, voice: u8) -> bool {
-        self.noise_mode & (1 << voice) != 0
+        self.voice_noise & (1 << voice) != 0
     }
 
     /// Returns true if frequency modulation is enabled for `voice`
     fn is_frequency_modulated(&self, voice: u8) -> bool {
-        self.frequency_modulated & (1 << voice) != 0
+        self.voice_frequency_modulated & (1 << voice) != 0
     }
 
     /// Returns true if voice should be started
@@ -151,6 +157,11 @@ impl Spu {
     /// Returns true if voice should be stopped
     fn is_voice_stopped(&self, voice: u8) -> bool {
         self.voice_stop & (1 << voice) != 0
+    }
+
+    /// Returns true if voice should be fed to the reverberation module
+    fn is_voice_reverberated(&self, voice: u8) -> bool {
+        self.voice_reverb & (1 << voice) != 0
     }
 }
 
@@ -214,11 +225,23 @@ fn run_cycle(psx: &mut Psx) {
 
         left_mix += left;
         right_mix += right;
+
+        if psx.spu.is_voice_reverberated(voice) {
+            unimplemented!()
+        }
     }
 
     // Voice start/stop should've been processed by `run_voice_cycle`
     psx.spu.voice_start = 0;
     psx.spu.voice_stop = 0;
+
+    // XXX Handle SPU mute
+
+    left_mix = psx.spu.main_volume_left.apply_level(left_mix);
+    right_mix = psx.spu.main_volume_right.apply_level(right_mix);
+
+    psx.spu.main_volume_left.run_sweep_cycle();
+    psx.spu.main_volume_right.run_sweep_cycle();
 
     psx.spu.capture_index += 1;
     psx.spu.capture_index &= 0x1ff;
@@ -251,7 +274,7 @@ fn run_voice_cycle(psx: &mut Psx, voice: u8) -> (i32, i32) {
 
     let (left, right) = psx.spu[voice].apply_stereo(sample);
 
-    // XXX Run sweep
+    psx.spu[voice].run_sweep_cycle();
 
     if psx.spu[voice].start_delay > 0 {
         // We're still in the start delay, we don't run the envelope or frequency sweep yet
@@ -259,7 +282,7 @@ fn run_voice_cycle(psx: &mut Psx, voice: u8) -> (i32, i32) {
     } else {
         psx.spu[voice].run_envelope_cycle();
 
-        let mut step = u32::from(psx.spu[voice].step_length);
+        let step = u32::from(psx.spu[voice].step_length);
 
         if psx.spu.is_frequency_modulated(voice) {
             // Voice 0 cannot be frequency modulated
@@ -268,11 +291,9 @@ fn run_voice_cycle(psx: &mut Psx, voice: u8) -> (i32, i32) {
             unimplemented!();
         }
 
-        if step > 0x3fff {
-            step = 0x3fff;
-        }
+        let step = if step > 0x3fff { 0x3fff } else { step as u16 };
 
-        psx.spu[voice].consume_samples(step as u16);
+        psx.spu[voice].consume_samples(step);
     }
 
     if psx.spu.is_voice_stopped(voice) {
@@ -367,8 +388,8 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
         let voice = &mut psx.spu.voices[index >> 3];
 
         match index & 7 {
-            regmap::voice::VOLUME_LEFT => voice.volume[0].set_config(val),
-            regmap::voice::VOLUME_RIGHT => voice.volume[1].set_config(val),
+            regmap::voice::VOLUME_LEFT => voice.volume_left.set_config(val),
+            regmap::voice::VOLUME_RIGHT => voice.volume_right.set_config(val),
             regmap::voice::ADPCM_STEP_LENGTH => voice.step_length = val,
             regmap::voice::ADPCM_START_INDEX => voice.set_start_index(to_ram_index(val)),
             regmap::voice::ADPCM_ADSR_LO => voice.adsr.set_conf_lo(val),
@@ -377,23 +398,28 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
             _ => (),
         }
-    } else {
+    } else if index < 0x100 {
         match index {
-            regmap::MAIN_VOLUME_LEFT => psx.spu.main_volume[0].set_config(val),
-            regmap::MAIN_VOLUME_RIGHT => psx.spu.main_volume[1].set_config(val),
+            regmap::MAIN_VOLUME_LEFT => psx.spu.main_volume_left.set_config(val),
+            regmap::MAIN_VOLUME_RIGHT => psx.spu.main_volume_right.set_config(val),
+            regmap::REVERB_VOLUME_LEFT => (),
+            regmap::REVERB_VOLUME_RIGHT => (),
             regmap::VOICE_ON_LO => to_lo(&mut psx.spu.voice_start, val),
             regmap::VOICE_ON_HI => to_hi(&mut psx.spu.voice_start, val),
             regmap::VOICE_OFF_LO => to_lo(&mut psx.spu.voice_stop, val),
             regmap::VOICE_OFF_HI => to_hi(&mut psx.spu.voice_stop, val),
             regmap::VOICE_FM_MOD_EN_LO => {
                 // Voice 0 cannot be frequency modulated
-                to_lo(&mut psx.spu.noise_mode, val & !1);
+                to_lo(&mut psx.spu.voice_frequency_modulated, val & !1);
             }
-            regmap::VOICE_FM_MOD_EN_HI => to_hi(&mut psx.spu.noise_mode, val),
-            regmap::VOICE_NOISE_EN_LO => to_lo(&mut psx.spu.noise_mode, val),
-            regmap::VOICE_NOISE_EN_HI => to_hi(&mut psx.spu.noise_mode, val),
+            regmap::VOICE_FM_MOD_EN_HI => to_hi(&mut psx.spu.voice_frequency_modulated, val),
+            regmap::VOICE_NOISE_EN_LO => to_lo(&mut psx.spu.voice_noise, val),
+            regmap::VOICE_NOISE_EN_HI => to_hi(&mut psx.spu.voice_noise, val),
+            regmap::VOICE_REVERB_EN_LO => (),
+            regmap::VOICE_REVERB_EN_HI => (),
             regmap::VOICE_STATUS_LO => to_lo(&mut psx.spu.voice_looped, val),
             regmap::VOICE_STATUS_HI => to_hi(&mut psx.spu.voice_looped, val),
+            regmap::REVERB_BASE => (),
             regmap::TRANSFER_START_INDEX => psx.spu.ram_index = to_ram_index(val),
             regmap::TRANSFER_FIFO => transfer(psx, val),
             regmap::CONTROL => {
@@ -413,8 +439,21 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                     warn!("SPU TRANSFER_CONTROL set to 0x{:x}", val);
                 }
             }
-            _ => (),
+            regmap::CD_VOLUME_LEFT => (),
+            regmap::CD_VOLUME_RIGHT => (),
+            regmap::EXT_VOLUME_LEFT => (),
+            regmap::EXT_VOLUME_RIGHT => (),
+            // Reverb configuration
+            regmap::REVERB_APF_OFFSET1..=regmap::REVERB_INPUT_VOLUME_RIGHT => (),
+            _ => unimplemented!(
+                "SPU store index {:x} (off = {:x}, abs = {:x})",
+                index,
+                off,
+                0x1f80_1c00 + off
+            ),
         }
+    } else {
+        unimplemented!("Internal SPU register store");
     }
 }
 
@@ -429,10 +468,6 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
 
     let index = (off >> 1) as usize;
 
-    if index > 0x100 {
-        unimplemented!();
-    }
-
     let reg_v = psx.spu.regs[index];
 
     let v = if index < 0xc0 {
@@ -441,19 +476,26 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
         match index & 7 {
             regmap::voice::CURRENT_ADSR_VOLUME => voice.level() as u16,
             regmap::voice::ADPCM_REPEAT_INDEX => unimplemented!(),
-            _ => reg_v,
+            _ => unimplemented!(
+                "SPU load index {:x} (off = {:x}, abs = {:x})",
+                index,
+                off,
+                0x1f80_1c00 + off
+            ),
         }
-    } else {
+    } else if index < 0x100 {
         match index {
             regmap::VOICE_STATUS_LO => psx.spu.voice_looped as u16,
             regmap::VOICE_STATUS_HI => (psx.spu.voice_looped >> 16) as u16,
             regmap::TRANSFER_FIFO => unimplemented!(),
-            regmap::CURRENT_VOLUME_LEFT => unimplemented!(),
-            regmap::CURRENT_VOLUME_RIGHT => unimplemented!(),
+            regmap::CURRENT_VOLUME_LEFT => psx.spu.main_volume_left.level() as u16,
+            regmap::CURRENT_VOLUME_RIGHT => psx.spu.main_volume_right.level() as u16,
             // Nobody seems to know what this register is for, but mednafen returns 0
             regmap::UNKNOWN => return T::from_u32(0),
             _ => reg_v,
         }
+    } else {
+        unimplemented!("Internal SPU register load");
     };
 
     T::from_u32(u32::from(v))
@@ -499,8 +541,10 @@ fn check_for_irq(psx: &mut Psx, index: RamIndex) {
 }
 
 pub struct Voice {
-    /// Voice volume, left and right
-    volume: [VolumeSweep; 2],
+    /// Voice volume left
+    volume_left: Volume,
+    /// Voice volume right
+    volume_right: Volume,
     /// Attack Decay Sustain Release envelope
     adsr: Adsr,
     /// This value configures how fast the samples are played on this voice, which effectively
@@ -531,7 +575,8 @@ pub struct Voice {
 impl Voice {
     fn new() -> Voice {
         Voice {
-            volume: [VolumeSweep::new(), VolumeSweep::new()],
+            volume_left: Volume::new(),
+            volume_right: Volume::new(),
             adsr: Adsr::new(),
             step_length: 0,
             phase: 0,
@@ -656,6 +701,11 @@ impl Voice {
         self.adsr.run_cycle();
     }
 
+    fn run_sweep_cycle(&mut self) {
+        self.volume_left.run_sweep_cycle();
+        self.volume_right.run_sweep_cycle();
+    }
+
     /// Apply the Attack Decay Sustain Release envelope to a sample
     fn apply_enveloppe(&self, sample: i32) -> i32 {
         let level = i32::from(self.adsr.level);
@@ -665,11 +715,10 @@ impl Voice {
 
     /// Apply left and right volume levels
     fn apply_stereo(&self, sample: i32) -> (i32, i32) {
-        // XXX TODO
-        let left_vol = 0x4000i32;
-        let right_vol = 0x4000i32;
-
-        ((sample * left_vol) >> 15, (sample * right_vol) >> 15)
+        (
+            self.volume_left.apply_level(sample),
+            self.volume_right.apply_level(sample),
+        )
     }
 
     /// Reinitialize voice
@@ -716,17 +765,59 @@ fn saturate_to_i16(v: i32) -> i16 {
     }
 }
 
-/// Volume configuration, either fixed or a sweep
-struct VolumeSweep(u16);
+struct Volume {
+    level: i16,
+    config: VolumeConfig,
+}
 
-impl VolumeSweep {
-    fn new() -> VolumeSweep {
-        VolumeSweep(0)
+impl Volume {
+    fn new() -> Volume {
+        Volume {
+            level: 0,
+            config: VolumeConfig::Fixed(0),
+        }
     }
 
     fn set_config(&mut self, conf: u16) {
-        self.0 = conf
+        let fixed = conf & 0x8000 == 0;
+
+        self.config = if fixed {
+            let level = (conf << 1) as i16;
+
+            VolumeConfig::Fixed(level)
+        } else {
+            // XXX TODO
+            VolumeConfig::Sweep(EnvelopeParams::new())
+        };
+        // XXX should we update self.level right now? Mefnaden waits for the next call to
+        // run_sweep_cycle but that takes place after the level is read.
     }
+
+    fn level(&self) -> i16 {
+        self.level
+    }
+
+    /// Apply current level to a sound sample
+    fn apply_level(&self, sample: i32) -> i32 {
+        let level = self.level as i32;
+
+        (sample * level) >> 15
+    }
+
+    fn run_sweep_cycle(&mut self) {
+        self.level = match self.config {
+            VolumeConfig::Fixed(l) => l,
+            VolumeConfig::Sweep(_) => unimplemented!(),
+        };
+    }
+}
+
+/// Volume configuration, either fixed or a sweep
+enum VolumeConfig {
+    /// Fixed volume
+    Fixed(i16),
+    /// Sweep
+    Sweep(EnvelopeParams),
 }
 
 /// Attack Decay Sustain Release envelope
