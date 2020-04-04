@@ -1,9 +1,12 @@
 //! Implementation of the CD drive microcontroller
 
+use std::cmp::max;
+
 use super::disc;
 use super::disc::Disc;
 use super::simple_rand::SimpleRand;
 use super::Fifo;
+use crate::psx::cpu::CPU_FREQ_HZ;
 use crate::psx::{CycleCount, Psx};
 
 use cdimage::msf::Msf;
@@ -29,13 +32,19 @@ pub struct Controller {
     /// the asynchronous command handler and the number of CPU cycles
     /// until the asynch handler must be run.
     async_response: Option<(CycleCount, AsyncResponse)>,
-    /// Variable holding the CD read state
-    read_state: ReadState,
-    /// True if a sector has been read but not yet notified
-    read_pending: bool,
-    /// Target of the next seek command
+    /// Variable holding the drive state
+    drive_state: DriveState,
+    /// Contains the number of cycles until the next sector read (if any). Note that even when
+    /// paused the drive continuously reads sectors, it just handles them differently depending on
+    /// the current state.
+    next_sector: Option<CycleCount>,
+    /// Holds a pending asynchronous notification (e.g. sector read), if any
+    pending_notification: Option<IrqCode>,
+    /// Target of the last seek command
     seek_target: Msf,
-    /// True if `seek_target` has been set but no seek took place
+    /// Target of the next seek command
+    next_seek_target: Msf,
+    /// True if `next_seek_target` has been modified but no seek has taken place
     seek_target_pending: bool,
     /// Current read position
     position: Msf,
@@ -71,19 +80,27 @@ pub struct Controller {
 
 impl Controller {
     pub fn new(disc: Option<Disc>) -> Controller {
+        // Put start position at beginning of track 01 (at INDEX 01, after the pregap)
+        //
+        // XXX I'm not entirely sure what the real value is at startup (or after stop/reset
+        // commands, which is potentially more annoying)
+        let position = Msf::from_bcd(0x00, 0x02, 0x00).unwrap();
+
         Controller {
             disc,
-            read_pending: false,
-            read_state: ReadState::Idle,
+            drive_state: DriveState::Idle,
+            next_sector: None,
+            pending_notification: None,
             sequence: ControllerSequence::Idle,
             sequence_timer: 0,
             params: Fifo::new(),
             response: Fifo::new(),
             irq_code: IrqCode::Ok,
             async_response: None,
-            seek_target: Msf::zero(),
+            seek_target: position,
+            next_seek_target: Msf::zero(),
             seek_target_pending: false,
-            position: Msf::zero(),
+            position,
             double_speed: false,
             xa_adpcm_to_spu: false,
             read_whole_sector: true,
@@ -106,18 +123,18 @@ impl Controller {
             return 0x10;
         }
 
+        let motor_on = 1 << 1;
+
         // XXX on the real hardware bit 4 is always set the first time this command is called
         // even if the console is booted with the tray closed. Using the "get_stat" command
         // command clears it however.
-        let mut r = 0;
-
-        let reading = !self.read_state.is_idle();
-
-        // Motor on
-        r |= 1 << 1;
-        r |= (reading as u8) << 5;
-
-        r
+        match self.drive_state {
+            DriveState::Idle => 0,
+            DriveState::Reading => motor_on | (1 << 5),
+            DriveState::Seeking(_, _) => motor_on | (1 << 6),
+            DriveState::Paused => motor_on,
+            DriveState::ReadToc => motor_on, // XXX not sure about this one
+        }
     }
 
     /// Push the drive status in the response FIFO
@@ -143,9 +160,9 @@ impl Controller {
         // Let's compute the seemingly pseudo-random command pending delay. Of course in reality
         // the delay is not truly random, it depends on the controller's internal state but since
         // we don't LLE it this is the best we can do right now.
-        let delta = self.rand.next() as CycleCount % timings::COMMAND_PENDING_VARIATION;
-
-        self.sequence_timer = timings::COMMAND_PENDING + delta;
+        let min = timings::COMMAND_PENDING.0 as u32;
+        let max = timings::COMMAND_PENDING.1 as u32;
+        self.sequence_timer = self.rand.get(min, max) as CycleCount;
 
         // Assume the command will be succesful, let the command
         // handler override that if something goes wrong.
@@ -195,28 +212,110 @@ impl Controller {
         self.irq_code = IrqCode::AsyncOk;
     }
 
-    pub fn set_sector_ready(&mut self) {
-        self.irq_code = IrqCode::SectorReady;
+    /// Queue a notification that will be triggered as soon as no other events are pending
+    pub fn notify(&mut self, code: IrqCode) {
+        if let Some(n) = self.pending_notification {
+            // I suppose the previous one is simply discarded but requires more tests
+            unimplemented!(
+                "Notification-within-notification! ({:?} while {:?}",
+                code,
+                n
+            );
+        }
 
-        self.response.clear();
-        self.response.push(self.drive_status());
+        self.pending_notification = Some(code);
+    }
 
-        self.sequence = ControllerSequence::AsyncRxPush;
-        self.sequence_timer = timings::READ_RX_PUSH;
-        self.read_pending = false;
+    pub fn maybe_process_notification(&mut self) {
+        if let Some(irq) = self.pending_notification {
+            if self.in_command() {
+                // Can't perform notification now (I think? Otherwise the software won't be able to
+                // differentiate between a notification and a command result).
+                return;
+            }
+
+            self.irq_code = irq;
+
+            self.response.clear();
+            // XXX Is it the drive status at the moment the notification is triggered or when the
+            // notification was first queued?
+            self.push_drive_status();
+
+            self.sequence = ControllerSequence::AsyncRxPush;
+            self.sequence_timer = timings::READ_RX_PUSH;
+            self.pending_notification = None;
+        }
     }
 
     /// Execute a pending seek (if any). On the real console that would mean physically moving the
-    /// read head.
-    fn do_seek(&mut self) {
-        // Make sure we don't end up in track1's pregap, I don't know
-        // if it's ever useful? Needs special handling at least...
-        if self.seek_target < Msf::from_bcd(0x00, 0x02, 0x00).unwrap() {
-            panic!("Seek to track 1 pregap: {}", self.seek_target);
+    /// read head. Returns the estimated seek time.
+    fn do_seek(&mut self, seek_type: SeekType, after_seek: AfterSeek) -> CycleCount {
+        self.seek_target = self.next_seek_target;
+        self.seek_target_pending = false;
+        self.drive_state = DriveState::Seeking(seek_type, after_seek);
+
+        let mut seek_time = self.estimate_seek_time();
+
+        if after_seek == AfterSeek::Read {
+            // XXX That's what Mefnaden does. Wouldn't it make more sense to be seeking for the
+            // normal amount of time and *then* switch to Read mode for one sector worth of time
+            // before we get the actual sector data ?
+            seek_time += self.cycles_per_sector();
         }
 
+        self.next_sector = Some(seek_time);
+
         self.position = self.seek_target;
-        self.seek_target_pending = false;
+
+        seek_time
+    }
+
+    /// Estimate the amount of time to move from the current sector to the seek target.
+    fn estimate_seek_time(&mut self) -> CycleCount {
+        let mut t = 0;
+
+        // This code is based on Mednafen's implementation. It seems very complicated for such a
+        // rough estimate but it's probably a good place to start.
+        let cur_index = if self.drive_state == DriveState::Idle {
+            // Motor is off, 1s seek penalty
+            t += CPU_FREQ_HZ;
+            0
+        } else {
+            self.position.sector_index() as i32
+        };
+
+        let target_index = self.seek_target.sector_index() as i32;
+
+        let off = (target_index - cur_index).abs();
+
+        // ~3us seek time per sector. I assume that the idea here is that seeking through an entire
+        // disc would be estimated to take 1s. What's weird is that as far as I know a standard
+        // disc is 74 minutes, not 72. Maybe a typo? Or maybe it was really tested with a 72min
+        // disc. It won't make a massive difference in practice.
+        let t_off = (off as i64 * CPU_FREQ_HZ as i64 * 1000 / (72 * 60 * 75)) / 1000;
+
+        t += max(t_off as i32, 20_000);
+
+        if off >= 2250 {
+            // Add ~0.3s seek time
+            t += (CPU_FREQ_HZ * 3) / 10;
+        } else if self.drive_state == DriveState::Paused {
+            // XXX there's a difference with Mednafen's code here: our "paused" state is different
+            // from theirs because they also have a "standby" mode which is also included in our
+            // "paused". I don't really understand what this "standby" mode is and as far as I can
+            // tell the only place in Mednafen's code where it's handled differently than "paused"
+            // is this very seek time algorithm. I don't know if it's an error or if there's a real
+            // difference.
+            //
+            // TODO: figure out if there's really a "standby" state different from "paused".
+            t += 2_475_904 >> (self.double_speed as u32)
+        } else if off >= 3 && off < 12 {
+            t += self.cycles_per_sector() << 2;
+        }
+
+        t += self.rand.get(0, 25_000) as CycleCount;
+
+        t
     }
 
     /// Return the number of CPU cycles needed to read a single sector depending on the current
@@ -224,38 +323,27 @@ impl Controller {
     /// 2x.
     fn cycles_per_sector(&self) -> CycleCount {
         // 1x speed: 75 sectors per second
-        let cycles_1x = crate::psx::cpu::CPU_FREQ_HZ / 75;
+        let cycles_1x = CPU_FREQ_HZ / 75;
 
-        cycles_1x >> (self.double_speed as CycleCount)
+        cycles_1x >> (self.double_speed as u32)
     }
 
-    /// Called when a new sector must be read
-    fn read_sector(&mut self) {
-        if self.read_pending {
-            panic!("Sector read while previous one is still pending");
-        }
-
+    /// Read the sector at the current `self.position` into `self.sector`
+    fn read_sector_at_position(&mut self) {
+        // XXX the real hardware seems to have some kind of "FIFO", where you (sometimes?) get a
+        // small delay between the sector being read from and it becoming available to software.
         let position = self.position;
 
         // Read the sector at `position`
         let sector = match self.disc {
             Some(ref mut d) => d.image().read_sector(position),
-            None => panic!("Sector read without a disc"),
+            None => unimplemented!("Sector read without a disc"),
         };
 
         self.sector = match sector {
             Ok(s) => s,
-            Err(e) => panic!("Couldn't read sector {}: {}", position, e),
+            Err(e) => unimplemented!("Couldn't read sector {}: {}", position, e),
         };
-
-        // Move on to the next segment.
-        // XXX what happens when we're at the last one?
-        self.position = match self.position.next() {
-            Some(m) => m,
-            None => panic!("MSF overflow!"),
-        };
-
-        self.read_pending = true;
     }
 
     pub fn sector_data(&mut self) -> &[u8] {
@@ -288,66 +376,140 @@ impl Controller {
             &data[0..2048]
         }
     }
+
+    /// Handle sector read and retuns the time to the next sector (if any)
+    fn handle_sector_read(&mut self) -> Option<CycleCount> {
+        self.read_sector_at_position();
+
+        // Update state machine
+        match self.drive_state {
+            DriveState::Idle => unreachable!(),
+            DriveState::ReadToc => unreachable!(),
+            DriveState::Seeking(seek_type, after_seek) => {
+                // XXX If I understand correctly SeekType::Data bases itself on the data track
+                // sector's embedded MSF to locate its target (per No$). So I assume that
+                // technically we should be scanning the data segments to find the target. It makes
+                // sense: if you're a little off for audio tracks it's not usually a big deal, for
+                // data you want to make sure you're on the right sector.
+                //
+                // Mednafen implements this by seeking to the seek_target, checking the sector's
+                // MSF and if it's not right keep reading ahead for a maximum of 128 sectors
+                // looking for the real target and then the seek completes.
+                //
+                // Of course in our situation unless the CD image is messed up we should always
+                // land "perfectly", so I can't think of any reason for us to ever miss the target.
+                // Mednafen mentions that "Rockman complete works (at least 2 and 4)" have "finicky
+                // fubared CD access code" (which I don't really understand, the CD image would
+                // have to be fubared, not the access code?) so it's probably worth testing those
+                // if we ever want to implement that correctly.
+                if seek_type == SeekType::Data {
+                    let cdrom_header = match self.sector.cd_rom_header() {
+                        Ok(h) => h,
+                        Err(e) => unimplemented!("Data seek target isn't a CD-ROM sector! {:?}", e),
+                    };
+
+                    if cdrom_header.msf != self.position {
+                        unimplemented!(
+                            "Seek target MSF mismatch! (expected {} got {})",
+                            self.position,
+                            cdrom_header.msf
+                        );
+                    }
+                }
+
+                self.drive_state = match after_seek {
+                    AfterSeek::Read => DriveState::Reading,
+                    AfterSeek::Pause => DriveState::Paused,
+                };
+            }
+            DriveState::Reading => (),
+            DriveState::Paused => (),
+        }
+
+        let cps = self.cycles_per_sector();
+
+        // 2nd round for the (possibly) new state in order to figure out if we need to keep reading
+        // or not
+        match self.drive_state {
+            DriveState::ReadToc => unreachable!(),
+            DriveState::Seeking(_, _) => unreachable!(),
+            DriveState::Idle => None,
+            DriveState::Paused => {
+                self.position = self.position.next().unwrap();
+
+                // The read head hovers around the seek target
+                // XXX These values are taken from mednafen
+                let pos = self.position.sector_index() as i32;
+                let next = self.seek_target.sector_index() as i32;
+
+                if pos > next + 1 {
+                    // We're too far ahead, move back
+                    let new_pos = max(pos - 10, 0);
+
+                    self.position = Msf::from_sector_index(new_pos as u32).unwrap();
+                }
+
+                Some(cps)
+            }
+            DriveState::Reading => {
+                self.notify(IrqCode::SectorReady);
+                self.position = self.position.next().unwrap();
+                Some(cps)
+            }
+        }
+    }
 }
 
-pub fn run(psx: &mut Psx, mut cycles: CycleCount) {
-    while cycles > 0 {
-        let elapsed = if psx.cdrom.controller.in_command() {
-            if psx.cdrom.controller.sequence_timer > cycles {
-                // We haven't reached the next step yet
-                psx.cdrom.controller.sequence_timer -= cycles;
-                cycles
-            } else {
-                // We reached the end of the current step, advance until the beginning of the next
-                // one.
-                let to_next_step = psx.cdrom.controller.sequence_timer;
-                next_controller_step(psx);
-                to_next_step
-            }
+pub fn run(psx: &mut Psx, cycles: CycleCount) {
+    // Check for sector reads
+    if let Some(delay) = psx.cdrom.controller.next_sector {
+        let next = if delay > cycles {
+            Some(delay - cycles)
         } else {
-            // No command pending, we can go through the entire delta at once
-            cycles
-        };
+            let leftover = cycles - delay;
 
-        // We have to step the async events alongside the command
-        // sequence since commands can spawn async responses.
-        if let Some((delay, handler)) = psx.cdrom.controller.async_response {
-            if delay > elapsed {
-                psx.cdrom.controller.async_response = Some((delay - elapsed, handler));
-            } else {
-                // The async event is ready to be processed
-                psx.cdrom.controller.async_response = Some((0, handler));
-                maybe_process_async_response(psx);
-            }
-        }
+            let next = match psx.cdrom.controller.handle_sector_read() {
+                Some(next) => {
+                    // If this triggers something very fishy is happening, it means that we
+                    // missed a sync and ran very far ahead
+                    if next <= leftover {
+                        panic!("{} > {}", next, leftover);
+                    }
 
-        // Check for sector reads
-        if let ReadState::Reading(delay) = psx.cdrom.controller.read_state {
-            let new_state = if delay > elapsed {
-                ReadState::Reading(delay - elapsed)
-            } else {
-                let leftover = elapsed - delay;
-
-                // Read the current sector
-                psx.cdrom.controller.read_sector();
-                // XXX when is the data made available in the RX FIFO exactly?
-                psx.cdrom.refresh_rx_data();
-                maybe_notify_read(psx);
-
-                // Schedule the next sector read
-                let next = psx.cdrom.controller.cycles_per_sector() - leftover;
-
-                // If this triggers something very fishy is happening, it means that we missed
-                // a sync and ran very far ahead
-                debug_assert!(next > 0);
-
-                ReadState::Reading(next)
+                    debug_assert!(next > leftover);
+                    Some(next - leftover)
+                }
+                None => None,
             };
 
-            psx.cdrom.controller.read_state = new_state;
-        }
+            super::maybe_process_notification(psx);
 
-        cycles -= elapsed;
+            next
+        };
+
+        psx.cdrom.controller.next_sector = next;
+    }
+
+    // XXX I don't care for "leftover" cycles like above because command timings are very rough
+    // anyway. Cycle reads need to be precise because otherwise they can mess up audio playback.
+    if psx.cdrom.controller.in_command() {
+        let sequence_timer = psx.cdrom.controller.sequence_timer;
+        if sequence_timer > cycles {
+            // We haven't reached the next step yet
+            psx.cdrom.controller.sequence_timer -= cycles;
+        } else {
+            // We reached the end of the current step, advance until the beginning of the next
+            // one.
+            next_controller_step(psx);
+        }
+    } else if let Some((delay, handler)) = psx.cdrom.controller.async_response {
+        if delay > cycles {
+            psx.cdrom.controller.async_response = Some((delay - cycles, handler));
+        } else {
+            // The async event is ready to be processed
+            psx.cdrom.controller.async_response = Some((0, handler));
+            super::maybe_process_async_response(psx);
+        }
     }
 }
 
@@ -372,7 +534,7 @@ pub fn predict_next_sync(psx: &mut Psx) -> CycleCount {
     }
 
     // Check for sector read
-    if let ReadState::Reading(delay) = controller.read_state {
+    if let Some(delay) = controller.next_sector {
         if delay < next_sync {
             next_sync = delay;
         }
@@ -507,21 +669,6 @@ pub fn maybe_process_async_response(psx: &mut Psx) {
     }
 }
 
-pub fn maybe_notify_read(psx: &mut Psx) {
-    let controller = &mut psx.cdrom.controller;
-
-    if !controller.read_pending {
-        return;
-    }
-
-    if controller.in_command() {
-        return;
-    }
-
-    // We can notify the read
-    controller.set_sector_ready();
-}
-
 /// Description of the Controller processing sequence
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 enum ControllerSequence {
@@ -561,26 +708,40 @@ pub enum IrqCode {
 }
 
 /// CDROM disc state
-enum ReadState {
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum DriveState {
+    /// Motor off, nothing is happening.
     Idle,
-    /// We're expecting a sector
-    Reading(CycleCount),
+    /// "Stand by" state, motor on
+    /// Motor is running but we're not reading anything
+    Paused,
+    /// We're reading the table of contents
+    ReadToc,
+    /// We're seeking to the target sector
+    Seeking(SeekType, AfterSeek),
+    /// The drive is reading a sector
+    Reading,
 }
 
-impl ReadState {
-    fn is_idle(&self) -> bool {
-        match *self {
-            ReadState::Idle => true,
-            _ => false,
-        }
-    }
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum SeekType {
+    /// According no No$ in this is used to seek data tracks. It won't work properly for audio
+    /// tracks.
+    Data,
+}
+
+/// Describes what state the drive should be put in after the seek sequence has completed
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum AfterSeek {
+    Pause,
+    Read,
 }
 
 mod commands {
     //! The various CD-ROM commands
 
     use super::disc::Region;
-    use super::{timings, CycleCount, IrqCode, Msf, Psx, ReadState};
+    use super::{timings, AfterSeek, CycleCount, DriveState, IrqCode, Msf, Psx, SeekType};
 
     /// Read the drive's status byte
     pub fn get_stat(psx: &mut Psx) {
@@ -599,10 +760,10 @@ mod commands {
         let s = controller.params.pop();
         let f = controller.params.pop();
 
-        controller.seek_target = match Msf::from_bcd(m, s, f) {
+        controller.next_seek_target = match Msf::from_bcd(m, s, f) {
             Some(m) => m,
             // XXX: what happens if invalid BCD is used?
-            None => panic!("Invalid MSF in set loc: {:02x}:{:02x}:{:02x}", m, s, f),
+            None => unimplemented!("Invalid MSF in set loc: {:02x}:{:02x}:{:02x}", m, s, f),
         };
 
         controller.seek_target_pending = true;
@@ -618,40 +779,60 @@ mod commands {
     pub fn read(psx: &mut Psx) {
         let controller = &mut psx.cdrom.controller;
 
-        if !controller.read_state.is_idle() {
-            warn!("CDROM READ while we're already reading");
-        }
-
-        if controller.seek_target_pending {
-            // XXX That should take some time...
-            controller.do_seek();
-        }
-
-        let read_delay = controller.cycles_per_sector();
-
-        controller.read_state = ReadState::Reading(read_delay);
-
         controller.push_drive_status();
+
+        if controller.drive_state == DriveState::Reading {
+            warn!("CDROM READ while we're already reading");
+
+            if !controller.seek_target_pending {
+                // Nothing to do
+                return;
+            }
+        }
+
+        // We're either starting a read, or we were already reading but we have a new target.
+        if !controller.seek_target_pending {
+            if controller.drive_state == DriveState::Paused {
+                // Seek back to the actual target sector since we might have drifted away
+                controller.next_seek_target = controller.seek_target;
+            } else {
+                // We stay where we are
+                controller.next_seek_target = controller.position;
+            }
+        }
+
+        // XXX From mednafen: a seek always take place when we start reading, even if we're at the
+        // right position. Seems odd, probably worth double-checking.
+        let delay = controller.do_seek(SeekType::Data, AfterSeek::Read);
+
+        controller.next_sector = Some(delay);
     }
 
     /// Stop reading sectors but remain at the same position on the disc
     pub fn pause(psx: &mut Psx) {
         let controller = &mut psx.cdrom.controller;
 
-        let async_delay = if controller.read_state.is_idle() {
-            warn!("CD pause when we're not reading");
+        // *Before* we change the state
+        controller.push_drive_status();
+
+        let state = controller.drive_state;
+
+        let async_delay = if state == DriveState::Paused || state == DriveState::Idle {
             9000
         } else {
+            controller.drive_state = DriveState::Paused;
+
+            controller.pending_notification = None;
+
+            // XXX Mednafen has a weird tweak to self.position here, with comment "See: Bedlam,
+            // Rise 2"
+
             // XXX Very very rough approximation, can change based on many factors. Need to
             // come up with a more accurate heuristic
             1_000_000
         };
 
-        controller.read_state = ReadState::Idle;
-
         controller.schedule_async_response(async_delay, async_pause);
-
-        controller.push_drive_status();
     }
 
     fn async_pause(psx: &mut Psx) -> CycleCount {
@@ -664,21 +845,16 @@ mod commands {
     pub fn init(psx: &mut Psx) {
         let controller = &mut psx.cdrom.controller;
 
-        // XXX I think? Needs testing
-        controller.read_state = ReadState::Idle;
-        controller.read_pending = false;
-
-        controller.schedule_async_response(900_000, async_init);
-
         controller.push_drive_status();
-    }
 
-    fn async_init(psx: &mut Psx) -> CycleCount {
-        let controller = &mut psx.cdrom.controller;
-
-        controller.position = Msf::zero();
-        controller.seek_target = Msf::zero();
-        controller.read_state = ReadState::Idle;
+        // XXX Mednafen has a more complicated and probably more accurate implementation, for now I
+        // keep it simple
+        controller.drive_state = DriveState::Paused;
+        controller.seek_target = Msf::from_bcd(0x00, 0x02, 0x00).unwrap();
+        controller.position = controller.seek_target;
+        controller.next_seek_target = controller.seek_target;
+        controller.seek_target_pending = false;
+        controller.pending_notification = None;
         controller.double_speed = false;
         controller.xa_adpcm_to_spu = false;
         controller.read_whole_sector = true;
@@ -687,6 +863,13 @@ mod commands {
         controller.report_interrupts = false;
         controller.autopause = false;
         controller.cdda_mode = false;
+        controller.next_sector = Some(900_000);
+
+        controller.schedule_async_response(900_000, async_init);
+    }
+
+    fn async_init(psx: &mut Psx) -> CycleCount {
+        let controller = &mut psx.cdrom.controller;
 
         controller.push_drive_status();
 
@@ -787,23 +970,17 @@ mod commands {
     pub fn seek_l(psx: &mut Psx) {
         let controller = &mut psx.cdrom.controller;
 
-        controller.do_seek();
-
         controller.push_drive_status();
 
-        // XXX the delay for the async response is tied to the time it takes for the reading head
-        // to physically seek on the disc. We probably need a heuristic based on the current head
-        // position, target position and probably a bunch of other factors. For now hardcode a dumb
-        // value and hope for the best.
-        controller.schedule_async_response(1_000_000, async_seek_l);
+        let seek_time = controller.do_seek(SeekType::Data, AfterSeek::Pause);
+
+        controller.schedule_async_response(seek_time, async_seek_l);
     }
 
     fn async_seek_l(psx: &mut Psx) -> CycleCount {
         let controller = &mut psx.cdrom.controller;
 
-        let status = controller.drive_status();
-
-        controller.response.push(status);
+        controller.push_drive_status();
 
         timings::SEEK_L_RX_PUSH
     }
@@ -887,7 +1064,10 @@ mod commands {
 
         controller.push_drive_status();
 
-        // XXX should probably stop ReadN/S
+        controller.drive_state = DriveState::ReadToc;
+        controller.next_sector = None;
+        // After the TOC is read the read head is returned to its original position, no need to
+        // modify `position`
 
         controller.schedule_async_response(timings::READ_TOC_ASYNC, async_read_toc);
     }
@@ -896,6 +1076,9 @@ mod commands {
         let controller = &mut psx.cdrom.controller;
 
         controller.push_drive_status();
+
+        controller.drive_state = DriveState::Paused;
+        controller.next_sector = Some(controller.cycles_per_sector());
 
         timings::READ_TOC_RX_PUSH
     }
@@ -911,16 +1094,10 @@ mod timings {
 
     use super::CycleCount;
 
-    /// Delay between the moment a command starts being processed and the parameter transfer
-    /// sequence. This delay is *extremely* variable on the real hardware (more so than other CD
-    /// timings) so this is a low bound (it's possible to have even shorter times on the real
-    /// hardware but they are quite uncommon)
-    pub const COMMAND_PENDING: CycleCount = 9_400;
-
-    /// Most command pending times are between COMMAND_PENDING and (COMMAND_PENDING +
-    /// COMMAND_PENDING_VARIATION). Shorter and longer delays are possible on the real hardware but
-    /// they're uncommon.
-    pub const COMMAND_PENDING_VARIATION: CycleCount = 6_000;
+    /// Range of the delay between the moment a command starts being processed and the parameter
+    /// transfer sequence. This delay is *extremely* variable on the real hardware to shorter and
+    /// longer delays are possible but they're uncommon.
+    pub const COMMAND_PENDING: (CycleCount, CycleCount) = (9_400, 15_400);
 
     /// Approximate duration of a single parameter transfer
     pub const PARAM_PUSH: CycleCount = 1_800;

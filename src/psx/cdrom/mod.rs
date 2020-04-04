@@ -142,7 +142,8 @@ impl CdRom {
 
         if self.rx_active {
             if !prev_active {
-                // Reset the index to the beginning of the RX buffer
+                // Refresh RX buffer and move back at the start
+                self.refresh_rx_data();
                 self.rx_index = 0;
             }
         } else {
@@ -323,7 +324,7 @@ fn irq_ack(psx: &mut Psx, ack_mask: u8) {
     // pending at the same time.
     maybe_start_command(psx);
     maybe_process_async_response(psx);
-    maybe_notify_read(psx);
+    maybe_process_notification(psx);
 }
 
 fn irq_set_mask(psx: &mut Psx, mask: u8) {
@@ -371,11 +372,11 @@ fn maybe_process_async_response(psx: &mut Psx) {
     }
 }
 
-/// Start the async read notification sequence if a sector read is pending and the
-/// preconditions are met
-fn maybe_notify_read(psx: &mut Psx) {
+/// Trigger the async notification sequence (used to notify sector reads for instance) if no irq is
+/// pending
+fn maybe_process_notification(psx: &mut Psx) {
     if psx.cdrom.irq_flags == 0 {
-        controller::maybe_notify_read(psx);
+        psx.cdrom.controller.maybe_process_notification();
     }
 }
 
