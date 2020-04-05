@@ -15,6 +15,7 @@ mod controller;
 pub mod disc;
 mod fifo;
 pub mod iso9660;
+mod resampler;
 mod simple_rand;
 
 use self::controller::Controller;
@@ -313,6 +314,12 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
 /// Called by the DMA when it wants to get our CD data
 pub fn dma_load(psx: &mut Psx) -> u32 {
     psx.cdrom.read_word()
+}
+
+/// Called by the SPU at 44.1kHz to advance our audio state machine and return a new sample. True
+/// if we want the samples to be resampled if necessary
+pub fn run_audio_cycle(psx: &mut Psx, resample: bool) -> (i16, i16) {
+    psx.cdrom.controller.run_audio_cycle(resample)
 }
 
 fn irq_ack(psx: &mut Psx, ack_mask: u8) {

@@ -13,7 +13,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "cdimage"
 version = "0.1.0"
-source = "git+https://github.com/simias/cdimage#31bf5f323ca926e419b6706e6c0e72f1a347ad1f"
+source = "git+https://github.com/simias/cdimage#db9cdd42c4eb80837d0937122990c94fea631741"
 dependencies = [
  "arrayref 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",

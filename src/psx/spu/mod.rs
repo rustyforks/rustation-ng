@@ -5,7 +5,7 @@
 mod fifo;
 mod fir;
 
-use super::{cpu, sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{cdrom, cpu, sync, AccessWidth, Addressable, CycleCount, Psx};
 use fifo::DecoderFifo;
 use std::ops::{Index, IndexMut};
 
@@ -118,6 +118,16 @@ impl Spu {
         // No$ says that the bit 6 (IRQ9) is "only when bit15=1", I'm not sure what that means.
         // Mednafen doesn't appear to put any condition on the interrupt bit.
         self.control() & (1 << 6) != 0
+    }
+
+    /// True if the SPU is muted in the configuration register
+    fn muted(&self) -> bool {
+        self.control() & (1 << 14) == 0
+    }
+
+    /// True if the SPU plays the audio coming from the CD
+    fn cd_audio_enabled(&self) -> bool {
+        self.control() & 1 != 0
     }
 
     /// Update the status register
@@ -235,7 +245,20 @@ fn run_cycle(psx: &mut Psx) {
     psx.spu.voice_start = 0;
     psx.spu.voice_stop = 0;
 
-    // XXX Handle SPU mute
+    if psx.spu.muted() {
+        // Mute bit doesn't actually mute CD audio, just the SPU voices.
+        left_mix = 0;
+        right_mix = 0;
+    }
+
+    if psx.spu.cd_audio_enabled() {
+        let (cd_left, cd_right) = cdrom::run_audio_cycle(psx, true);
+
+        left_mix += i32::from(cd_left);
+        right_mix += i32::from(cd_right);
+    } else {
+        cdrom::run_audio_cycle(psx, false);
+    }
 
     left_mix = psx.spu.main_volume_left.apply_level(left_mix);
     right_mix = psx.spu.main_volume_right.apply_level(right_mix);
@@ -379,10 +402,6 @@ pub fn dma_store(psx: &mut Psx, v: u32) {
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
-    // This is probably very heavy handed, mednafen only syncs from the CD code and never on
-    // register access
-    run(psx);
-
     if T::width() != AccessWidth::HalfWord {
         panic!("Unhandled {:?} SPU store", T::width());
     }
@@ -683,9 +702,9 @@ impl Voice {
             let mut sample = i32::from(sample);
 
             // Previous sample
-            let sample_1 = self.last_samples[0] as i32;
+            let sample_1 = i32::from(self.last_samples[0]);
             // Antepenultimate sample
-            let sample_2 = self.last_samples[1] as i32;
+            let sample_2 = i32::from(self.last_samples[1]);
 
             // Extrapolate with sample -1 using the positive weight
             sample += (sample_1 * wp) >> 6;

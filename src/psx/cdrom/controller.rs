@@ -4,13 +4,14 @@ use std::cmp::max;
 
 use super::disc;
 use super::disc::Disc;
+use super::resampler::AudioResampler;
 use super::simple_rand::SimpleRand;
 use super::Fifo;
 use crate::psx::cpu::CPU_FREQ_HZ;
 use crate::psx::{CycleCount, Psx};
 
 use cdimage::msf::Msf;
-use cdimage::sector::Sector;
+use cdimage::sector::{Sector, XaBitsPerSample, XaCodingInfo, XaForm, XaSamplingFreq};
 
 type AsyncResponse = fn(&mut Psx) -> CycleCount;
 
@@ -72,6 +73,24 @@ pub struct Controller {
     filter_file: u8,
     /// If ADPCM filtering is enabled only sectors with this channel number are processed
     filter_channel: u8,
+    /// When streaming audio to the SPU and `filter_enabled` is false this variable contains the
+    /// first file and channels numbers encountered. It's set to Some(0, 0) when the EOF sector is
+    /// encountered
+    filter_last: Option<(u8, u8)>,
+    /// The last two previous decoded ADPCM samples for the left and right channels
+    adpcm_last: [[i16; 2]; 2],
+    /// Buffer containing the stereo audio samples when we're streaming to the SPU.
+    audio_buffer: Vec<[i16; 2]>,
+    /// Current read index into `audio_buffer`
+    audio_index: u32,
+    /// Current phase for audio resampling, in 1/7th of a sample. We need this because the XA ADPCM
+    /// streams have a frequency of 37.8kHz or 18.9kHz, respectively 6/7 and 3/7 the CD-DA audio
+    /// frequency of 44.1kHz
+    audio_phase: u8,
+    /// How much we add to audio_phase at each tick of the 44.1kHz clock
+    audio_phase_step: u8,
+    /// Audio resamplers for the left and right channels
+    audio_resamplers: [AudioResampler; 2],
     /// PRNG to simulate the pseudo-random CD controller timings (from the host's perspective)
     rand: SimpleRand,
     /// Last raw sector read from the disc image
@@ -111,6 +130,13 @@ impl Controller {
             filter_enabled: false,
             filter_file: 0,
             filter_channel: 0,
+            filter_last: None,
+            adpcm_last: [[0; 2]; 2],
+            audio_buffer: Vec::with_capacity(4096),
+            audio_index: 0,
+            audio_phase: 0,
+            audio_phase_step: 0,
+            audio_resamplers: [AudioResampler::new(), AudioResampler::new()],
             rand: SimpleRand::new(),
             sector: Sector::empty(),
         }
@@ -381,6 +407,10 @@ impl Controller {
     fn handle_sector_read(&mut self) -> Option<CycleCount> {
         self.read_sector_at_position();
 
+        // Set to false if the new sector isn't meant to be send to the software and we shouldn't
+        // notify the read
+        let mut for_software = true;
+
         // Update state machine
         match self.drive_state {
             DriveState::Idle => unreachable!(),
@@ -422,7 +452,12 @@ impl Controller {
                     AfterSeek::Pause => DriveState::Paused,
                 };
             }
-            DriveState::Reading => (),
+            DriveState::Reading => {
+                if self.xa_adpcm_to_spu && self.handle_xa_adpcm_sector() {
+                    // Sector is meant to be streamed directly to the SPU, don't notify software
+                    for_software = false;
+                }
+            }
             DriveState::Paused => (),
         }
 
@@ -452,11 +487,281 @@ impl Controller {
                 Some(cps)
             }
             DriveState::Reading => {
-                self.notify(IrqCode::SectorReady);
+                if for_software {
+                    self.notify(IrqCode::SectorReady);
+                }
                 self.position = self.position.next().unwrap();
                 Some(cps)
             }
         }
+    }
+
+    /// See if the current sector is meant for XA ADPCM streaming to the SPU. If that's the case,
+    /// process it and return `true`, otherwise do nothing and return `false`.
+    fn handle_xa_adpcm_sector(&mut self) -> bool {
+        let subheader = match self.sector.mode2_xa_subheader() {
+            Ok(sub) => sub,
+            Err(_) => {
+                // Not a Mode2 XA track
+                warn!("Non-XA CD-ROM track while streaming to SPU");
+                return false;
+            }
+        };
+
+        // XXX Test based on No$ and Mednafen, I haven't tested this myself
+        let sm = subheader.submode();
+        let is_audio = sm.audio() && sm.form() == XaForm::Form2 && sm.real_time();
+
+        if !is_audio {
+            return false;
+        }
+
+        // XXX At this point Mednafen always return true (i.e. consume the sector and doesn't
+        // notify the software) even if the track is filtered. No$ seems to disagree slightly
+        // because it says that's only true if `filter_enabled` is true.
+
+        let file_no = subheader.file_number();
+        let channel_no = subheader.channel_number();
+
+        if self.filter_enabled {
+            // See if this sector passes the filter
+            let filtered = file_no != self.filter_file || channel_no != self.filter_channel;
+
+            if filtered {
+                // Nope, bail out
+                return true;
+            }
+        }
+
+        if let Some((last_file, last_channel)) = self.filter_last {
+            // XXX Taken from Mednafen, the logic seems to be that the controller will "stick" to
+            // the first file:channel encountered and ignore the rest.
+            if file_no != last_file || channel_no != last_channel {
+                // Ignore
+                return true;
+            }
+        }
+
+        self.filter_last = Some((file_no, channel_no));
+
+        if sm.end_of_file() {
+            // This is also from Mednafen: in practice it does interrupt the playback... unless we
+            // have a stream whole file and channels are both 0.
+            self.filter_last = Some((0, 0));
+        }
+
+        // If we reach this point we need to send the audio to the SPU
+        self.decode_xa_adpcm_sector();
+
+        true
+    }
+
+    /// Called when we have an XA ADPCM sector and we must send it to the SPU
+    fn decode_xa_adpcm_sector(&mut self) {
+        // If we reach this point this shouldn't fail
+        let subheader = self.sector.mode2_xa_subheader().unwrap();
+        let coding = match subheader.coding_info() {
+            XaCodingInfo::Audio(c) => c,
+            c => panic!("Unexpected coding info for audio track: {:?}", c),
+        };
+
+        let data = self.sector.mode2_xa_payload().unwrap();
+
+        // Each sector contains an "audio block" of 2304B and 20B of padding (that should be 0) for
+        // a total of 2324 bytes (the length of an XA Form2 payload)
+        debug_assert!(data.len() == 2324);
+
+        let shift_4bpp = match coding.bits_per_sample() {
+            XaBitsPerSample::S4Bits => 1,
+            XaBitsPerSample::S8Bits => 0,
+        };
+
+        let units_per_group = 4 << shift_4bpp;
+        let samples_8bpp = shift_4bpp == 0;
+
+        let stereo = coding.stereo();
+
+        // Total number of samples we're about to decode
+        let total_samples = 18 * (4 << shift_4bpp) * 28;
+
+        // 1 for stereo, 0 for mono
+        let stereo_one = stereo as usize;
+
+        let buffer_len = if stereo {
+            total_samples / 2
+        } else {
+            total_samples
+        };
+
+        self.audio_buffer.resize(buffer_len, [0, 0]);
+        self.audio_index = 0;
+
+        self.audio_phase_step = match coding.sampling_frequency() {
+            XaSamplingFreq::F18_9 => {
+                // Sampling frequency is 18.9kHz, 3/7 * 44.1kHz
+                3
+            }
+            XaSamplingFreq::F37_8 => {
+                // Sampling frequency is 37.8kHz, 6/7 * 37.8kHz
+                6
+            }
+        };
+
+        // Offsets in the output buffer, per channel
+        let mut output_offsets = [0; 2];
+
+        // Each audio block contains 18 "sound groups" of 128 bytes
+        for group in 0..18 {
+            let group_off = 128 * group;
+            // Each group has a 16 byte "Sound Parameters" header...
+            let sp = &data[group_off..group_off + 16];
+            // ... and 112 bytes of "Sample Audio Data"
+            let audio_data = &data[group_off + 16..group_off + 128];
+
+            // Each group has between 4 and 8 "Sound Units" depenting on the sample bit depth
+            for unit in 0..units_per_group {
+                // The params are stored twice, the second time at the same address | 4. Not really
+                // sure why, if you detect a discrepancy at this point what can you do anyway?
+                let param = sp[((unit << 1) & 8) | (unit & 3)];
+                let shift = param & 0xf;
+                let weights: [(i32, i32); 16] = [
+                    (0, 0),
+                    (60, 0),
+                    (115, -52),
+                    (98, -55),
+                    (122, -60),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                    (0, 0),
+                ];
+                let (wp, wn) = weights[(param >> 4) as usize];
+
+                let channel = unit & stereo_one;
+
+                for i in 0..28 {
+                    let encoded = if samples_8bpp {
+                        audio_data[(i << 2) | unit]
+                    } else {
+                        // 4bpp: 2 samples per byte
+                        let s = audio_data[(i << 2) | (unit >> 1)];
+
+                        // Convert the sample to 8 bit by setting the low 4 bits to 0
+                        if unit & 1 != 0 {
+                            s << 4
+                        } else {
+                            s & 0xf0
+                        }
+                    };
+
+                    // Convert to signed 16 bits
+                    let sample = (u16::from(encoded) << 8) as i16;
+                    // Convert to 32bits to handle overflows
+                    let mut sample = i32::from(sample);
+
+                    // ADPCM decode
+                    sample >>= shift;
+                    let sample_1 = i32::from(self.adpcm_last[channel][0]);
+                    let sample_2 = i32::from(self.adpcm_last[channel][1]);
+                    sample += (sample_1 * wp) >> 6;
+                    sample += (sample_2 * wn) >> 6;
+
+                    // Saturate to 16 bits
+                    let sample = if sample > i16::max_value() as i32 {
+                        i16::max_value()
+                    } else if sample < i16::min_value() as i32 {
+                        i16::min_value()
+                    } else {
+                        sample as i16
+                    };
+
+                    // Rotate last samples
+                    self.adpcm_last[channel][1] = self.adpcm_last[channel][0];
+                    self.adpcm_last[channel][0] = sample;
+
+                    // Store the data in the output buffer
+                    let sample_off = output_offsets[channel];
+                    self.audio_buffer[sample_off][channel] = sample;
+                    output_offsets[channel] += 1;
+                }
+            }
+        }
+
+        if !stereo {
+            // Recopy the left channel to the right
+            for pair in &mut self.audio_buffer {
+                pair[1] = pair[0];
+            }
+        }
+    }
+
+    /// Called at 44.1kHz to advance our audio state machine and return a new sample. If `resample`
+    /// is true we resample if necessary, otherwise we just return the newest sample
+    pub fn run_audio_cycle(&mut self, resample: bool) -> (i16, i16) {
+        let cur_index = self.audio_index as usize;
+
+        if cur_index >= self.audio_buffer.len() {
+            // No audio samples left
+            return (0, 0);
+        }
+
+        let [first_left, first_right] = self.audio_buffer[cur_index];
+
+        // Value returned when no resampling is needed
+        let mut left = first_left;
+        let mut right = first_right;
+
+        match self.audio_phase_step {
+            14 => {
+                // We're running at 14/7 * 44.1kHz, that means that we run at twice the audio
+                // frequency and must skip every other sample.
+                //
+                // XXX Mednafen doesn't resample here, should we? Do games actually use this mode
+                // for some reason?
+                self.audio_index += 2;
+            }
+            7 => {
+                // We're running at 7/7 * 44.1kHz, in other words we're running at the normal CD-DA
+                // frequency and we can just return one sample every time
+                self.audio_index += 1;
+            }
+            s => {
+                // We're running at a non-integer fraction of 44.1kHz, we need to resample
+                if resample {
+                    left = self.audio_resamplers[0].resample(self.audio_phase);
+                    right = self.audio_resamplers[1].resample(self.audio_phase);
+                }
+
+                // Advance to the next step
+                self.audio_phase += s;
+                if self.audio_phase >= 7 {
+                    self.audio_phase -= 7;
+                    // Consume one sample
+                    self.audio_resamplers[0].push_sample(first_left);
+                    self.audio_resamplers[1].push_sample(first_right);
+                    self.audio_index += 1;
+                }
+            }
+        }
+
+        (left, right)
+    }
+
+    /// Called when audio streaming to the SPU should be restarted
+    fn restart_audio(&mut self) {
+        self.filter_last = None;
+        self.adpcm_last = [[0; 2]; 2];
+        self.audio_buffer.truncate(0);
+        self.audio_phase = 0;
+        self.audio_resamplers[0].restart();
+        self.audio_resamplers[1].restart();
     }
 }
 
@@ -790,6 +1095,8 @@ mod commands {
             }
         }
 
+        controller.restart_audio();
+
         // We're either starting a read, or we were already reading but we have a new target.
         if !controller.seek_target_pending {
             if controller.drive_state == DriveState::Paused {
@@ -864,6 +1171,8 @@ mod commands {
         controller.autopause = false;
         controller.cdda_mode = false;
         controller.next_sector = Some(900_000);
+
+        controller.restart_audio();
 
         controller.schedule_async_response(900_000, async_init);
     }
@@ -947,6 +1256,13 @@ mod commands {
         // The position returned by get_loc_p seems to be ahead of the currently read sector
         // *sometimes*. Probably because of the way the subchannel data is buffered? Let's not
         // worry about it for now.
+        //
+        // In my tests on the real hardware I seem to get generally 1 sector a head, for instance
+        // when I'm reading multiple sectors in a row I get the data from sector 12:02:05 when
+        // get_loc_p reliably returns 01:01 12:00:06 12:02:06. get_loc_l does return 12:02:05 in
+        // the same situation.
+        //
+        // Mednafen also seems to me using one sector of "read ahead" so I suppose it adds up.
         let abs_msf = metadata.msf;
 
         // Position within the current track
