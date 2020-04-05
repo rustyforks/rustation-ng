@@ -58,29 +58,16 @@ pub struct Psx {
     dma_timing_penalty: CycleCount,
     /// When this variable is `true` the CPU is stopped for DMA operation
     cpu_stalled_for_dma: bool,
-    /// Audio callback
-    audio_callback: Box<dyn FnMut(&[i16])>,
 }
 
 impl Psx {
-    pub fn new_with_disc(
-        audio_callback: Box<dyn FnMut(&[i16])>,
-        disc: disc::Disc,
-        bios: bios::Bios,
-    ) -> Result<Psx> {
+    pub fn new_with_disc(disc: disc::Disc, bios: bios::Bios) -> Result<Psx> {
         let standard = disc.region().video_standard();
 
-        Ok(Psx::new_with_bios(
-            audio_callback,
-            Some(disc),
-            bios,
-            standard,
-        ))
+        Ok(Psx::new_with_bios(Some(disc), bios, standard))
     }
 
     pub fn new_with_bios(
-        audio_callback: Box<dyn FnMut(&[i16])>,
-
         disc: Option<disc::Disc>,
         bios: bios::Bios,
         standard: gpu::VideoStandard,
@@ -107,7 +94,6 @@ impl Psx {
             cache_control: 0,
             dma_timing_penalty: 0,
             cpu_stalled_for_dma: false,
-            audio_callback,
         }
     }
 
@@ -134,6 +120,16 @@ impl Psx {
 
     pub fn last_frame(&mut self) -> &Frame {
         self.gpu.last_frame()
+    }
+
+    /// Get pending audio samples since the last call to `clear_audio_samples`
+    pub fn get_audio_samples(&mut self) -> &[i16] {
+        spu::get_samples(self)
+    }
+
+    /// Clear any pending audio samples. This must be called at least once per frame.
+    pub fn clear_audio_samples(&mut self) {
+        spu::clear_samples(self)
     }
 
     /// Advance the CPU cycle counter by the given number of ticks

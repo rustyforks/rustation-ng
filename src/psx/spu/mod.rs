@@ -49,8 +49,9 @@ pub struct Spu {
     regs: [u16; 320],
     /// SPU internal RAM, 16bit wide
     ram: [u16; SPU_RAM_SIZE],
-    /// Output audio buffer. Sent to the frontend when filled. Size must be a multiple of 2 since
-    /// we always store pairs of stereo samples.
+    /// Output audio buffer. Sent to the frontend after each frame, so should be large enough to
+    /// store one frame worth of audio samples. Assuming a 50Hz refresh rate @ 44.1kHz that should
+    /// be about ~1800 samples per frame at most.
     audio_buffer: [i16; 2048],
     /// Write pointer into the audio_buffer
     audio_buffer_index: u32,
@@ -206,20 +207,27 @@ pub fn run(psx: &mut Psx) {
     sync::next_event(psx, SPUSYNC, SPU_FREQ_DIVIDER - elapsed);
 }
 
+/// Get the contents of the sample buffer
+pub fn get_samples(psx: &mut Psx) -> &[i16] {
+    let end = psx.spu.audio_buffer_index as usize;
+
+    &psx.spu.audio_buffer[..end]
+}
+
+/// Clear the sample buffer
+pub fn clear_samples(psx: &mut Psx) {
+    psx.spu.audio_buffer_index = 0;
+}
+
 /// Put the provided stereo pair in the output buffer and flush it if necessary
 fn output_samples(psx: &mut Psx, left: i16, right: i16) {
     let idx = psx.spu.audio_buffer_index as usize;
 
+    // If this overflows the frontend isn't reading the samples fast enough
     psx.spu.audio_buffer[idx] = left;
     psx.spu.audio_buffer[idx + 1] = right;
 
     psx.spu.audio_buffer_index += 2;
-
-    if psx.spu.audio_buffer_index as usize >= psx.spu.audio_buffer.len() {
-        // Buffer is done, send it to the frontend
-        (psx.audio_callback)(&psx.spu.audio_buffer);
-        psx.spu.audio_buffer_index = 0;
-    }
 }
 
 /// Emulate one cycle of the SPU

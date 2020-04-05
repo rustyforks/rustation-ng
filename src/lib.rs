@@ -121,12 +121,7 @@ impl Context {
 
         let bios = find_bios(|md| md.region == region)?;
 
-        let audio_callback = Box::new(|samples: &[i16]| {
-            debug_assert!(samples.len() % 2 == 0);
-            libretro::send_audio_samples(samples);
-        });
-
-        let psx = psx::Psx::new_with_disc(audio_callback, disc, bios)?;
+        let psx = psx::Psx::new_with_disc(disc, bios)?;
 
         Ok(psx)
     }
@@ -153,6 +148,12 @@ impl libretro::Context for Context {
         let frame = self.psx.last_frame();
 
         libretro::frame_done(&frame.pixels, frame.width, frame.height);
+
+        // Send sound samples
+        let samples = self.psx.get_audio_samples();
+        libretro::send_audio_samples(samples);
+        // Clear the emulator's buffer for next frame
+        self.psx.clear_audio_samples();
     }
 
     fn get_system_av_info(&self) -> libretro::SystemAvInfo {
