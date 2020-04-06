@@ -79,6 +79,8 @@ pub struct Controller {
     filter_last: Option<(u8, u8)>,
     /// The last two previous decoded ADPCM samples for the left and right channels
     adpcm_last: [[i16; 2]; 2],
+    /// Frequency of the audio in audio_buffer
+    audio_frequency: AudioFrequency,
     /// Buffer containing the stereo audio samples when we're streaming to the SPU.
     audio_buffer: Vec<[i16; 2]>,
     /// Current read index into `audio_buffer`
@@ -87,8 +89,6 @@ pub struct Controller {
     /// streams have a frequency of 37.8kHz or 18.9kHz, respectively 6/7 and 3/7 the CD-DA audio
     /// frequency of 44.1kHz
     audio_phase: u8,
-    /// How much we add to audio_phase at each tick of the 44.1kHz clock
-    audio_phase_step: u8,
     /// Audio resamplers for the left and right channels
     audio_resamplers: [AudioResampler; 2],
     /// PRNG to simulate the pseudo-random CD controller timings (from the host's perspective)
@@ -132,10 +132,10 @@ impl Controller {
             filter_channel: 0,
             filter_last: None,
             adpcm_last: [[0; 2]; 2],
+            audio_frequency: AudioFrequency::CdDa1x,
             audio_buffer: Vec::with_capacity(4096),
             audio_index: 0,
             audio_phase: 0,
-            audio_phase_step: 0,
             audio_resamplers: [AudioResampler::new(), AudioResampler::new()],
             rand: SimpleRand::new(),
             sector: Sector::empty(),
@@ -546,7 +546,7 @@ impl Controller {
 
         if sm.end_of_file() {
             // This is also from Mednafen: in practice it does interrupt the playback... unless we
-            // have a stream whole file and channels are both 0.
+            // have a stream whose file and channels are both 0.
             self.filter_last = Some((0, 0));
         }
 
@@ -596,14 +596,14 @@ impl Controller {
         self.audio_buffer.resize(buffer_len, [0, 0]);
         self.audio_index = 0;
 
-        self.audio_phase_step = match coding.sampling_frequency() {
+        self.audio_frequency = match coding.sampling_frequency() {
             XaSamplingFreq::F18_9 => {
                 // Sampling frequency is 18.9kHz, 3/7 * 44.1kHz
-                3
+                AudioFrequency::CdXa18k9
             }
             XaSamplingFreq::F37_8 => {
-                // Sampling frequency is 37.8kHz, 6/7 * 37.8kHz
-                6
+                // Sampling frequency is 37.8kHz, 6/7 * 44.1kHz
+                AudioFrequency::CdXa37k8
             }
         };
 
@@ -707,40 +707,50 @@ impl Controller {
     pub fn run_audio_cycle(&mut self, resample: bool) -> (i16, i16) {
         let cur_index = self.audio_index as usize;
 
-        if cur_index >= self.audio_buffer.len() {
-            // No audio samples left
-            return (0, 0);
-        }
-
-        let [first_left, first_right] = self.audio_buffer[cur_index];
+        // Next sample waiting to be output
+        let &[first_left, first_right] = match self.audio_buffer.get(cur_index) {
+            Some(stereo) => stereo,
+            // No data left in the buffer, it normally means that we're not currently streaming any
+            // audio but it could also happen if we end up starving during playback.
+            //
+            // If the latter happens that could either mean buggy emulator code or a broken CD
+            // image (missing audio sectors for instance) or broken game code (bad streaming
+            // configuration, disc speed too slow etc...).
+            None => return (0, 0),
+        };
 
         // Value returned when no resampling is needed
         let mut left = first_left;
         let mut right = first_right;
 
-        match self.audio_phase_step {
-            14 => {
-                // We're running at 14/7 * 44.1kHz, that means that we run at twice the audio
+        match self.audio_frequency {
+            AudioFrequency::CdDa2x => {
+                // We're running at 2 * 44.1kHz, that means that we run at twice the SPU audio
                 // frequency and must skip every other sample.
                 //
                 // XXX Mednafen doesn't resample here, should we? Do games actually use this mode
                 // for some reason?
                 self.audio_index += 2;
             }
-            7 => {
-                // We're running at 7/7 * 44.1kHz, in other words we're running at the normal CD-DA
+            AudioFrequency::CdDa1x => {
+                // We're running at 44.1kHz, in other words we're running at the normal CD-DA
                 // frequency and we can just return one sample every time
                 self.audio_index += 1;
             }
-            s => {
-                // We're running at a non-integer fraction of 44.1kHz, we need to resample
+            AudioFrequency::CdXa18k9 | AudioFrequency::CdXa37k8 => {
+                // We're running at a fraction of 44.1kHz, we need to resample
                 if resample {
                     left = self.audio_resamplers[0].resample(self.audio_phase);
                     right = self.audio_resamplers[1].resample(self.audio_phase);
                 }
 
+                // This value is the ratio of the audio frequency to the output frequency of
+                // 44.1kHz in multiples of 1/7th. So for instance for CdXa37k8 the input frequency
+                // is 37.8kHz so phase step will be 6 because 37.8kHz = 6/7 * 44.1kHz
+                let phase_step = self.audio_frequency as u8;
+
                 // Advance to the next step
-                self.audio_phase += s;
+                self.audio_phase += phase_step;
                 if self.audio_phase >= 7 {
                     self.audio_phase -= 7;
                     // Consume one sample
@@ -1398,6 +1408,22 @@ mod commands {
 
         timings::READ_TOC_RX_PUSH
     }
+}
+
+/// Possible frequencies for CD audio. The values are the ratio of the frequency to the standard
+/// 44.1kHz frequency in 1/7th of a sample.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum AudioFrequency {
+    /// CD-DA (normal CD audio) at 2x drive speed, 2 * 44.1kHz
+    #[allow(dead_code)]
+    CdDa2x = 14,
+    /// CD-DA (normal CD audio) at 1x drive speed. That's the usual frequency for audio tracks and
+    /// the frequency the PSX's SPU works with.
+    CdDa1x = 7,
+    /// Compressed CD-ROM XA ADPCM audio sector at 37.8kHz, that is 6/7 * 44.1kHz
+    CdXa37k8 = 6,
+    /// Compressed CD-ROM XA ADPCM audio sector at 18.9kHz, that is 3/7 * 44.1kHz
+    CdXa18k9 = 3,
 }
 
 mod timings {
