@@ -11,7 +11,7 @@ use crate::psx::gpu::commands::{NoShading, Position, Transparent};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending, TextureRaw};
 use crate::psx::gpu::commands::{TextureMode, TransparencyMode};
 
-use crate::psx::gpu::{DrawMode, MaskSettings, TextureWindow};
+use crate::psx::gpu::{DrawMode, MaskSettings, TextureWindow, TransparencyFunction};
 use fixed_point::{FpCoord, FpVar};
 use std::cmp::{max, min};
 use std::fmt;
@@ -174,7 +174,7 @@ impl Rasterizer {
         self.mask_settings.set(0);
     }
 
-    fn draw_solid_pixel<Transparency>(&mut self, x: i32, y: i32, color: Pixel)
+    fn draw_solid_pixel<Transparency>(&mut self, x: i32, y: i32, mut color: Pixel)
     where
         Transparency: TransparencyMode,
     {
@@ -185,13 +185,20 @@ impl Rasterizer {
 
         let vram_pixel = &mut self.vram[vram_off as usize];
 
+        // If the draw command is semi-transparent and the mask bit is set, this is a transparent
+        // pixel
+        let is_transparent = Transparency::is_transparent() && color.mask();
+
         // XXX implement masking
-        if Transparency::is_transparent() {
-            // XXX TODO
-            *vram_pixel = Pixel::from_rgb(0xff, 0, 0);
-        } else {
-            *vram_pixel = color;
-        };
+
+        if is_transparent {
+            let bg_pixel = *vram_pixel;
+            let mode = self.tex_mapper.draw_mode.transparency_mode();
+
+            color.apply_transparency(bg_pixel, mode);
+        }
+
+        *vram_pixel = color;
     }
 
     fn draw_triangle<Transparency, Texture, Shading>(&mut self, mut vertices: [Vertex; 3])
@@ -559,7 +566,14 @@ impl Rasterizer {
                 }
             } else {
                 // No texture
-                self.draw_solid_pixel::<Transparency>(x, y, vars.color());
+                let mut color = vars.color();
+
+                // We have to set the mask bit since it's used to test if the pixel should be
+                // transparent, and non-textured transparent draw calls are always fully
+                // transparent.
+                color.set_mask();
+
+                self.draw_solid_pixel::<Transparency>(x, y, color);
             }
             vars.translate_right::<Texture, Shading>(deltas);
         }
@@ -993,6 +1007,10 @@ impl Pixel {
         (self.0 >> 24) != 0
     }
 
+    fn set_mask(&mut self) {
+        self.0 |= 0x0100_0000;
+    }
+
     /// Perform texture blending
     fn blend(self, gouraud: Pixel) -> Pixel {
         let t_r = self.red() as u32;
@@ -1024,6 +1042,64 @@ impl Pixel {
         let mask = self.0 & 0xff00_0000;
 
         Pixel(mask | b | (g << 8) | (r << 16))
+    }
+
+    /// Blend `self` (the foreground pixel) and `bg_pixel` using the provided transparency mode
+    fn apply_transparency(&mut self, bg_pixel: Pixel, mode: TransparencyFunction) {
+        // XXX this is a very naive, and probably very slow implementation. We could probably do
+        // that processing using the whole pixel value at once using some clever carry handling.
+        let f_r = (self.0 >> 16) & 0xff;
+        let f_g = (self.0 >> 8) & 0xff;
+        let f_b = self.0 & 0xff;
+
+        let b_r = (bg_pixel.0 >> 16) & 0xff;
+        let b_g = (bg_pixel.0 >> 8) & 0xff;
+        let b_b = bg_pixel.0 & 0xff;
+
+        let o_r;
+        let o_g;
+        let o_b;
+
+        match mode {
+            TransparencyFunction::Average => {
+                o_r = (f_r + b_r) >> 1;
+                o_g = (f_g + b_g) >> 1;
+                o_b = (f_b + b_b) >> 1;
+            }
+            TransparencyFunction::Add => {
+                let s_r = f_r + b_r;
+                let s_g = f_g + b_g;
+                let s_b = f_b + b_b;
+
+                o_r = if s_r > 0xff { 0xff } else { s_r };
+                o_g = if s_g > 0xff { 0xff } else { s_g };
+                o_b = if s_b > 0xff { 0xff } else { s_b };
+            }
+            TransparencyFunction::Sub => {
+                let s_r = (0x100 | b_r) - f_r;
+                let s_g = (0x100 | b_g) - f_g;
+                let s_b = (0x100 | b_b) - f_b;
+
+                o_r = if s_r <= 0xff { 0 } else { s_r };
+                o_g = if s_g <= 0xff { 0 } else { s_g };
+                o_b = if s_b <= 0xff { 0 } else { s_b };
+            }
+            TransparencyFunction::QuarterAdd => {
+                let f_r = f_r >> 2;
+                let f_g = f_g >> 2;
+                let f_b = f_b >> 2;
+
+                let s_r = f_r + b_r;
+                let s_g = f_g + b_g;
+                let s_b = f_b + b_b;
+
+                o_r = if s_r > 0xff { 0xff } else { s_r };
+                o_g = if s_g > 0xff { 0xff } else { s_g };
+                o_b = if s_b > 0xff { 0xff } else { s_b };
+            }
+        };
+
+        self.0 = (o_r << 16) | (o_g << 8) | o_b;
     }
 }
 

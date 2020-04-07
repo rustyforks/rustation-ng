@@ -800,6 +800,29 @@ impl DrawMode {
             _ => 0, // XXX double-check if 3 is also truecolor.
         }
     }
+
+    fn transparency_mode(self) -> TransparencyFunction {
+        match (self.0 >> 5) & 3 {
+            0 => TransparencyFunction::Average,
+            1 => TransparencyFunction::Add,
+            2 => TransparencyFunction::Sub,
+            3 => TransparencyFunction::QuarterAdd,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// The various transparency modes
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+enum TransparencyFunction {
+    /// (Background + Foreground) / 2
+    Average,
+    /// Background + Foreground
+    Add,
+    /// Background - Foreground
+    Sub,
+    /// Background + (Foreground / 4)
+    QuarterAdd,
 }
 
 /// Wrapper around the Texture Window register value (set by GP0[0xe2])
