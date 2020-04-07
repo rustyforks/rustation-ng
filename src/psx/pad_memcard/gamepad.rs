@@ -19,7 +19,7 @@ impl GamePad {
 
     /// Called when the "select" line goes down.
     pub fn select(&mut self) {
-        // Prepare for incomming command
+        // Prepare for incoming command
         self.active = true;
         self.seq = 0;
     }
@@ -27,7 +27,7 @@ impl GamePad {
     /// The 2nd return value is the response byte. The 2nd return value is true if the gamepad
     /// issues a DSR pulse after the byte is read to notify the controller that more data can be
     /// read.
-    pub fn send_command(&mut self, cmd: u8) -> (u8, bool) {
+    pub fn exchange_byte(&mut self, cmd: u8) -> (u8, bool) {
         if !self.active {
             return (0xff, false);
         }

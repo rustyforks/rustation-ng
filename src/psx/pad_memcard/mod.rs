@@ -19,6 +19,8 @@ pub struct PadMemCard {
     mode: u8,
     /// Transmission enabled if true
     tx_en: bool,
+    /// Pending TX byte, if any
+    tx_pending: Option<u8>,
     /// If true the targeted peripheral select signal is asserted (the actual signal is active low,
     /// so it's driving low on the controller port when `select` is true). The `target` field says
     /// which peripheral is addressed.
@@ -58,6 +60,7 @@ impl PadMemCard {
             baud_div: 0,
             mode: 0,
             tx_en: false,
+            tx_pending: None,
             select: false,
             target: Target::PadMemCard1,
             interrupt: false,
@@ -78,31 +81,37 @@ impl PadMemCard {
         [&mut self.pad1, &mut self.pad2]
     }
 
-    fn send_command(&mut self, cmd: u8) {
+    fn maybe_exchange_byte(&mut self) {
+        let to_send = match self.tx_pending {
+            Some(b) => b,
+            None => return,
+        };
+
         if !self.tx_en {
-            // It should be stored in the FIFO and sent when tx_en is
-            // set (I think)
-            panic!("Unhandled gamepad command while tx_en is disabled");
+            // Nothing to do
+            return;
         }
 
         if self.bus.is_busy() {
-            // I suppose the transfer should be queued in the TX FIFO?
-            warn!("Gamepad command {:x} while bus is busy!", cmd);
+            // I'm guessing that we wait for the current command to be over before we send the next
+            // one?
+            return;
         }
 
         let (response, dsr) = if self.select {
             match self.target {
-                Target::PadMemCard1 => self.pad1.send_command(cmd),
-                Target::PadMemCard2 => self.pad2.send_command(cmd),
+                Target::PadMemCard1 => self.pad1.exchange_byte(to_send),
+                Target::PadMemCard2 => self.pad2.exchange_byte(to_send),
             }
         } else {
             // No response
             (0xff, false)
         };
 
-        // XXX Handle `mode` as well, especially the "baudrate reload
-        // factor". For now I assume we're sending 8 bits, one every
-        // `baud_div` CPU cycles.
+        self.tx_pending = None;
+
+        // XXX Handle `mode` as well, especially the "baudrate reload factor". For now I assume
+        // we're sending 8 bits, one every `baud_div` CPU cycles.
         let tx_duration = 8 * self.baud_div as CycleCount;
 
         self.bus = BusState::Transfer(response, dsr, tx_duration);
@@ -120,9 +129,12 @@ impl PadMemCard {
     fn stat(&self) -> u32 {
         let mut stat = 0u32;
 
-        // TX Ready bits 1 and 2 (Not sure when they go low)
-        stat |= 5;
+        let tx_ready = !self.bus.is_transfering() && self.tx_pending.is_none();
+
+        stat |= tx_ready as u32;
         stat |= (self.rx_not_empty as u32) << 1;
+        // TX Ready flag 2 (XXX what's that about?)
+        stat |= 1 << 2;
         // RX parity error should always be 0 in our case.
         stat |= 0 << 3;
         stat |= (self.dsr as u32) << 7;
@@ -144,7 +156,6 @@ impl PadMemCard {
 
         ctrl |= self.tx_en as u16;
         ctrl |= (self.select as u16) << 1;
-        // XXX I assume this flag self-resets? When?
         ctrl |= (self.rx_en as u16) << 2;
         // XXX Add other interrupts when they're implemented
         ctrl |= (self.dsr_it as u16) << 12;
@@ -220,6 +231,7 @@ impl PadMemCard {
                 // XXX Should probably also check self.target, not sure how it influences the
                 // select line. I assume only the targeted slot is selected?
                 self.pad1.select();
+                self.pad2.select();
             }
         }
 
@@ -296,16 +308,19 @@ fn run_controller(psx: &mut Psx) {
             }
         };
 
+        psx.pad_memcard.maybe_exchange_byte();
+
         remaining_cycles -= elapsed;
     }
 }
 
 fn predict_next_sync(psx: &mut Psx) {
-    let next_event = match psx.pad_memcard.bus {
-        // No sync needed, let's just use an arbitrary value
-        BusState::Idle => 1_000_000,
-        BusState::Transfer(_, _, delay) => delay,
-        BusState::Dsr(delay) => delay,
+    let next_event = if let BusState::Transfer(_, true, delay) = psx.pad_memcard.bus {
+        // We have a DSR pulse at the end of transfer, force a sync
+        delay
+    } else {
+        // So sync needed
+        1_000_000
     };
 
     sync::next_event(psx, PADSYNC, next_event);
@@ -327,7 +342,11 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                 unimplemented!("Gamepad TX access ({:?})", T::width());
             }
 
-            psx.pad_memcard.send_command(val.as_u8());
+            if psx.pad_memcard.tx_pending.is_some() {
+                warn!("Dropping pad/memcard byte before send");
+            }
+
+            psx.pad_memcard.tx_pending = Some(v as u8);
         }
         8 => psx.pad_memcard.set_mode(val.as_u8()),
         10 => {
@@ -343,6 +362,8 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
         14 => psx.pad_memcard.baud_div = v,
         _ => unimplemented!("Write to gamepad register {} {:04x}", off, v),
     }
+
+    psx.pad_memcard.maybe_exchange_byte();
 
     predict_next_sync(psx);
 }
@@ -371,7 +392,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
 }
 
 /// Identifies the target of the serial communication, either the gamepad/memory card port 0 or 1.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Target {
     PadMemCard1 = 0,
     PadMemCard2 = 1,
@@ -379,7 +400,7 @@ enum Target {
 
 impl Target {
     fn from_control(ctrl: u16) -> Target {
-        if ctrl & 0x2000 != 0 {
+        if ctrl & 0x2000 == 0 {
             Target::PadMemCard1
         } else {
             Target::PadMemCard2
@@ -404,6 +425,13 @@ impl BusState {
         match *self {
             BusState::Idle => false,
             _ => true,
+        }
+    }
+
+    fn is_transfering(&self) -> bool {
+        match *self {
+            BusState::Transfer(_, _, _) => true,
+            _ => false,
         }
     }
 }
