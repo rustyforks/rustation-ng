@@ -66,9 +66,7 @@ pub fn set_mask(psx: &mut Psx, mask: u16) {
         .iter()
         .fold(mask, |mask, &it| mask & !(1 << it as u16));
 
-    if rem != 0 {
-        panic!("Unsupported interrupt: {:04x}", rem);
-    }
+    debug_assert!(rem == 0, "Unsupported interrupt: {:04x}", rem);
 
     psx.irq.mask = mask;
 
