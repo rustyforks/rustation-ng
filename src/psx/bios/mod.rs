@@ -1,7 +1,6 @@
 mod db;
 
 use crate::error::{Error, Result};
-use crate::psx::Addressable;
 pub use db::Metadata;
 
 pub struct Bios {
@@ -38,19 +37,9 @@ impl Bios {
         }
     }
 
-    /// Read `T::width()` bytes from the BIOS at the given `offset`
-    pub fn load<T: Addressable>(&self, offset: u32) -> T {
-        let offset = offset as usize;
-
-        let mut r = 0;
-
-        for i in 0..T::width() as usize {
-            let b = u32::from(self.rom[offset + i]);
-
-            r |= b << (8 * i)
-        }
-
-        Addressable::from_u32(r)
+    /// Return the raw BIOS ROM
+    pub fn get_rom(&self) -> &[u8; BIOS_SIZE] {
+        &self.rom
     }
 }
 

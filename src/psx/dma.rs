@@ -289,7 +289,7 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                         unimplemented!();
                     }
 
-                    let header: u32 = psx.ram.load(cur_addr & 0x1f_fffc);
+                    let header: u32 = psx.xmem.ram_load(cur_addr & 0x1f_fffc);
                     psx.dma[port].cur_address = (cur_addr + 4) & 0xff_ffff;
                     psx.dma[port].base = header & 0xff_ffff;
 
@@ -319,11 +319,11 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
             }
 
             let delay = if control.is_from_ram() {
-                let v = psx.ram.load(cur_addr);
+                let v = psx.xmem.ram_load(cur_addr);
                 port_store(psx, port, v)
             } else {
                 let (v, read_delay) = port_load(psx, port);
-                psx.ram.store(cur_addr, v);
+                psx.xmem.ram_store(cur_addr, v);
                 read_delay
             };
 

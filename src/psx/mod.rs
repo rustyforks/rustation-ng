@@ -15,6 +15,7 @@ pub mod pad_memcard;
 mod spu;
 mod sync;
 mod timers;
+mod xmem;
 
 use std::cmp::min;
 
@@ -38,9 +39,9 @@ pub struct Psx {
     pub cop0: cop0::Cop0,
     gte: gte::Gte,
     irq: irq::InterruptState,
-    ram: Ram,
+    /// Executable memory: RAM, Bios etc...
+    xmem: xmem::XMemory,
     scratch_pad: ScratchPad,
-    bios: bios::Bios,
     spu: spu::Spu,
     dma: dma::Dma,
     timers: timers::Timers,
@@ -72,6 +73,10 @@ impl Psx {
         bios: bios::Bios,
         standard: gpu::VideoStandard,
     ) -> Psx {
+        let mut xmem = xmem::XMemory::new();
+
+        xmem.set_bios(bios.get_rom());
+
         Psx {
             cycle_counter: 0,
             frame_done: false,
@@ -80,9 +85,8 @@ impl Psx {
             cop0: cop0::Cop0::new(),
             gte: gte::Gte::new(),
             irq: irq::InterruptState::new(),
-            ram: Ram::new(),
+            xmem,
             scratch_pad: ScratchPad::new(),
-            bios,
             spu: spu::Spu::new(),
             dma: dma::Dma::new(),
             timers: timers::Timers::new(),
@@ -158,24 +162,6 @@ impl Psx {
         result.unwrap_or(bad_value)
     }
 
-    /// Specialized version of load made specifically to fetch CPU instructions. This is supposed
-    /// to be a more streamlined version of `load` for performance reasons.
-    fn load_instruction(&mut self, address: u32) -> cpu::Instruction {
-        let abs_addr = map::mask_region(address);
-
-        let i = {
-            if let Some(offset) = map::RAM.contains(abs_addr) {
-                self.ram.load(offset)
-            } else if let Some(offset) = map::BIOS.contains(abs_addr) {
-                self.bios.load(offset)
-            } else {
-                panic!("Unimplemented instruction fetch from 0x{:x}", address);
-            }
-        };
-
-        cpu::Instruction::new(i)
-    }
-
     /// Decode `address` and perform the load from the target module. `cc` contains the value of
     /// the CPU cycle counter when the transfer begins and should be updated to contain the value
     /// of the cycle counter when it'll complete.
@@ -189,13 +175,13 @@ impl Psx {
 
         if let Some(offset) = map::RAM.contains(abs_addr) {
             self.tick(3);
-            return self.ram.load(offset);
+            return self.xmem.ram_load(offset);
         }
 
         if let Some(offset) = map::BIOS.contains(abs_addr) {
             // XXX Mednafen doesn't add any penalty for BIOS read, which sounds wrong. It's
             // probably not a common-enough occurence to matter
-            return self.bios.load(offset);
+            return self.xmem.bios_load(offset);
         }
 
         if let Some(offset) = map::SPU.contains(abs_addr) {
@@ -295,7 +281,7 @@ impl Psx {
         let abs_addr = map::mask_region(address);
 
         if let Some(offset) = map::RAM.contains(abs_addr) {
-            self.ram.store(offset, val);
+            self.xmem.ram_store(offset, val);
             return;
         }
 
@@ -510,53 +496,6 @@ impl Addressable for u32 {
         *self
     }
 }
-
-/// RAM
-struct Ram {
-    data: Box<[u8; RAM_SIZE]>,
-}
-
-impl Ram {
-    /// Instantiate main RAM
-    pub fn new() -> Ram {
-        Ram {
-            data: box_array![0; RAM_SIZE],
-        }
-    }
-
-    /// Fetch the little endian value at `offset`
-    pub fn load<T: Addressable>(&self, offset: u32) -> T {
-        // The two MSBs are ignored, the 2MB RAM is mirrored four times over the first 8MB of
-        // address space
-        let offset = (offset & 0x1f_ffff) as usize;
-
-        let mut v = 0;
-
-        for i in 0..T::width() as usize {
-            let b = u32::from(self.data[offset + i]);
-
-            v |= b << (i * 8)
-        }
-
-        Addressable::from_u32(v)
-    }
-
-    /// Store the 32bit little endian word `val` into `offset`
-    pub fn store<T: Addressable>(&mut self, offset: u32, val: T) {
-        // The two MSBs are ignored, the 2MB RAM is mirrored four times over the first 8MB of
-        // address space
-        let offset = (offset & 0x1f_ffff) as usize;
-
-        let val = val.as_u32();
-
-        for i in 0..T::width() as usize {
-            self.data[offset + i] = (val >> (i * 8)) as u8;
-        }
-    }
-}
-
-/// System RAM: 2MB
-const RAM_SIZE: usize = 2 * 1024 * 1024;
 
 /// Scratch Pad (data cache used as fast RAM)
 struct ScratchPad {

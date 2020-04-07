@@ -588,9 +588,7 @@ fn cmd_nop(psx: &mut Psx) {
     // Pop the FIFO.
     //
     // We don't call command_pop_to_rasterizer since it's pointless to send nops to the rasterizer
-    let w = psx.gpu.command_fifo.pop();
-
-    warn!("Encountered GPU NOP command: 0x{:08x}", w);
+    psx.gpu.command_fifo.pop();
 }
 
 /// Placeholder function

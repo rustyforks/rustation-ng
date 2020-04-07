@@ -322,7 +322,7 @@ fn fetch_instruction(psx: &mut Psx) -> Instruction {
             psx.tick(7 - index as i32);
 
             for i in index..4 {
-                let instruction = psx.load_instruction(cpc);
+                let instruction = psx.xmem.load_instruction(cpc);
 
                 line.set_instruction(i, instruction);
                 cpc += 4;
@@ -351,7 +351,7 @@ fn fetch_instruction(psx: &mut Psx) -> Instruction {
         // running a tiny bit too fast shouldn't be too much of a problem, this isn't a Game Boy.
         psx.tick(4);
 
-        psx.load_instruction(pc)
+        psx.xmem.load_instruction(pc)
     }
 }
 
