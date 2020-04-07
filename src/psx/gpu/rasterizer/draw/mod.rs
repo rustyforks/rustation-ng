@@ -143,7 +143,8 @@ impl Rasterizer {
             // Reset command FIFO
             0x01 => (),
             0x02 => debug!("IRQ1 ack"),
-            _ => warn!("Unimplemented GP1 {:x}", val),
+            // _ => warn!("Unimplemented GP1 {:x}", val),
+            _ => (),
         }
     }
 

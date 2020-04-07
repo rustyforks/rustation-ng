@@ -1,7 +1,7 @@
 use super::bios::BIOS_SIZE;
 /// Optimized data structure holding the parts of the PSX address space that can contain executable
 /// code.
-use super::{cpu, Addressable};
+use super::{cpu, AccessWidth, Addressable};
 
 /// This structure manages all executable portions of memory and offers fast lookup to speed up
 /// instruction fetches.
@@ -18,7 +18,7 @@ pub struct XMemory {
     /// * The BIOS page (the first 512KiB contain the BIOS, the rest is padded with 0xff)
     /// * The "bad" page that's filled with 0xff and used as placeholder for all pages that are not
     ///   executable.
-    memory: Box<[u8; PAGE_SIZE_BYTES * 3]>,
+    memory: Box<[u32; (PAGE_SIZE_BYTES * 3) >> 2]>,
     /// Look up table containing PAGE_SIZE offsets in `memory` for all pages in the system
     offset_lut: [u8; PAGE_COUNT],
 }
@@ -26,7 +26,10 @@ pub struct XMemory {
 impl XMemory {
     pub fn new() -> XMemory {
         let mut xmem = XMemory {
-            memory: box_array![0xff; PAGE_SIZE_BYTES * 3],
+            // 0xffff_ffff isn't a valid instruction, so we'll know right away if we're executing
+            // from a bad location. Also, 0xff is normally what's returned from unmapped memory
+            // reads so it's sort of accurate for these regions.
+            memory: box_array![0xffff_ffff; (PAGE_SIZE_BYTES * 3) >> 2],
             offset_lut: [MemoryPage::Bad as u8; PAGE_COUNT],
         };
 
@@ -47,14 +50,23 @@ impl XMemory {
     fn remap(&mut self, addr: u32, target: MemoryPage) {
         let page = (addr >> PAGE_SHIFT) as usize;
 
+        // Make sure our address ranges don't overlap
+        assert!(
+            self.offset_lut[page] == MemoryPage::Bad as u8,
+            "Remapping over good mapping!"
+        );
+
         self.offset_lut[page] = target as u8;
     }
 
     /// Set the contents of the BIOS
     pub fn set_bios(&mut self, bios: &[u8; BIOS_SIZE]) {
-        let bios_base = (MemoryPage::Bios as usize) << PAGE_SHIFT;
+        let bios_base = (MemoryPage::Bios as u32) << PAGE_SHIFT;
+
+        // Since BIOS_SIZE is less than our PAGE_SIZE the leftover bytes are going to be left with
+        // 0xff
         for i in 0..BIOS_SIZE {
-            self.memory[bios_base + i] = bios[i];
+            self.store(bios_base + i as u32, bios[i]);
         }
     }
 
@@ -62,13 +74,21 @@ impl XMemory {
     fn load<T: Addressable>(&self, offset: u32) -> T {
         let offset = offset as usize;
 
-        let mut v = 0;
+        let word = self.memory[offset >> 2];
 
-        for i in 0..T::width() as usize {
-            let b = u32::from(self.memory[offset + i]);
+        let v = match T::width() {
+            AccessWidth::Word => word,
+            AccessWidth::HalfWord => {
+                let which = (offset >> 1) & 1;
 
-            v |= b << (i * 8)
-        }
+                (word >> (which * 16)) & 0xffff
+            }
+            AccessWidth::Byte => {
+                let which = offset & 3;
+
+                (word >> (which * 8)) & 0xff
+            }
+        };
 
         Addressable::from_u32(v)
     }
@@ -79,8 +99,28 @@ impl XMemory {
 
         let val = val.as_u32();
 
-        for i in 0..T::width() as usize {
-            self.memory[offset + i] = (val >> (i * 8)) as u8;
+        match T::width() {
+            AccessWidth::Word => self.memory[offset / 4] = val,
+            AccessWidth::HalfWord => {
+                let mut word = self.memory[offset / 4];
+
+                let shift = (offset << 3) & 16;
+
+                word &= !(0xffff << shift);
+                word |= val << shift;
+
+                self.memory[offset >> 2] = word;
+            }
+            AccessWidth::Byte => {
+                let mut word = self.memory[offset / 4];
+
+                let shift = (offset << 3) & 24;
+
+                word &= !(0xff << shift);
+                word |= val << shift;
+
+                self.memory[offset >> 2] = word;
+            }
         }
     }
 
@@ -121,16 +161,14 @@ impl XMemory {
 
         let mut offset = mem_page << PAGE_SHIFT;
 
-        offset += addr & ((1 << PAGE_SHIFT) - 1);
+        offset |= addr & ((1 << PAGE_SHIFT) - 1);
 
-        let mut v = 0;
-        for i in 0..4 {
-            let b = u32::from(self.memory[(offset + i) as usize]);
+        // We index one word at a time
+        offset >>= 2;
 
-            v |= b << (i * 8)
-        }
+        let word = self.memory[offset as usize];
 
-        cpu::Instruction::new(v)
+        cpu::Instruction::new(word)
     }
 }
 
