@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use super::{Command, CommandBuffer, Frame, Special};
 use crate::psx::gpu::commands::Shaded;
 use crate::psx::gpu::commands::{NoShading, Position, Transparent};
-use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending};
+use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending, TextureRaw};
 use crate::psx::gpu::commands::{TextureMode, TransparencyMode};
 
 use crate::psx::gpu::{DrawMode, MaskSettings, TextureWindow};
@@ -1520,28 +1520,28 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, NoTexture, NoShading>,
+        len: 4,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, TextureBlending, NoShading>,
+        len: 7,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, TextureRaw, NoShading>,
+        len: 7,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, TextureBlending, NoShading>,
+        len: 7,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, TextureRaw, NoShading>,
+        len: 7,
     },
     CommandHandler {
         handler: cmd_handle_poly_quad::<Opaque, NoTexture, NoShading>,
@@ -1564,16 +1564,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 9,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, TextureRaw, NoShading>,
+        len: 9,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, TextureBlending, NoShading>,
+        len: 9,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, TextureRaw, NoShading>,
+        len: 9,
     },
     // 0x30
     CommandHandler {
@@ -1585,8 +1585,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, NoTexture, Shaded>,
+        len: 6,
     },
     CommandHandler {
         handler: cmd_unimplemented,
@@ -1617,8 +1617,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, NoTexture, Shaded>,
+        len: 8,
     },
     CommandHandler {
         handler: cmd_unimplemented,
@@ -1633,8 +1633,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, TextureBlending, Shaded>,
+        len: 12,
     },
     CommandHandler {
         handler: cmd_unimplemented,

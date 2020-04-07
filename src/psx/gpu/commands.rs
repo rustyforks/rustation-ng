@@ -78,6 +78,18 @@ impl TextureMode for TextureBlending {
     }
 }
 
+pub struct TextureRaw;
+
+impl TextureMode for TextureRaw {
+    fn is_textured() -> bool {
+        true
+    }
+
+    fn is_raw_texture() -> bool {
+        true
+    }
+}
+
 pub trait ShadingMode {
     fn is_shaded() -> bool;
 }
@@ -806,8 +818,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, NoTexture, NoShading>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -818,26 +830,26 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, TextureBlending, NoShading>,
+        len: 7,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, TextureRaw, NoShading>,
+        len: 7,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, TextureBlending, NoShading>,
+        len: 7,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, TextureRaw, NoShading>,
+        len: 7,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -872,20 +884,20 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, TextureRaw, NoShading>,
+        len: 9,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, TextureBlending, NoShading>,
+        len: 9,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, TextureRaw, NoShading>,
+        len: 9,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -903,8 +915,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, NoTexture, Shaded>,
+        len: 6,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -951,8 +963,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, NoTexture, Shaded>,
+        len: 8,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -975,8 +987,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, TextureBlending, Shaded>,
+        len: 12,
         fifo_len: 1,
         out_of_band: false,
     },
