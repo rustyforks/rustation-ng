@@ -112,6 +112,11 @@ impl Cpu {
         self.hi
     }
 
+    /// Rebase our internal counters that are relative to the global `cycle_counter`
+    pub fn rebase_counters(&mut self, cycle_counter: CycleCount) {
+        self.mult_div_end -= cycle_counter;
+    }
+
     /// Return the current value of register `index`
     fn reg(&self, index: RegisterIndex) -> u32 {
         self.regs[index.0 as usize]

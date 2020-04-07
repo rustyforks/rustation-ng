@@ -120,6 +120,9 @@ impl Psx {
 
             sync::handle_events(self);
         }
+
+        // Rebase the event counters relative to the cycle_counter to make sure they don't overflow
+        sync::rebase_counters(self);
     }
 
     pub fn last_frame(&mut self) -> &Frame {

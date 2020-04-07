@@ -1,6 +1,7 @@
 use super::{cdrom, dma, gpu, pad_memcard, spu, timers, CycleCount, Psx};
 
 /// Tokens used to keep track of the progress of each module individually
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SyncToken {
     Gpu,
     Timers,
@@ -57,6 +58,22 @@ pub fn resync(psx: &mut Psx, who: SyncToken) -> CycleCount {
     psx.sync.last_sync[who] = psx.cycle_counter;
 
     elapsed
+}
+
+/// Reset the cycle_counter to 0 by rebasing all the event counters relative to it. This way we
+/// don't have to worry about overflows.
+pub fn rebase_counters(psx: &mut Psx) {
+    let cc = psx.cycle_counter;
+
+    for i in 0..(SyncToken::NumTokens as usize) {
+        psx.sync.last_sync[i] -= cc;
+        psx.sync.next_event[i] -= cc;
+    }
+    psx.sync.first_event -= cc;
+
+    psx.cpu.rebase_counters(cc);
+
+    psx.cycle_counter = 0;
 }
 
 /// If `who` couldn't consume all the cycles returned by `resync` it can return the leftover here,
