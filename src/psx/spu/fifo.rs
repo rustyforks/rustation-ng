@@ -29,12 +29,6 @@ impl DecoderFifo {
         self.read_idx = 0;
     }
 
-    // Retrieve the number of elements in the FIFO. This number is in the range [0; 31] so it's
-    // potentially bogus if an overflow occurred. This does seem to match the behaviour of the
-    // actual hardware though. For instance command 0x19 ("Test") takes a single parameter. If you
-    // send 0 or more than one parameter you get an error code back. However if you push 33
-    // parameters in the FIFO only the last one is actually used by the command and it works as
-    // expected.
     pub fn len(&self) -> u8 {
         (self.write_idx.wrapping_sub(self.read_idx)) & 0x1f
     }
