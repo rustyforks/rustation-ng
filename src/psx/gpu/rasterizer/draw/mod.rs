@@ -1845,8 +1845,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, TextureBlending, Shaded>,
+        len: 9,
     },
     CommandHandler {
         handler: cmd_unimplemented,
