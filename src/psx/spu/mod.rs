@@ -268,6 +268,9 @@ fn run_cycle(psx: &mut Psx) {
         cdrom::run_audio_cycle(psx, false);
     }
 
+    left_mix = saturate_to_i16(left_mix) as i32;
+    right_mix = saturate_to_i16(right_mix) as i32;
+
     left_mix = psx.spu.main_volume_left.apply_level(left_mix);
     right_mix = psx.spu.main_volume_right.apply_level(right_mix);
 
