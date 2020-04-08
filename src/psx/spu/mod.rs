@@ -1236,7 +1236,7 @@ impl AdpcmHeader {
     fn loop_release_and_mute(self) -> bool {
         // Shouldn't be called if `loop_end` is false
         debug_assert!(self.loop_end());
-        self.0 & (1 << 8) != 0
+        self.0 & (1 << 9) == 0
     }
 
     /// If true the current block is the target for a subsequent loop_end block.
