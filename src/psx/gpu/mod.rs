@@ -810,6 +810,16 @@ impl DrawMode {
             _ => unreachable!(),
         }
     }
+
+    /// If true rectangle textures should be flipped horizontally
+    fn flip_rect_x(self) -> bool {
+        self.0 & (1 << 12) != 0
+    }
+
+    /// If true rectangle textures should be flipped vertically
+    fn flip_rect_y(self) -> bool {
+        self.0 & (1 << 13) != 0
+    }
 }
 
 /// The various transparency modes
@@ -858,14 +868,14 @@ impl TextureWindow {
     fn u_offset(self) -> u8 {
         let off = ((self.0 >> 10) & 0x1f) as u8;
 
-        (off << 3) & self.u_mask()
+        (off << 3) & !self.u_mask()
     }
 
     /// Offset to be added to V coordinates after applying `v_mask`
     fn v_offset(self) -> u8 {
-        let off = ((self.0 >> 10) & 0x1f) as u8;
+        let off = ((self.0 >> 15) & 0x1f) as u8;
 
-        (off << 3) & self.v_mask()
+        (off << 3) & !self.v_mask()
     }
 }
 

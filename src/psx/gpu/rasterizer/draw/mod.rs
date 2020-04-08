@@ -64,7 +64,7 @@ impl Rasterizer {
             frame_channel,
             clip_x_min: 0,
             clip_y_min: 0,
-            clip_x_max: 1,
+            clip_x_max: 0,
             clip_y_max: 0,
             draw_offset_x: 0,
             draw_offset_y: 0,
@@ -164,7 +164,7 @@ impl Rasterizer {
     fn reset(&mut self) {
         self.clip_x_min = 0;
         self.clip_y_min = 0;
-        self.clip_x_max = 1;
+        self.clip_x_max = 0;
         self.clip_y_max = 0;
         self.draw_offset_x = 0;
         self.draw_offset_y = 0;
@@ -178,8 +178,12 @@ impl Rasterizer {
     where
         Transparency: TransparencyMode,
     {
-        debug_assert!(x >= 0 && x < 1024);
-        debug_assert!(y >= 0 && y < 512);
+        debug_assert!(x >= 0 && x < 1024, "x out of bounds ({})", x);
+        debug_assert!(y >= 0 && y < 1024, "y out of bounds ({})", y);
+
+        // Apparently the PlayStation GPU supports 2MB VRAM (1024x1024, used in some arcade
+        // machines apparently) but the bottom half isn't installed so it wraps around.
+        let y = y & 0x1ff;
 
         let vram_off = y * 1024 + x;
 
@@ -280,7 +284,7 @@ impl Rasterizer {
             return;
         }
 
-        if x_max < self.clip_x_min || x_min > self.clip_x_max {
+        if x_max < self.clip_x_min || x_min >= self.clip_x_max {
             // The triangle is fully to the left or right of the draw area, we don't have anything
             // to draw
             return;
@@ -527,6 +531,7 @@ impl Rasterizer {
         }
     }
 
+    /// Rasterize one line from a triangle
     fn rasterize_line<Transparency, Texture, Shading>(
         &mut self,
         y: i32,
@@ -540,7 +545,7 @@ impl Rasterizer {
         Shading: ShadingMode,
     {
         let start_x = max(left_x, self.clip_x_min);
-        let end_x = min(right_x, self.clip_x_max);
+        let end_x = min(right_x, self.clip_x_max + 1);
 
         if start_x >= end_x {
             // Line is either 0-length or clipped
@@ -583,6 +588,96 @@ impl Rasterizer {
 
     fn get_texel(&self, u: u8, v: u8) -> Pixel {
         self.tex_mapper.get_texel(u, v, &self.vram)
+    }
+
+    fn draw_rect<Transparency, Texture>(&mut self, origin: Vertex, width: i32, height: i32)
+    where
+        Transparency: TransparencyMode,
+        Texture: TextureMode,
+    {
+        let mut u_start = origin.u;
+        let mut v = origin.v;
+
+        let (u_inc, v_inc) = if Texture::is_textured() {
+            // Per-No$ these bits aren't supposed to function in early PSX models. If that's true
+            // they probably aren't used in many games.
+            let flip_x = self.tex_mapper.draw_mode.flip_rect_x();
+            let flip_y = self.tex_mapper.draw_mode.flip_rect_y();
+
+            let u_inc = if flip_x {
+                // XXX Taken from Mednafen, not sure what this does
+                u_start |= 1;
+                -1
+            } else {
+                1
+            };
+
+            let v_inc = if flip_y { -1 } else { 1 };
+
+            (u_inc, v_inc)
+        } else {
+            (0, 0)
+        };
+
+        let mut x_start = origin.x();
+        let x_end = min(x_start + width, self.clip_x_max - 1);
+
+        let mut y_start = origin.y();
+        let y_end = min(y_start + height, self.clip_y_max - 1);
+
+        if x_start < self.clip_x_min {
+            if Texture::is_textured() {
+                let skip = (self.clip_x_min - x_start) * u_inc;
+
+                u_start = u_start.wrapping_add(skip as u8);
+            }
+            x_start = self.clip_x_min;
+        }
+
+        if y_start < self.clip_y_min {
+            if Texture::is_textured() {
+                let skip = (self.clip_y_min - y_start) * u_inc;
+
+                v = v.wrapping_add(skip as u8);
+            }
+            y_start = self.clip_y_min;
+        }
+
+        if x_end <= x_start || y_end <= y_start {
+            // Rect is 0-width or completely clipped
+            return;
+        }
+
+        let mut color = origin.color;
+
+        if Transparency::is_transparent() {
+            color.set_mask();
+        }
+
+        for y in y_start..y_end {
+            let mut u = u_start;
+            for x in x_start..x_end {
+                if Texture::is_textured() {
+                    let texel = self.get_texel(u, v);
+                    // If the pixel is equal to 0 (including mask bit) then we don't draw it
+                    if !texel.is_nul() {
+                        if Texture::is_raw_texture() {
+                            self.draw_solid_pixel::<Transparency>(x, y, texel);
+                        } else {
+                            // Texture blending: the final color is a combination of the texel and
+                            // the computed gouraud color
+                            let blend = texel.blend(origin.color);
+                            self.draw_solid_pixel::<Transparency>(x, y, blend);
+                        }
+                    }
+                } else {
+                    // No texture
+                    self.draw_solid_pixel::<Transparency>(x, y, color);
+                }
+                u = u.wrapping_add(u_inc as u8);
+            }
+            v = v.wrapping_add(v_inc as u8);
+        }
     }
 }
 
@@ -1294,6 +1389,81 @@ where
     rasterizer.draw_triangle::<Transparency, Texture, Shading>(vertices);
 }
 
+fn cmd_handle_rect<Transparency, Texture>(
+    rasterizer: &mut Rasterizer,
+    params: &[u32],
+    dimensions: Option<(i32, i32)>,
+) where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    let mut origin = Vertex::new(0);
+    let mut index = 0;
+
+    origin.color = Pixel::from_command(params[index]);
+    index += 1;
+
+    origin.set_position(params[index]);
+    index += 1;
+
+    // Add the draw offset
+    origin.position.x += rasterizer.draw_offset_x;
+    origin.position.y += rasterizer.draw_offset_y;
+
+    if Texture::is_textured() {
+        rasterizer.tex_mapper.set_clut(params[index]);
+        origin.set_texture_uv(params[index]);
+        index += 1;
+    }
+
+    let (w, h) = match dimensions {
+        Some(d) => d,
+        None => {
+            // Variable dimensions
+            let dim = params[index];
+
+            let w = dim & 0x3ff;
+            let h = (dim >> 16) & 0x1ff;
+
+            (w as i32, h as i32)
+        }
+    };
+
+    rasterizer.draw_rect::<Transparency, Texture>(origin, w, h);
+}
+
+fn cmd_handle_rect_variable<Transparency, Texture>(rasterizer: &mut Rasterizer, params: &[u32])
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    cmd_handle_rect::<Transparency, Texture>(rasterizer, params, None);
+}
+
+fn cmd_handle_rect_1x1<Transparency, Texture>(rasterizer: &mut Rasterizer, params: &[u32])
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    cmd_handle_rect::<Transparency, Texture>(rasterizer, params, Some((1, 1)));
+}
+
+fn cmd_handle_rect_8x8<Transparency, Texture>(rasterizer: &mut Rasterizer, params: &[u32])
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    cmd_handle_rect::<Transparency, Texture>(rasterizer, params, Some((8, 8)));
+}
+
+fn cmd_handle_rect_16x16<Transparency, Texture>(rasterizer: &mut Rasterizer, params: &[u32])
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    cmd_handle_rect::<Transparency, Texture>(rasterizer, params, Some((16, 16)));
+}
+
 #[derive(Debug)]
 struct VRamStore {
     x_min: u16,
@@ -1418,10 +1588,6 @@ fn cmd_clip_bot_right(rasterizer: &mut Rasterizer, params: &[u32]) {
 
     rasterizer.clip_x_max = (clip & 0x3ff) as i32;
     rasterizer.clip_y_max = ((clip >> 10) & 0x3ff) as i32;
-
-    // XXX double check but apparently the real X clip is one more pixel than configured in the
-    // command.
-    rasterizer.clip_x_max += 1;
 }
 
 fn cmd_draw_mode(rasterizer: &mut Rasterizer, params: &[u32]) {
@@ -1850,133 +2016,133 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
     },
     // 0x60
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_variable::<Opaque, NoTexture>,
+        len: 3,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_variable::<Transparent, NoTexture>,
+        len: 3,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
+        handler: cmd_handle_rect_variable::<Opaque, TextureBlending>,
         len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_variable::<Opaque, TextureRaw>,
+        len: 4,
+    },
+    CommandHandler {
+        handler: cmd_handle_rect_variable::<Transparent, TextureBlending>,
+        len: 4,
+    },
+    CommandHandler {
+        handler: cmd_handle_rect_variable::<Transparent, TextureRaw>,
+        len: 4,
+    },
+    CommandHandler {
+        handler: cmd_handle_rect_1x1::<Opaque, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_1x1::<Transparent, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_1x1::<Opaque, TextureBlending>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_1x1::<Opaque, TextureRaw>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_1x1::<Transparent, TextureBlending>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
-    },
-    CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
-    },
-    CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
-    },
-    CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_1x1::<Transparent, TextureRaw>,
+        len: 3,
     },
     // 0x70
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_8x8::<Opaque, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_8x8::<Transparent, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_8x8::<Opaque, TextureBlending>,
+        len: 3,
+    },
+    CommandHandler {
+        handler: cmd_handle_rect_8x8::<Opaque, TextureRaw>,
+        len: 3,
+    },
+    CommandHandler {
+        handler: cmd_handle_rect_8x8::<Transparent, TextureBlending>,
+        len: 3,
+    },
+    CommandHandler {
+        handler: cmd_handle_rect_8x8::<Transparent, TextureRaw>,
+        len: 3,
+    },
+    CommandHandler {
+        handler: cmd_handle_rect_16x16::<Opaque, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_16x16::<Transparent, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_unimplemented,
         len: 1,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_16x16::<Opaque, TextureBlending>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_16x16::<Opaque, TextureRaw>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_16x16::<Transparent, TextureBlending>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
-    },
-    CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
-    },
-    CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
-    },
-    CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
-    },
-    CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_16x16::<Transparent, TextureRaw>,
+        len: 3,
     },
     // 0x80
     CommandHandler {

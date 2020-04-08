@@ -434,7 +434,7 @@ where
     }
 
     let (mut width, mut height) = match dimensions {
-        Some((w, h)) => (w, h),
+        Some(d) => d,
         None => {
             // Variable dimensions
             let dim = psx.gpu.command_pop_to_rasterizer();
@@ -488,6 +488,49 @@ where
 {
     let draw_time = rect_draw_time::<Transparency, Texture>(psx, None);
     psx.gpu.draw_time(draw_time);
+}
+
+fn cmd_handle_rect_1x1<Transparency, Texture>(psx: &mut Psx)
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    let draw_time = rect_draw_time::<Transparency, Texture>(psx, Some((1, 1)));
+    psx.gpu.draw_time(draw_time);
+}
+
+fn cmd_handle_rect_8x8<Transparency, Texture>(psx: &mut Psx)
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    let draw_time = rect_draw_time::<Transparency, Texture>(psx, Some((8, 8)));
+    psx.gpu.draw_time(draw_time);
+}
+
+fn cmd_handle_rect_16x16<Transparency, Texture>(psx: &mut Psx)
+where
+    Transparency: TransparencyMode,
+    Texture: TextureMode,
+{
+    let draw_time = rect_draw_time::<Transparency, Texture>(psx, Some((16, 16)));
+    psx.gpu.draw_time(draw_time);
+}
+
+fn cmd_handle_line<Transparency, Shading>(psx: &mut Psx)
+where
+    Transparency: TransparencyMode,
+    Shading: ShadingMode,
+{
+    warn!("handle line!");
+
+    psx.gpu.command_fifo.pop();
+    psx.gpu.command_fifo.pop();
+    psx.gpu.command_fifo.pop();
+
+    if Shading::is_shaded() {
+        psx.gpu.command_fifo.pop();
+    }
 }
 
 /// Parses the command FIFO for a VRAM store or load and returns the number of words about to be
@@ -551,10 +594,6 @@ fn cmd_clip_bot_right(psx: &mut Psx) {
 
     psx.gpu.clip_x_max = (clip & 0x3ff) as i32;
     psx.gpu.clip_y_max = ((clip >> 10) & 0x3ff) as i32;
-
-    // XXX double check but apparently the real X clip is one more pixel than configured in the
-    // command.
-    psx.gpu.clip_x_max += 1;
 }
 
 fn cmd_draw_offset(psx: &mut Psx) {
@@ -1000,8 +1039,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0x40
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -1012,8 +1051,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -1097,8 +1136,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0x50
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -1109,8 +1148,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -1194,9 +1233,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0x60
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_variable::<Opaque, NoTexture>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
@@ -1206,9 +1245,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_variable::<Transparent, NoTexture>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
@@ -1224,9 +1263,27 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_variable::<Opaque, TextureRaw>,
+        len: 4,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: cmd_handle_rect_variable::<Transparent, TextureBlending>,
+        len: 4,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: cmd_handle_rect_variable::<Transparent, TextureRaw>,
+        len: 4,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: cmd_handle_rect_1x1::<Opaque, NoTexture>,
+        len: 2,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
@@ -1236,9 +1293,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_1x1::<Transparent, NoTexture>,
+        len: 2,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
@@ -1248,52 +1305,34 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_1x1::<Opaque, TextureBlending>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_1x1::<Opaque, TextureRaw>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_1x1::<Transparent, TextureBlending>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
-        out_of_band: false,
-    },
-    Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
-        out_of_band: false,
-    },
-    Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
-        out_of_band: false,
-    },
-    Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_1x1::<Transparent, TextureRaw>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     // 0x70
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_8x8::<Opaque, NoTexture>,
+        len: 2,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
@@ -1303,9 +1342,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_8x8::<Transparent, NoTexture>,
+        len: 2,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
@@ -1315,9 +1354,33 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_8x8::<Opaque, TextureBlending>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: cmd_handle_rect_8x8::<Opaque, TextureRaw>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: cmd_handle_rect_8x8::<Transparent, TextureBlending>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: cmd_handle_rect_8x8::<Transparent, TextureRaw>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: cmd_handle_rect_16x16::<Opaque, NoTexture>,
+        len: 2,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
@@ -1327,9 +1390,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_16x16::<Transparent, NoTexture>,
+        len: 2,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {
@@ -1339,51 +1402,27 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_16x16::<Opaque, TextureBlending>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_16x16::<Opaque, TextureRaw>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_16x16::<Transparent, TextureBlending>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
-        out_of_band: false,
-    },
-    Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
-        out_of_band: false,
-    },
-    Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
-        out_of_band: false,
-    },
-    Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
-        out_of_band: false,
-    },
-    Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_16x16::<Transparent, TextureRaw>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     // 0x80
