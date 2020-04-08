@@ -435,6 +435,7 @@ fn port_load(psx: &mut Psx, port: Port) -> (u32, CycleCount) {
         }
         // XXX latency taken from mednafen
         Port::CdRom => (cdrom::dma_load(psx), 8),
+        Port::Spu => (spu::dma_load(psx), 0),
         _ => unimplemented!("DMA port load {:?}", port),
     }
 }

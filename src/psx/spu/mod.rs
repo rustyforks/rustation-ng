@@ -409,6 +409,18 @@ pub fn dma_store(psx: &mut Psx, v: u32) {
     transfer(psx, w2);
 }
 
+/// Handle DMA reads
+pub fn dma_load(psx: &mut Psx) -> u32 {
+    let w1 = ram_read(psx, psx.spu.ram_index) as u32;
+    psx.spu.ram_index = (psx.spu.ram_index + 1) & 0x3_ffff;
+    let w2 = ram_read(psx, psx.spu.ram_index) as u32;
+    psx.spu.ram_index = (psx.spu.ram_index + 1) & 0x3_ffff;
+
+    check_for_irq(psx, psx.spu.ram_index);
+
+    w1 | (w2 << 16)
+}
+
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
     if T::width() != AccessWidth::HalfWord {
         panic!("Unhandled {:?} SPU store", T::width());
