@@ -361,10 +361,7 @@ impl Psx {
                         panic!("Bad expansion 2 base address: 0x{:08x}", val);
                     }
                 }
-                _ => warn!(
-                    "Unhandled write to MEM_CONTROL register {:x}: 0x{:08x}",
-                    offset, val
-                ),
+                _ => (),
             }
 
             let index = (offset >> 2) as usize;
