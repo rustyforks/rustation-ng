@@ -571,7 +571,9 @@ impl Rasterizer {
                 // We have to set the mask bit since it's used to test if the pixel should be
                 // transparent, and non-textured transparent draw calls are always fully
                 // transparent.
-                color.set_mask();
+                if Transparency::is_transparent() {
+                    color.set_mask();
+                }
 
                 self.draw_solid_pixel::<Transparency>(x, y, color);
             }
@@ -1076,13 +1078,13 @@ impl Pixel {
                 o_b = if s_b > 0xff { 0xff } else { s_b };
             }
             TransparencyFunction::Sub => {
-                let s_r = (0x100 | b_r) - f_r;
-                let s_g = (0x100 | b_g) - f_g;
-                let s_b = (0x100 | b_b) - f_b;
+                let s_r = b_r.wrapping_sub(f_r);
+                let s_g = b_g.wrapping_sub(f_g);
+                let s_b = b_b.wrapping_sub(f_b);
 
-                o_r = if s_r <= 0xff { 0 } else { s_r };
-                o_g = if s_g <= 0xff { 0 } else { s_g };
-                o_b = if s_b <= 0xff { 0 } else { s_b };
+                o_r = if s_r > 0xff { 0 } else { s_r };
+                o_g = if s_g > 0xff { 0 } else { s_g };
+                o_b = if s_b > 0xff { 0 } else { s_b };
             }
             TransparencyFunction::QuarterAdd => {
                 let f_r = f_r >> 2;
