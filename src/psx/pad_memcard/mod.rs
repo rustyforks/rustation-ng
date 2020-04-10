@@ -122,10 +122,12 @@ impl PadMemCard {
 
         self.tx_pending = None;
 
-        // Value measured on the real hardware with baud_div. With baud_div set to 0x44 it should
-        // be more like + 9, so it's not really constant.
         let bd = CycleCount::from(self.baud_div);
-        let to_tx_start = bd + 7;
+        // This value varies quite a bit on the real hardware, probably depending on the current
+        // value of the divider's counter or something like that?
+        //
+        // With the divider set at 136 I see it go as low as 67 and as high as 207
+        let to_tx_start = bd - 40;
         let tx_total = (bd - 11) * 11;
         let to_tx_end = tx_total - to_tx_start;
 
