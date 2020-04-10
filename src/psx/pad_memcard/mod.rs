@@ -33,8 +33,6 @@ pub struct PadMemCard {
     unknown: u8,
     /// XXX not sure what this does exactly, forces a read without any TX?
     rx_en: bool,
-    /// Data Set Ready signal, active low (driven by the gamepad)
-    dsr: bool,
     /// If true an interrupt is generated when a DSR pulse is received from the pad/memory card
     dsr_it: bool,
     /// Current interrupt level
@@ -48,10 +46,12 @@ pub struct PadMemCard {
     rx_not_empty: bool,
     /// Gamepad in slot 1
     pad1: GamePad,
+    pad1_dsr: DsrState,
     /// Gamepad in slot 2
     pad2: GamePad,
+    pad2_dsr: DsrState,
     /// Bus state machine
-    bus: BusState,
+    transfer_state: TransferState,
 }
 
 impl PadMemCard {
@@ -66,13 +66,14 @@ impl PadMemCard {
             interrupt: false,
             unknown: 0,
             rx_en: false,
-            dsr: false,
             dsr_it: false,
             response: 0xff,
             rx_not_empty: false,
             pad1: GamePad::disconnected(),
+            pad1_dsr: DsrState::Idle,
             pad2: GamePad::disconnected(),
-            bus: BusState::Idle,
+            pad2_dsr: DsrState::Idle,
+            transfer_state: TransferState::Idle,
         }
     }
 
@@ -92,29 +93,74 @@ impl PadMemCard {
             return;
         }
 
-        if self.bus.is_busy() {
+        if !self.transfer_state.is_idle() {
             // I'm guessing that we wait for the current command to be over before we send the next
             // one?
             return;
         }
 
-        let (response, dsr) = if self.select {
-            match self.target {
-                Target::PadMemCard1 => self.pad1.exchange_byte(to_send),
-                Target::PadMemCard2 => self.pad2.exchange_byte(to_send),
-            }
-        } else {
-            // No response
-            (0xff, false)
-        };
+        if self.baud_div < 80 || self.baud_div > 239 {
+            // XXX Controller timings are tricky to get absolutely right. The code below is fairly
+            // accurate for values between 80 and 239. Before and after that there's a "gap". See:
+            // https://svkt.org/~simias/up/20200410-000241_pad_controller_timings.dat.png
+            //
+            // Fortunately almost all games seem to use a baud rate of 0x88 (136). If some games
+            // use a different value (maybe with some exotic peripherals?) it'll probably be worth
+            // reviewing this
+            unimplemented!("Baud divider {}", self.baud_div);
+        }
+
+        if !self.select {
+            // In this situation in my tests the following happens:
+            //
+            // * The "TxStart" phase works as usual (i.e. the bit goes up after ~baud_div cycles)
+            // * The transfer never finishes. RX not empty never goes up.
+            // * Setting the "select" bit after TxStart (in an effort to unfreeze the transfer)
+            //   doesn't seem to do anything.
+            unimplemented!("Pad/MemCard TX without selection");
+        }
 
         self.tx_pending = None;
 
-        // XXX Handle `mode` as well, especially the "baudrate reload factor". For now I assume
-        // we're sending 8 bits, one every `baud_div` CPU cycles.
-        let tx_duration = 8 * self.baud_div as CycleCount;
+        // Value measured on the real hardware with baud_div. With baud_div set to 0x44 it should
+        // be more like + 9, so it's not really constant.
+        let bd = CycleCount::from(self.baud_div);
+        let to_tx_start = bd + 7;
+        let tx_total = (bd - 11) * 11;
+        let to_tx_end = tx_total - to_tx_start;
 
-        self.bus = BusState::Transfer(response, dsr, tx_duration);
+        // This is the moment at which the controller seems to actually process the command. This
+        // occurs about `baud_divider` cycles before RX not empty goes up
+        let to_dsr_start = tx_total - bd;
+
+        // I suppose that it would be more accurate to call this code at the end of the transfer
+        // since it's at this point that the controller can really process the command, but it
+        // shouldn't make much of a difference for most peripherals. It could add a bit more input
+        // lag if we're very unlucky and the transfer occurs during a frame boundary but given that
+        // with the standard baudrate of 136 a transfer takes about 40 us it's very unlikely.
+        let response = match self.target {
+            Target::PadMemCard1 => {
+                let (pad_response, dsr_state) = self.pad1.exchange_byte(to_send);
+
+                self.pad1_dsr = dsr_state.delay_by(to_dsr_start);
+
+                pad_response
+            }
+            Target::PadMemCard2 => {
+                let (pad_response, dsr_state) = self.pad2.exchange_byte(to_send);
+
+                self.pad2_dsr = dsr_state.delay_by(to_dsr_start);
+
+                pad_response
+            }
+        };
+
+        self.transfer_state = TransferState::TxStart(to_tx_start, to_tx_end, response);
+    }
+
+    /// Returns true if any of the device's DSR is active
+    fn dsr_active(&self) -> bool {
+        self.pad1_dsr.is_active() || self.pad2_dsr.is_active()
     }
 
     fn get_response(&mut self) -> u8 {
@@ -129,7 +175,13 @@ impl PadMemCard {
     fn stat(&self) -> u32 {
         let mut stat = 0u32;
 
-        let tx_ready = !self.bus.is_transfering() && self.tx_pending.is_none();
+        // In my tests this bit *only* does down during between the moment we write a byte in the
+        // TX buffer and the end of the TxStart step. The rest of the time it stays up
+        let tx_ready = if let TransferState::TxStart(_, _, _) = self.transfer_state {
+            false
+        } else {
+            self.tx_pending.is_none()
+        };
 
         stat |= tx_ready as u32;
         stat |= (self.rx_not_empty as u32) << 1;
@@ -137,7 +189,7 @@ impl PadMemCard {
         stat |= 1 << 2;
         // RX parity error should always be 0 in our case.
         stat |= 0 << 3;
-        stat |= (self.dsr as u32) << 7;
+        stat |= (self.dsr_active() as u32) << 7;
         stat |= (self.interrupt as u32) << 9;
         // XXX needs to add the baudrate counter in bits [31:11];
         stat |= 0 << 11;
@@ -146,6 +198,14 @@ impl PadMemCard {
     }
 
     fn set_mode(&mut self, mode: u8) {
+        if mode == self.mode {
+            return;
+        }
+
+        if !self.transfer_state.is_idle() {
+            warn!("Pad/Memcard controller mode change while transfer is taking place");
+        }
+
         self.mode = mode;
     }
 
@@ -168,8 +228,12 @@ impl PadMemCard {
     fn set_control(&mut self, ctrl: u16) -> bool {
         let mut irq = false;
 
+        let prev_select = self.select;
+        let prev_target = self.target;
+
         if ctrl & 0x40 != 0 {
             // Soft reset
+            // XXX It doesn't seem to reset the contents of the RX FIFO, needs more testing
             self.baud_div = 0;
             self.mode = 0;
             self.select = false;
@@ -177,32 +241,13 @@ impl PadMemCard {
             self.unknown = 0;
             self.interrupt = false;
             self.rx_not_empty = false;
-            self.bus = BusState::Idle;
-            // XXX since the gamepad/memory card asserts this signal it actually probably shouldn't
-            // release here but it'll make our state machine simpler for the time being.
-            self.dsr = false;
-
-        // It doesn't seem to reset the contents of the RX FIFO.
+            self.transfer_state = TransferState::Idle;
         } else {
             if ctrl & 0x10 != 0 {
                 // Interrupt acknowledge
 
                 self.interrupt = false;
-
-                if self.dsr && self.dsr_it {
-                    // The controller's "dsr_it" interrupt is not edge triggered: as long as
-                    // self.dsr && self.dsr_it is true it will keep being triggered. If the
-                    // software attempts to acknowledge the interrupt in this state it will
-                    // re-trigger immediately which will be seen by the edge-triggered top level
-                    // interrupt controller. So I guess this shouldn't happen?
-                    warn!("Gamepad interrupt acknowledge while DSR is active");
-
-                    self.interrupt = true;
-                    irq = true;
-                }
             }
-
-            let prev_select = self.select;
 
             // No idea what bits 3 and 5 do but they're read/write.
             self.unknown = (ctrl as u8) & 0x28;
@@ -217,7 +262,7 @@ impl PadMemCard {
                 panic!("Gamepad rx_en not implemented");
             }
 
-            if self.dsr_it && !self.interrupt && self.dsr {
+            if self.maybe_trigger_irq() {
                 // Interrupt should trigger here but that really shouldn't happen I think.
                 panic!("dsr_it enabled while DSR signal is active");
             }
@@ -226,102 +271,130 @@ impl PadMemCard {
                 // XXX add support for those interrupts
                 panic!("Unsupported gamepad interrupts: {:04x}", ctrl);
             }
+        }
 
-            if !prev_select && self.select {
-                // XXX Should probably also check self.target, not sure how it influences the
-                // select line. I assume only the targeted slot is selected?
-                self.pad1.select();
-                self.pad2.select();
+        // If the select line was just asserted or we changed the active line we need to notify the
+        // devices since this means that a fresh transaction is about to start.
+        if self.select && (!prev_select || self.target != prev_target) {
+            match self.target {
+                Target::PadMemCard1 => self.pad1.select(),
+                Target::PadMemCard2 => self.pad2.select(),
             }
+        }
+
+        if !self.select || self.target != Target::PadMemCard1 {
+            // Unselected pads/memcards don't send DSR
+            self.pad1_dsr = DsrState::Idle;
+        }
+
+        if !self.select || self.target != Target::PadMemCard2 {
+            // Unselected pads/memcards don't send DSR
+            self.pad2_dsr = DsrState::Idle;
+        }
+
+        if self.maybe_trigger_irq() {
+            // The controller's "dsr_it" interrupt is not edge triggered: as long as self.dsr &&
+            // self.dsr_it is true it will keep being triggered. If the software attempts to
+            // acknowledge the interrupt in this state it will re-trigger immediately which will be
+            // seen by the edge-triggered top level interrupt controller. So I guess this shouldn't
+            // happen?
+            warn!("Gamepad interrupt acknowledge while DSR is active");
+            irq = true;
         }
 
         irq
     }
+
+    fn maybe_trigger_irq(&mut self) -> bool {
+        if !self.interrupt && self.dsr_active() && self.dsr_it {
+            self.interrupt = true;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn run_controller(psx: &mut Psx) {
-    let mut remaining_cycles = sync::resync(psx, PADSYNC);
+    let elapsed = sync::resync(psx, PADSYNC);
 
-    while remaining_cycles > 0 {
-        let elapsed = match psx.pad_memcard.bus {
-            BusState::Idle => remaining_cycles,
-            BusState::Transfer(r, dsr, delay) => {
-                if remaining_cycles < delay {
-                    let delay = delay - remaining_cycles;
-                    psx.pad_memcard.bus = BusState::Transfer(r, dsr, delay);
+    run_transfer(psx, elapsed);
+    run_dsr(psx, elapsed);
+}
 
-                    remaining_cycles
+/// Update transfer state machine
+fn run_transfer(psx: &mut Psx, mut cycles: CycleCount) {
+    while cycles > 0 {
+        let elapsed = match psx.pad_memcard.transfer_state {
+            TransferState::Idle => cycles,
+            TransferState::TxStart(delay, to_rx, rx_byte) => {
+                if cycles < delay {
+                    psx.pad_memcard.transfer_state =
+                        TransferState::TxStart(delay - cycles, to_rx, rx_byte);
+
+                    cycles
                 } else {
-                    // We reached the end of the transfer
+                    psx.pad_memcard.transfer_state = TransferState::RxAvailable(to_rx, rx_byte);
 
+                    delay
+                }
+            }
+            TransferState::RxAvailable(delay, rx_byte) => {
+                if cycles < delay {
+                    psx.pad_memcard.transfer_state =
+                        TransferState::RxAvailable(delay - cycles, rx_byte);
+
+                    cycles
+                } else {
                     if psx.pad_memcard.rx_not_empty {
                         // XXX should push in the non-emulated RX FIFO instead of overwriting
                         // `psx.pad_memcard.response`
                         unimplemented!("Gamepad RX while FIFO isn't empty");
                     }
 
-                    psx.pad_memcard.response = r;
+                    psx.pad_memcard.response = rx_byte;
                     psx.pad_memcard.rx_not_empty = true;
-                    // XXX For now pretend that the DSR pulse follows immediately after the last
-                    // byte, probably not accurate.
-                    psx.pad_memcard.dsr = dsr;
-
-                    if dsr {
-                        if psx.pad_memcard.dsr_it {
-                            if !psx.pad_memcard.interrupt {
-                                // Rising edge of the interrupt
-                                irq::trigger(psx, Interrupt::PadMemCard);
-                            }
-
-                            psx.pad_memcard.interrupt = true;
-                        }
-
-                        // The DSR pulse is generated purely by the controller without any
-                        // input from the console. Therefore the actual length of the pulse
-                        // changes from controller to controller. I have two seemingly
-                        // identical SCPH-1080 controllers, one pulses the DSR line for ~100CPU
-                        // cycles while the other one is slightly faster at around ~90 CPU
-                        // cycles.
-                        let dsr_duration = 90;
-                        psx.pad_memcard.bus = BusState::Dsr(dsr_duration);
-                    } else {
-                        // We're done with this transaction
-                        psx.pad_memcard.bus = BusState::Idle;
-                    }
-
-                    delay
-                }
-            }
-            BusState::Dsr(delay) => {
-                if remaining_cycles < delay {
-                    let delay = delay - remaining_cycles;
-                    psx.pad_memcard.bus = BusState::Dsr(delay);
-
-                    remaining_cycles
-                } else {
-                    // DSR pulse is over, bus is idle
-                    psx.pad_memcard.dsr = false;
-                    psx.pad_memcard.bus = BusState::Idle;
+                    psx.pad_memcard.transfer_state = TransferState::Idle;
 
                     delay
                 }
             }
         };
 
+        // Need to call this here if we have a buffered transfer. That normally shouldn't happen
+        // since the game should wait for the DSR pulse first
         psx.pad_memcard.maybe_exchange_byte();
 
-        remaining_cycles -= elapsed;
+        cycles -= elapsed;
+    }
+}
+
+/// Update the device's DSR state
+fn run_dsr(psx: &mut Psx, cycles: CycleCount) {
+    psx.pad_memcard.pad1_dsr.run(cycles);
+    psx.pad_memcard.pad2_dsr.run(cycles);
+
+    // See if a new DSR pulse occurred to trigger the IRQ
+    if psx.pad_memcard.maybe_trigger_irq() {
+        irq::trigger(psx, Interrupt::PadMemCard);
     }
 }
 
 fn predict_next_sync(psx: &mut Psx) {
-    let next_event = if let BusState::Transfer(_, true, delay) = psx.pad_memcard.bus {
-        // We have a DSR pulse at the end of transfer, force a sync
-        delay
-    } else {
-        // So sync needed
-        1_000_000
-    };
+    let mut next_event = 1_000_000;
+
+    if psx.pad_memcard.dsr_it {
+        if let Some(e) = psx.pad_memcard.pad1_dsr.to_dsr() {
+            if e < next_event {
+                next_event = e;
+            }
+        }
+        if let Some(e) = psx.pad_memcard.pad2_dsr.to_dsr() {
+            if e < next_event {
+                next_event = e;
+            }
+        }
+    }
 
     sync::next_event(psx, PADSYNC, next_event);
 }
@@ -409,29 +482,93 @@ impl Target {
 }
 
 /// Controller transaction state machine
-#[derive(Debug)]
-enum BusState {
+#[derive(PartialEq, Eq, Debug)]
+enum TransferState {
     /// Bus is idle
     Idle,
-    /// Transaction in progress, we store the response byte, the DSR response and the number of
-    /// Cycles remaining until we reach the DSR pulse (if any)
-    Transfer(u8, bool, CycleCount),
-    /// DSR is asserted, count the number of cycles remaining.
-    Dsr(CycleCount),
+    /// We just started a new transfer. This is the delay until the "TX started" (stat bit 0) goes
+    /// up. The 2nd value is the subsequent RxAvailable delay.
+    TxStart(CycleCount, CycleCount, u8),
+    /// Transfer is in progress. This is the delay until the data is put in the RX FIFO and the "RX
+    /// not empty" (stat bit 1) goes up.
+    RxAvailable(CycleCount, u8),
 }
 
-impl BusState {
-    fn is_busy(&self) -> bool {
-        match *self {
-            BusState::Idle => false,
-            _ => true,
+impl TransferState {
+    fn is_idle(&self) -> bool {
+        *self == TransferState::Idle
+    }
+}
+
+/// State of the DSR (data available) signal coming from one of the pads or memcards
+#[derive(PartialEq, Eq, Debug)]
+pub enum DsrState {
+    /// No event pending
+    Idle,
+    /// A DSR pulse is about to take place. The first value is the number of cycles until the start
+    /// of the pulse, the 2nd is the length of the pulse.
+    Pending(CycleCount, CycleCount),
+    /// A DSR pulse is taking place. The value is the remaining number of cycles until the end of
+    /// the pulse.
+    Active(CycleCount),
+}
+
+impl DsrState {
+    fn is_active(&self) -> bool {
+        if let DsrState::Active(_) = self {
+            true
+        } else {
+            false
         }
     }
 
-    fn is_transfering(&self) -> bool {
+    fn delay_by(&self, offset: CycleCount) -> DsrState {
         match *self {
-            BusState::Transfer(_, _, _) => true,
-            _ => false,
+            DsrState::Idle => DsrState::Idle,
+            DsrState::Pending(delay, duration) => DsrState::Pending(delay + offset, duration),
+            DsrState::Active(_) => unreachable!("Can't delay an active pulse!"),
+        }
+    }
+
+    /// Returns the number of cycles until the DSR pulse, if one is pending
+    fn to_dsr(&self) -> Option<CycleCount> {
+        match *self {
+            DsrState::Idle => None,
+            DsrState::Pending(delay, _) => Some(delay),
+            DsrState::Active(_) => None,
+        }
+    }
+
+    fn run(&mut self, mut cycles: CycleCount) {
+        while cycles > 0 {
+            *self = match *self {
+                DsrState::Idle => {
+                    cycles = 0;
+                    DsrState::Idle
+                }
+                DsrState::Pending(delay, duration) => {
+                    if delay > cycles {
+                        let rem = delay - cycles;
+                        cycles = 0;
+                        DsrState::Pending(rem, duration)
+                    } else {
+                        cycles -= delay;
+
+                        DsrState::Active(duration)
+                    }
+                }
+                DsrState::Active(duration) => {
+                    if duration > cycles {
+                        let rem = duration - cycles;
+                        cycles = 0;
+                        DsrState::Active(rem)
+                    } else {
+                        cycles -= duration;
+
+                        DsrState::Idle
+                    }
+                }
+            };
         }
     }
 }

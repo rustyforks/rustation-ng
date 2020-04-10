@@ -1,3 +1,5 @@
+use super::DsrState;
+
 pub struct GamePad {
     /// Gamepad profile.
     profile: Box<dyn Profile>,
@@ -12,12 +14,12 @@ impl GamePad {
     pub fn disconnected() -> GamePad {
         GamePad {
             seq: 0,
-            active: true,
+            active: false,
             profile: Box::new(DisconnectedProfile),
         }
     }
 
-    /// Called when the "select" line goes down.
+    /// Called when the "select" line goes low.
     pub fn select(&mut self) {
         // Prepare for incoming command
         self.active = true;
@@ -27,21 +29,21 @@ impl GamePad {
     /// The 2nd return value is the response byte. The 2nd return value is true if the gamepad
     /// issues a DSR pulse after the byte is read to notify the controller that more data can be
     /// read.
-    pub fn exchange_byte(&mut self, cmd: u8) -> (u8, bool) {
+    pub fn exchange_byte(&mut self, cmd: u8) -> (u8, DsrState) {
         if !self.active {
-            return (0xff, false);
+            return (0xff, DsrState::Idle);
         }
 
-        let (resp, dsr) = self.profile.handle_command(self.seq, cmd);
+        let (resp, dsr_state) = self.profile.handle_command(self.seq, cmd);
 
         // If we're not asserting DSR it either means that we've encountered an error or that we
         // have nothing else to reply. In either case we won't be handling any more command bytes
         // in this transaction.
-        self.active = dsr;
+        self.active = dsr_state != DsrState::Idle;
 
         self.seq += 1;
 
-        (resp, dsr)
+        (resp, dsr_state)
     }
 
     /// Return a mutable reference to the underlying gamepad Profile
@@ -88,7 +90,7 @@ pub trait Profile {
     ///
     /// Returns a pair `(response, dsr)`. If DSR is false the subsequent command bytes will be
     /// ignored for the current transaction.
-    fn handle_command(&mut self, seq: u8, cmd: u8) -> (u8, bool);
+    fn handle_command(&mut self, seq: u8, cmd: u8) -> (u8, DsrState);
 
     /// Set a button's state. The function can be called several time in a row with the same button
     /// and the same state, it should be idempotent.
@@ -99,9 +101,9 @@ pub trait Profile {
 pub struct DisconnectedProfile;
 
 impl Profile for DisconnectedProfile {
-    fn handle_command(&mut self, _: u8, _: u8) -> (u8, bool) {
+    fn handle_command(&mut self, _: u8, _: u8) -> (u8, DsrState) {
         // The bus is open, no response
-        (0xff, false)
+        (0xff, DsrState::Idle)
     }
 
     fn set_button_state(&mut self, _: Button, _: ButtonState) {}
@@ -119,8 +121,8 @@ impl DigitalProfile {
 }
 
 impl Profile for DigitalProfile {
-    fn handle_command(&mut self, seq: u8, cmd: u8) -> (u8, bool) {
-        match seq {
+    fn handle_command(&mut self, seq: u8, cmd: u8) -> (u8, DsrState) {
+        let (resp, send_dsr) = match seq {
             // First byte should be 0x01 if the command targets the controller
             0 => (0xff, (cmd == 0x01)),
             // Digital gamepad only supports command 0x42: read buttons.
@@ -138,7 +140,21 @@ impl Profile for DigitalProfile {
             4 => ((self.0 >> 8) as u8, false),
             // Shouldn't be reached
             _ => (0xff, false),
-        }
+        };
+
+        let dsr_state = if send_dsr {
+            // The actual length of the pulse seems to vary between 90 and 100 cycles depending on
+            // the controller.
+            //
+            // Note that the 440 cycle delay is *not* from the moment the RX not empty goes up in the
+            // controller, because it seems that there's a ~`baud_divider` delay between the moment
+            // the controller handles the command and the moment RX not empty is asserted.
+            DsrState::Pending(440, 90)
+        } else {
+            DsrState::Idle
+        };
+
+        (resp, dsr_state)
     }
 
     fn set_button_state(&mut self, button: Button, state: ButtonState) {
