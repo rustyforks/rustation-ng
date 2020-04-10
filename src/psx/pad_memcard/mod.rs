@@ -1,11 +1,13 @@
 //! Gamepad and memory card controller emulation
 
+pub mod devices;
+
 use super::{irq, sync, AccessWidth, Addressable, CycleCount, Psx};
 use irq::Interrupt;
 
-use self::gamepad::GamePad;
-
-pub mod gamepad;
+use self::devices::gamepad::GamePad;
+use self::devices::memory_card::MemoryCardInterface;
+use self::devices::Peripheral;
 
 const PADSYNC: sync::SyncToken = sync::SyncToken::PadMemCard;
 
@@ -45,11 +47,17 @@ pub struct PadMemCard {
     /// True when we the RX FIFO is not empty.
     rx_not_empty: bool,
     /// Gamepad in slot 1
-    pad1: GamePad,
+    pad1: Peripheral<dyn GamePad>,
     pad1_dsr: DsrState,
     /// Gamepad in slot 2
-    pad2: GamePad,
+    pad2: Peripheral<dyn GamePad>,
     pad2_dsr: DsrState,
+    /// Memory Card in slot 1
+    memcard1: Peripheral<dyn MemoryCardInterface>,
+    memcard1_dsr: DsrState,
+    /// Memory Card in slot 2
+    memcard2: Peripheral<dyn MemoryCardInterface>,
+    memcard2_dsr: DsrState,
     /// Bus state machine
     transfer_state: TransferState,
 }
@@ -69,17 +77,26 @@ impl PadMemCard {
             dsr_it: false,
             response: 0xff,
             rx_not_empty: false,
-            pad1: GamePad::disconnected(),
+            pad1: devices::disconnected_gamepad(),
             pad1_dsr: DsrState::Idle,
-            pad2: GamePad::disconnected(),
+            pad2: devices::disconnected_gamepad(),
             pad2_dsr: DsrState::Idle,
+            memcard1: devices::disconnected_memory_card(),
+            memcard1_dsr: DsrState::Idle,
+            memcard2: devices::disconnected_memory_card(),
+            memcard2_dsr: DsrState::Idle,
             transfer_state: TransferState::Idle,
         }
     }
 
-    /// Return a mutable reference to the gamepad profiles being used.
-    pub fn gamepads_mut(&mut self) -> [&mut GamePad; 2] {
+    /// Return a mutable reference to the gamepad peripherals being used.
+    pub fn gamepads_mut(&mut self) -> [&mut Peripheral<dyn GamePad>; 2] {
         [&mut self.pad1, &mut self.pad2]
+    }
+
+    /// Return a mutable reference to the memory card peripherals being used.
+    pub fn memory_cards_mut(&mut self) -> [&mut Peripheral<dyn MemoryCardInterface>; 2] {
+        [&mut self.memcard1, &mut self.memcard2]
     }
 
     fn maybe_exchange_byte(&mut self) {
@@ -142,18 +159,22 @@ impl PadMemCard {
         // with the standard baudrate of 136 a transfer takes about 40 us it's very unlikely.
         let response = match self.target {
             Target::PadMemCard1 => {
-                let (pad_response, dsr_state) = self.pad1.exchange_byte(to_send);
+                let (pad_response, pad_dsr_state) = self.pad1.exchange_byte(to_send);
+                let (mc_response, mc_dsr_state) = self.memcard1.exchange_byte(to_send);
 
-                self.pad1_dsr = dsr_state.delay_by(to_dsr_start);
+                self.pad1_dsr = pad_dsr_state.delay_by(to_dsr_start);
+                self.memcard1_dsr = mc_dsr_state.delay_by(to_dsr_start);
 
-                pad_response
+                pad_response & mc_response
             }
             Target::PadMemCard2 => {
-                let (pad_response, dsr_state) = self.pad2.exchange_byte(to_send);
+                let (pad_response, pad_dsr_state) = self.pad2.exchange_byte(to_send);
+                let (mc_response, mc_dsr_state) = self.memcard2.exchange_byte(to_send);
 
-                self.pad2_dsr = dsr_state.delay_by(to_dsr_start);
+                self.pad2_dsr = pad_dsr_state.delay_by(to_dsr_start);
+                self.memcard2_dsr = mc_dsr_state.delay_by(to_dsr_start);
 
-                pad_response
+                pad_response & mc_response
             }
         };
 
@@ -162,7 +183,10 @@ impl PadMemCard {
 
     /// Returns true if any of the device's DSR is active
     fn dsr_active(&self) -> bool {
-        self.pad1_dsr.is_active() || self.pad2_dsr.is_active()
+        self.pad1_dsr.is_active()
+            || self.pad2_dsr.is_active()
+            || self.memcard1_dsr.is_active()
+            || self.memcard2_dsr.is_active()
     }
 
     fn get_response(&mut self) -> u8 {
@@ -279,19 +303,27 @@ impl PadMemCard {
         // devices since this means that a fresh transaction is about to start.
         if self.select && (!prev_select || self.target != prev_target) {
             match self.target {
-                Target::PadMemCard1 => self.pad1.select(),
-                Target::PadMemCard2 => self.pad2.select(),
+                Target::PadMemCard1 => {
+                    self.pad1.select();
+                    self.memcard1.select()
+                }
+                Target::PadMemCard2 => {
+                    self.pad2.select();
+                    self.memcard2.select();
+                }
             }
         }
 
         if !self.select || self.target != Target::PadMemCard1 {
             // Unselected pads/memcards don't send DSR
             self.pad1_dsr = DsrState::Idle;
+            self.memcard1_dsr = DsrState::Idle;
         }
 
         if !self.select || self.target != Target::PadMemCard2 {
             // Unselected pads/memcards don't send DSR
             self.pad2_dsr = DsrState::Idle;
+            self.memcard2_dsr = DsrState::Idle;
         }
 
         if self.maybe_trigger_irq() {
@@ -375,6 +407,8 @@ fn run_transfer(psx: &mut Psx, mut cycles: CycleCount) {
 fn run_dsr(psx: &mut Psx, cycles: CycleCount) {
     psx.pad_memcard.pad1_dsr.run(cycles);
     psx.pad_memcard.pad2_dsr.run(cycles);
+    psx.pad_memcard.memcard1_dsr.run(cycles);
+    psx.pad_memcard.memcard2_dsr.run(cycles);
 
     // See if a new DSR pulse occurred to trigger the IRQ
     if psx.pad_memcard.maybe_trigger_irq() {
@@ -392,6 +426,16 @@ fn predict_next_sync(psx: &mut Psx) {
             }
         }
         if let Some(e) = psx.pad_memcard.pad2_dsr.to_dsr() {
+            if e < next_event {
+                next_event = e;
+            }
+        }
+        if let Some(e) = psx.pad_memcard.memcard1_dsr.to_dsr() {
+            if e < next_event {
+                next_event = e;
+            }
+        }
+        if let Some(e) = psx.pad_memcard.memcard2_dsr.to_dsr() {
             if e < next_event {
                 next_event = e;
             }
