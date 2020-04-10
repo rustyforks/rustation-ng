@@ -507,8 +507,20 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                 0x1f80_1c00 + off
             ),
         }
-    } else {
-        unimplemented!("Internal SPU register store");
+    } else if index < 0x130 {
+        // Set voice level
+        let voice_no = (index >> 1) & 0x1f;
+        let voice = &mut psx.spu.voices[voice_no];
+
+        let left = index & 1 == 0;
+
+        let level = val as i16;
+
+        if left {
+            voice.volume_left.set_level(level);
+        } else {
+            voice.volume_right.set_level(level);
+        };
     }
 }
 
@@ -544,8 +556,22 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
             regmap::UNKNOWN => return T::from_u32(0),
             _ => reg_v,
         }
+    } else if index < 0x130 {
+        // Read voice level
+        let voice_no = (index >> 1) & 0x1f;
+        let voice = &psx.spu.voices[voice_no];
+
+        let left = index & 1 == 0;
+
+        let v = if left {
+            voice.volume_left.level()
+        } else {
+            voice.volume_right.level()
+        };
+
+        v as u16
     } else {
-        unimplemented!("Internal SPU register load");
+        reg_v
     };
 
     T::from_u32(u32::from(v))
@@ -857,6 +883,10 @@ impl Volume {
 
     fn level(&self) -> i16 {
         self.level
+    }
+
+    fn set_level(&mut self, level: i16) {
+        self.level = level
     }
 
     /// Apply current level to a sound sample
