@@ -124,6 +124,7 @@ pub enum Environment {
     SetMessage = 6,
     GetSystemDirectory = 9,
     SetPixelFormat = 10,
+    SetInputDescriptors = 11,
     SetHwRender = 14,
     GetVariable = 15,
     SetVariables = 16,
@@ -134,6 +135,7 @@ pub enum Environment {
     SetGeometry = 37,
 }
 
+/// Controller types supported by libretro
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InputDevice {
     None = 0,
@@ -146,14 +148,18 @@ pub enum InputDevice {
 }
 
 impl InputDevice {
+    /// Create a custom subclass of a libretro controller type
     pub const fn subclass(self, sub_id: c_uint) -> c_uint {
         (self as u32) | ((sub_id + 1) << 8)
     }
 }
 
+/// Description of a controller type with its accompanying subtype (see InputDevice::subclass)
 #[repr(C)]
 pub struct ControllerDescription {
+    /// Description of the controller
     pub desc: *const c_char,
+    /// Subclass
     pub id: c_uint,
 }
 
@@ -188,6 +194,80 @@ pub fn set_controller_info(info: &'static [ControllerInfo]) -> bool {
     );
 
     unsafe { call_environment_slice(Environment::SetControllerInfo, info) }
+}
+
+/// Describe an input binding (button, joystick axis etc...)
+#[repr(C)]
+pub struct InputDescriptor {
+    /// Physical port this input is connected to
+    port: c_uint,
+    /// Type of device (InputDevice, shouldn't be subclass I think)
+    device: c_uint,
+    /// Sub-specifier if necessary, for instance to differentiate between the two axes of the same
+    /// joystick. Set to 0 otherwise.
+    index: c_uint,
+    /// Libretro internal input that should match this emulated button. For instance on a
+    /// PlayStation controller the Square button should map to JoyPadButton::Y
+    id: c_uint,
+    /// Human-readable description of this input
+    description: *const c_char,
+}
+
+impl InputDescriptor {
+    /// Describe a button
+    pub const fn joypad_button(
+        port: c_uint,
+        button: JoyPadButton,
+        description: *const c_char,
+    ) -> InputDescriptor {
+        InputDescriptor {
+            port,
+            device: InputDevice::JoyPad as _,
+            index: 0,
+            id: button as _,
+            description,
+        }
+    }
+
+    /// Describe an analog joystick axis
+    pub const fn analog_axis(
+        port: c_uint,
+        stick: AnalogInput,
+        axis: AnalogAxis,
+        description: *const c_char,
+    ) -> InputDescriptor {
+        InputDescriptor {
+            port,
+            device: InputDevice::Analog as _,
+            index: stick as _,
+            id: axis as _,
+            description,
+        }
+    }
+
+    /// End of table marker
+    pub const fn end_of_table() -> InputDescriptor {
+        InputDescriptor {
+            port: 0,
+            device: 0,
+            index: 0,
+            id: 0,
+            description: ptr::null(),
+        }
+    }
+}
+
+// We need this because we're storing pointers in the struct. As long as these pointers are static
+// this should be safe, although of course we don't enforce it here so it's a bit dirty.
+unsafe impl Sync for InputDescriptor {}
+
+pub fn set_input_descriptors(descriptors: &'static [InputDescriptor]) -> bool {
+    assert!(
+        !descriptors.is_empty() && descriptors[descriptors.len() - 1].description.is_null(),
+        "Non-NULL terminated input descriptors!"
+    );
+
+    unsafe { call_environment_slice(Environment::SetInputDescriptors, descriptors) }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -350,6 +430,21 @@ pub enum JoyPadButton {
     R2 = 13,
     L3 = 14,
     R3 = 15,
+}
+
+/// RETRO_DEVICE_INDEX_ANALOG_* constants
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnalogInput {
+    Left = 0,
+    Right = 1,
+    Button = 2,
+}
+
+/// RETRO_DEVICE_ID_ANALOG_* constants
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnalogAxis {
+    X = 0,
+    Y = 1,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

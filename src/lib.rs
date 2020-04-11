@@ -398,6 +398,117 @@ static BUTTON_MAP: [(libretro::JoyPadButton, Button); 14] = [
     (libretro::JoyPadButton::R2, Button::R2),
 ];
 
+static INPUT_DESCRIPTORS: [libretro::InputDescriptor; 41] = [
+    // Port 0
+    libretro::InputDescriptor::joypad_button(
+        0,
+        libretro::JoyPadButton::Left,
+        cstring!("D-Pad Left"),
+    ),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::Up, cstring!("D-Pad Up")),
+    libretro::InputDescriptor::joypad_button(
+        0,
+        libretro::JoyPadButton::Down,
+        cstring!("D-Pad Down"),
+    ),
+    libretro::InputDescriptor::joypad_button(
+        0,
+        libretro::JoyPadButton::Right,
+        cstring!("D-Pad Right"),
+    ),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::B, cstring!("Cross")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::A, cstring!("Circle")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::X, cstring!("Triangle")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::Y, cstring!("Square")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::L, cstring!("L1")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::L2, cstring!("L2")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::L3, cstring!("L3")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::R, cstring!("R1")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::R2, cstring!("R2")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::R3, cstring!("R3")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::Select, cstring!("Select")),
+    libretro::InputDescriptor::joypad_button(0, libretro::JoyPadButton::Start, cstring!("Start")),
+    libretro::InputDescriptor::analog_axis(
+        0,
+        libretro::AnalogInput::Left,
+        libretro::AnalogAxis::X,
+        cstring!("Left Analog X"),
+    ),
+    libretro::InputDescriptor::analog_axis(
+        0,
+        libretro::AnalogInput::Left,
+        libretro::AnalogAxis::Y,
+        cstring!("Left Analog Y"),
+    ),
+    libretro::InputDescriptor::analog_axis(
+        0,
+        libretro::AnalogInput::Right,
+        libretro::AnalogAxis::X,
+        cstring!("Right Analog X"),
+    ),
+    libretro::InputDescriptor::analog_axis(
+        0,
+        libretro::AnalogInput::Right,
+        libretro::AnalogAxis::Y,
+        cstring!("Right Analog Y"),
+    ),
+    // Port 1
+    libretro::InputDescriptor::joypad_button(
+        1,
+        libretro::JoyPadButton::Left,
+        cstring!("D-Pad Left"),
+    ),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::Up, cstring!("D-Pad Up")),
+    libretro::InputDescriptor::joypad_button(
+        1,
+        libretro::JoyPadButton::Down,
+        cstring!("D-Pad Down"),
+    ),
+    libretro::InputDescriptor::joypad_button(
+        1,
+        libretro::JoyPadButton::Right,
+        cstring!("D-Pad Right"),
+    ),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::B, cstring!("Cross")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::A, cstring!("Circle")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::X, cstring!("Triangle")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::Y, cstring!("Square")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::L, cstring!("L1")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::L2, cstring!("L2")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::L3, cstring!("L3")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::R, cstring!("R1")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::R2, cstring!("R2")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::R3, cstring!("R3")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::Select, cstring!("Select")),
+    libretro::InputDescriptor::joypad_button(1, libretro::JoyPadButton::Start, cstring!("Start")),
+    libretro::InputDescriptor::analog_axis(
+        1,
+        libretro::AnalogInput::Left,
+        libretro::AnalogAxis::X,
+        cstring!("Left Analog X"),
+    ),
+    libretro::InputDescriptor::analog_axis(
+        1,
+        libretro::AnalogInput::Left,
+        libretro::AnalogAxis::Y,
+        cstring!("Left Analog Y"),
+    ),
+    libretro::InputDescriptor::analog_axis(
+        1,
+        libretro::AnalogInput::Right,
+        libretro::AnalogAxis::X,
+        cstring!("Right Analog X"),
+    ),
+    libretro::InputDescriptor::analog_axis(
+        1,
+        libretro::AnalogInput::Right,
+        libretro::AnalogAxis::Y,
+        cstring!("Right Analog Y"),
+    ),
+    // End of table
+    libretro::InputDescriptor::end_of_table(),
+];
+
 /// Standard, digital-only controller (SCPH-1080)
 const PSX_CONTROLLER_DIGITAL: libc::c_uint = libretro::InputDevice::JoyPad.subclass(0);
 /// DualShock analog controller (SCPH-1200)
@@ -433,4 +544,5 @@ static CONTROLLER_INFO_2P: [libretro::ControllerInfo; 3] = [
 
 fn init_controllers() {
     libretro::set_controller_info(&CONTROLLER_INFO_2P);
+    libretro::set_input_descriptors(&INPUT_DESCRIPTORS);
 }
