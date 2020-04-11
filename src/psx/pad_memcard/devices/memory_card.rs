@@ -275,6 +275,10 @@ impl MemoryCard {
 }
 
 impl DeviceInterface for MemoryCard {
+    fn description(&self) -> String {
+        "PlayStation Memory Card (SCPH-1020)".to_string()
+    }
+
     fn handle_command(&mut self, seq: u8, cmd: u8) -> (u8, DsrState) {
         let (resp, dsr_delay) = match seq {
             // First byte should be 0x81 if the command targets the memory card

@@ -63,6 +63,9 @@ impl<T: DeviceInterface + ?Sized> Peripheral<T> {
 
 /// Trait used to abstract away the various controller types.
 pub trait DeviceInterface {
+    /// Human-readable description of the device
+    fn description(&self) -> String;
+
     /// Handle a command byte sent by the console. `seq` is the byte position in the current
     /// command starting with `1` since byte `0` is expected to always be `0x01` when addressing a
     /// controller and is handled at the top level.
@@ -76,6 +79,10 @@ pub trait DeviceInterface {
 pub struct DisconnectedDevice;
 
 impl DeviceInterface for DisconnectedDevice {
+    fn description(&self) -> String {
+        "Disconnected".to_string()
+    }
+
     fn handle_command(&mut self, _: u8, _: u8) -> (u8, DsrState) {
         // The bus is open, no response
         (0xff, DsrState::Idle)
@@ -84,6 +91,7 @@ impl DeviceInterface for DisconnectedDevice {
 
 impl GamePad for DisconnectedDevice {
     fn set_button_state(&mut self, _: Button, _: ButtonState) {}
+    fn set_axis_state(&mut self, _: (i16, i16), _: (i16, i16)) {}
 }
 
 impl MemoryCardInterface for DisconnectedDevice {

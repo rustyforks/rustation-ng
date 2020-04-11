@@ -22,6 +22,7 @@ pub trait Context {
     /// Called when some configuration variables have been modified. The core should load the new
     /// values and change its behavior accordingly.
     fn refresh_variables(&mut self);
+    fn set_controller(&mut self, port: usize, device: InputDevice, subclass: u32);
     /// Reset the game being played
     fn reset(&mut self);
     /// The OpenGL context has been reset, it needs to be rebuilt
@@ -97,7 +98,7 @@ pub type AudioSampleBatchFn = unsafe extern "C" fn(data: *const i16, frames: siz
 pub type InputPollFn = extern "C" fn();
 
 pub type InputStateFn =
-    extern "C" fn(port: c_uint, device: c_uint, index: c_uint, id: c_uint) -> u16;
+    extern "C" fn(port: c_uint, device: c_uint, index: c_uint, id: c_uint) -> i16;
 
 #[repr(C)]
 pub struct GameInfo {
@@ -136,7 +137,7 @@ pub enum Environment {
 }
 
 /// Controller types supported by libretro
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InputDevice {
     None = 0,
     JoyPad = 1,
@@ -148,6 +149,21 @@ pub enum InputDevice {
 }
 
 impl InputDevice {
+    pub fn from_subclass(subclass: c_uint) -> Option<InputDevice> {
+        let c = match subclass & 0xff {
+            0 => InputDevice::None,
+            1 => InputDevice::JoyPad,
+            2 => InputDevice::Mouse,
+            3 => InputDevice::Keyboard,
+            4 => InputDevice::LightGun,
+            5 => InputDevice::Analog,
+            6 => InputDevice::Pointer,
+            _ => return None,
+        };
+
+        Some(c)
+    }
+
     /// Create a custom subclass of a libretro controller type
     pub const fn subclass(self, sub_id: c_uint) -> c_uint {
         (self as u32) | ((sub_id + 1) << 8)
@@ -666,7 +682,7 @@ pub fn send_audio_samples(samples: &[i16]) {
     }
 }
 
-pub fn button_pressed(port: u8, b: JoyPadButton) -> bool {
+pub fn button_pressed(port: usize, b: JoyPadButton) -> bool {
     unsafe {
         INPUT_STATE(
             port as c_uint,
@@ -686,6 +702,10 @@ pub fn key_pressed(port: u8, k: Key) -> bool {
             k as c_uint,
         ) != 0
     }
+}
+
+pub fn axis_state(port: usize, input: AnalogInput, axis: AnalogAxis) -> i16 {
+    unsafe { INPUT_STATE(port as _, InputDevice::Analog as _, input as _, axis as _) }
 }
 
 pub fn get_system_directory() -> Option<PathBuf> {
@@ -863,8 +883,18 @@ pub extern "C" fn retro_get_system_av_info(info: *mut SystemAvInfo) {
 }
 
 #[no_mangle]
-pub extern "C" fn retro_set_controller_port_device(_port: c_uint, _device: c_uint) {
-    debug!("port device: {} {}", _port, _device);
+pub extern "C" fn retro_set_controller_port_device(port: c_uint, device: c_uint) {
+    let port = port as usize;
+    let class = match InputDevice::from_subclass(device) {
+        Some(c) => c,
+        None => {
+            error!("Received unknown controller class: 0x{:x}", device);
+            // Ignore
+            return;
+        }
+    };
+
+    context().set_controller(port, class, device);
 }
 
 #[no_mangle]
@@ -998,7 +1028,7 @@ pub mod dummy {
         panic!("Called missing audio_sample_batch callback");
     }
 
-    pub extern "C" fn input_state(_: c_uint, _: c_uint, _: c_uint, _: c_uint) -> u16 {
+    pub extern "C" fn input_state(_: c_uint, _: c_uint, _: c_uint, _: c_uint) -> i16 {
         panic!("Called missing input_state callback");
     }
 
@@ -1019,6 +1049,10 @@ pub mod dummy {
 
         fn refresh_variables(&mut self) {
             panic!("Called refresh_variables with no context!");
+        }
+
+        fn set_controller(&mut self, _: usize, _: super::InputDevice, _: u32) {
+            panic!("Called set_controller with no context!");
         }
 
         fn reset(&mut self) {
