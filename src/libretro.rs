@@ -10,6 +10,7 @@
 
 use libc::{c_char, c_double, c_float, c_uint, c_void, size_t};
 use std::ffi::{CStr, CString};
+use std::marker::Sync;
 use std::path::PathBuf;
 use std::ptr;
 
@@ -129,6 +130,7 @@ pub enum Environment {
     GetVariableUpdate = 17,
     GetLogInterface = 27,
     SetSystemAvInfo = 32,
+    SetControllerInfo = 35,
     SetGeometry = 37,
 }
 
@@ -141,6 +143,51 @@ pub enum InputDevice {
     LightGun = 4,
     Analog = 5,
     Pointer = 6,
+}
+
+impl InputDevice {
+    pub const fn subclass(self, sub_id: c_uint) -> c_uint {
+        (self as u32) | ((sub_id + 1) << 8)
+    }
+}
+
+#[repr(C)]
+pub struct ControllerDescription {
+    pub desc: *const c_char,
+    pub id: c_uint,
+}
+
+// We need this because we're storing pointers in the struct. As long as these pointers are static
+// this should be safe, although of course we don't enforce it here so it's a bit dirty.
+unsafe impl Sync for ControllerDescription {}
+
+#[repr(C)]
+pub struct ControllerInfo {
+    pub types: *const ControllerDescription,
+    pub num_types: c_uint,
+}
+
+impl ControllerInfo {
+    // End-of-table marker
+    pub const fn end_of_table() -> ControllerInfo {
+        ControllerInfo {
+            types: ptr::null(),
+            num_types: 0,
+        }
+    }
+}
+
+// We need this because we're storing pointers in the struct. As long as these pointers are static
+// this should be safe, although of course we don't enforce it here so it's a bit dirty.
+unsafe impl Sync for ControllerInfo {}
+
+pub fn set_controller_info(info: &'static [ControllerInfo]) -> bool {
+    assert!(
+        !info.is_empty() && info[info.len() - 1].types.is_null(),
+        "Non-NULL terminated controller table!"
+    );
+
+    unsafe { call_environment_slice(Environment::SetControllerInfo, info) }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -658,6 +705,7 @@ pub extern "C" fn retro_set_environment(callback: EnvironmentFn) {
     unsafe { ENVIRONMENT = callback }
 
     super::init_variables();
+    super::init_controllers();
 }
 
 #[no_mangle]

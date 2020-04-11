@@ -54,10 +54,6 @@ impl MemoryCard {
         self.memory[0] = b'M';
         self.memory[1] = b'C';
 
-        for i in 2..127 {
-            self.memory[i] = 0;
-        }
-
         self.memory[127] = checksum(&self.memory[0..127]);
 
         // Directory entries

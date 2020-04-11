@@ -90,7 +90,7 @@ impl Context {
         // XXX for now I only hardcode a digital pad in slot 1 (leaving slot 0 disconnected).
         let gamepads = self.psx.pad_memcard.gamepads_mut();
 
-        gamepads[0].set_device(Box::new(DigitalPad::new()));
+        gamepads[0].connect_device(Box::new(DigitalPad::new()));
     }
 
     fn poll_controllers(&mut self) {
@@ -134,7 +134,7 @@ impl Context {
 
         let mc = Box::new(MemoryCard::new_formatted());
 
-        memory_cards[0].set_device(mc);
+        memory_cards[0].connect_device(mc);
     }
 
     // Precise FPS values for the video output for the given VideoClock. It's actually possible to
@@ -381,7 +381,7 @@ fn load_game(disc: PathBuf) -> Option<Box<dyn libretro::Context>> {
 
 /// Libretro to PlayStation button mapping. Libretro's mapping is based on the SNES controller so
 /// libretro's A button matches the PlayStation's Circle button.
-const BUTTON_MAP: [(libretro::JoyPadButton, Button); 14] = [
+static BUTTON_MAP: [(libretro::JoyPadButton, Button); 14] = [
     (libretro::JoyPadButton::Up, Button::DUp),
     (libretro::JoyPadButton::Down, Button::DDown),
     (libretro::JoyPadButton::Left, Button::DLeft),
@@ -397,3 +397,40 @@ const BUTTON_MAP: [(libretro::JoyPadButton, Button); 14] = [
     (libretro::JoyPadButton::L2, Button::L2),
     (libretro::JoyPadButton::R2, Button::R2),
 ];
+
+/// Standard, digital-only controller (SCPH-1080)
+const PSX_CONTROLLER_DIGITAL: libc::c_uint = libretro::InputDevice::JoyPad.subclass(0);
+/// DualShock analog controller (SCPH-1200)
+const PSX_CONTROLLER_DUALSHOCK: libc::c_uint = libretro::InputDevice::Analog.subclass(0);
+
+/// All supported controller types
+static CONTROLLER_DESCRIPTIONS: [libretro::ControllerDescription; 2] = [
+    libretro::ControllerDescription {
+        desc: cstring!("PlayStation Digital Controller"),
+        id: PSX_CONTROLLER_DIGITAL,
+    },
+    libretro::ControllerDescription {
+        desc: cstring!("PlayStation DualShock Analog Controller"),
+        id: PSX_CONTROLLER_DUALSHOCK,
+    },
+];
+
+/// Controller settings for two player mode (no multitap)
+static CONTROLLER_INFO_2P: [libretro::ControllerInfo; 3] = [
+    // Player 1
+    libretro::ControllerInfo {
+        types: &CONTROLLER_DESCRIPTIONS as *const _,
+        num_types: CONTROLLER_DESCRIPTIONS.len() as _,
+    },
+    // Player 2
+    libretro::ControllerInfo {
+        types: &CONTROLLER_DESCRIPTIONS as *const _,
+        num_types: CONTROLLER_DESCRIPTIONS.len() as _,
+    },
+    // End of table marker
+    libretro::ControllerInfo::end_of_table(),
+];
+
+fn init_controllers() {
+    libretro::set_controller_info(&CONTROLLER_INFO_2P);
+}

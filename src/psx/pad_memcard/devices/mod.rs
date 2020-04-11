@@ -6,11 +6,11 @@ use gamepad::{Button, ButtonState, GamePad};
 use memory_card::MemoryCardInterface;
 
 pub struct Peripheral<T: DeviceInterface + ?Sized> {
-    /// Gamepad profile.
+    /// Connected device
     device: Box<T>,
     /// Counter keeping track of the current position in the reply sequence
     seq: u8,
-    /// False if the pad is done processing the current command
+    /// False if the device is done processing the current command
     active: bool,
 }
 
@@ -30,9 +30,9 @@ impl<T: DeviceInterface + ?Sized> Peripheral<T> {
         self.seq = 0;
     }
 
-    /// The 2nd return value is the response byte. The 2nd return value is true if the gamepad
-    /// issues a DSR pulse after the byte is read to notify the controller that more data can be
-    /// read.
+    /// The 2nd return value is the response byte. The 2nd return value contains the state of the
+    /// DSR pulse to notify the controller that more data can be read. If the device wants to
+    /// complete the transaction it'll return DsrState::Idle
     pub fn exchange_byte(&mut self, cmd: u8) -> (u8, DsrState) {
         if !self.active {
             return (0xff, DsrState::Idle);
@@ -50,12 +50,13 @@ impl<T: DeviceInterface + ?Sized> Peripheral<T> {
         (resp, dsr_state)
     }
 
-    /// Return a mutable reference to the underlying gamepad Profile
+    /// Return a mutable reference to the connected device
     pub fn device_mut(&mut self) -> &mut T {
         &mut *self.device
     }
 
-    pub fn set_device(&mut self, device: Box<T>) {
+    /// Change the connected device
+    pub fn connect_device(&mut self, device: Box<T>) {
         self.device = device
     }
 }
