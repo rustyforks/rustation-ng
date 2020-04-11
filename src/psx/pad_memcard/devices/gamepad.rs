@@ -211,10 +211,7 @@ impl DeviceInterface for DualShock {
             // Right stick Y
             6 => (self.right_stick.1, true),
             // Left stick X
-            7 => {
-                println!("Get DS left X {}", self.left_stick.0);
-                (self.left_stick.0, true)
-            }
+            7 => (self.left_stick.0, true),
             // Left stick Y
             8 => (self.left_stick.1, false),
             _ => unreachable!(),
