@@ -30,7 +30,7 @@ impl<T: DeviceInterface + ?Sized> Peripheral<T> {
         self.seq = 0;
     }
 
-    /// The 2nd return value is the response byte. The 2nd return value contains the state of the
+    /// The 1st return value is the response byte. The 2nd return value contains the state of the
     /// DSR pulse to notify the controller that more data can be read. If the device wants to
     /// complete the transaction it'll return DsrState::Idle
     pub fn exchange_byte(&mut self, cmd: u8) -> (u8, DsrState) {
