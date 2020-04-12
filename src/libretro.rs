@@ -131,6 +131,7 @@ pub enum Environment {
     SetVariables = 16,
     GetVariableUpdate = 17,
     GetLogInterface = 27,
+    GetSaveDirectory = 31,
     SetSystemAvInfo = 32,
     SetControllerInfo = 35,
     SetGeometry = 37,
@@ -718,7 +719,24 @@ pub fn get_system_directory() -> Option<PathBuf> {
 
         build_path(path)
     } else {
+        // XXX Should we just panic here?
+        error!("The frontend didn't give us a system directory!");
         None
+    }
+}
+
+pub fn get_save_directory() -> Option<PathBuf> {
+    let mut path: *const c_char = ptr::null();
+
+    let success = unsafe { call_environment_mut(Environment::GetSaveDirectory, &mut path) };
+
+    if success && !path.is_null() {
+        let path = unsafe { CStr::from_ptr(path) };
+
+        build_path(path)
+    } else {
+        warn!("The frontend didn't give us a save directory, using the system directory instead.");
+        get_system_directory()
     }
 }
 
@@ -863,8 +881,9 @@ pub extern "C" fn retro_init() {
 
 #[no_mangle]
 pub extern "C" fn retro_deinit() {
-    // XXX Should I reset the callbacks to the dummy implementations
-    // here?
+    unsafe {
+        drop_context();
+    }
 }
 
 #[no_mangle]

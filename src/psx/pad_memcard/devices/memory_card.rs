@@ -6,7 +6,8 @@ pub trait MemoryCardInterface: DeviceInterface {
     fn get_memory(&self) -> Option<&[u8; FLASH_SIZE]>;
 
     /// Returns the value of a counter that's incremented every time the memory card's flash is
-    /// written. Can be used to check if the contents of the memory card should be written to disk.
+    /// written (unless the write didn't change the flash contents, in which case it's ignored).
+    /// Can be used to check if the contents of the memory card should be written to disk.
     fn write_counter(&self) -> u32;
 }
 
@@ -14,8 +15,14 @@ pub trait MemoryCardInterface: DeviceInterface {
 pub struct MemoryCard {
     /// The non-volatile Flash memory itself
     memory: Box<[u8; FLASH_SIZE]>,
+    /// Write counter, incremented every time the memory is written to *if* the contents of the
+    /// flash have been changed.
     write_counter: u32,
+    /// Set to true after the first succesful write to flash
+    has_been_written: bool,
+    /// Type of memory card access for the current command
     access_type: AccessType,
+    /// Sector index for the current command (if applicable)
     sector_index: u16,
     /// Last command byte we received (used to simplify some commands that echo the previously
     /// received byte in subsequent accesses)
@@ -28,18 +35,49 @@ pub struct MemoryCard {
 impl MemoryCard {
     /// Creates an empty memory card image
     pub fn new_formatted() -> MemoryCard {
-        let mut mc = MemoryCard {
-            memory: box_array![0; FLASH_SIZE],
-            write_counter: 0,
-            access_type: AccessType::Id,
-            sector_index: 0,
-            last_command: 0,
-            write_buffer: [0; 129],
-        };
+        let mut mc = MemoryCard::new_with_memory(box_array![0; FLASH_SIZE]);
 
         mc.format();
 
         mc
+    }
+
+    /// Create a memory card image with the provided memory contents
+    pub fn new_with_memory(memory: Box<[u8; FLASH_SIZE]>) -> MemoryCard {
+        MemoryCard {
+            memory,
+            write_counter: 0,
+            has_been_written: false,
+            access_type: AccessType::Id,
+            sector_index: 0,
+            last_command: 0,
+            write_buffer: [0; 129],
+        }
+    }
+
+    /// Perform some basic format tests to see if the current memory contents appear to be a valid
+    /// memory card image.
+    pub fn is_format_valid(&self) -> bool {
+        let mut valid = true;
+
+        // Check header
+        valid &= self.memory[0] == b'M';
+        valid &= self.memory[1] == b'C';
+        valid &= checksum(&self.memory[0..127]) == self.memory[127];
+
+        // Check directory entry integrity
+        // XXX We could also validate the directory structure itself if we wanted.
+        for b in 1..16 {
+            let off = b as usize;
+
+            let start = off * SECTOR_SIZE;
+            let end = start + SECTOR_SIZE;
+
+            let metadata = &self.memory[start..end];
+            valid &= checksum(&metadata[0..127]) == metadata[127];
+        }
+
+        valid
     }
 
     /// Reformat the Memory Card. This obviously erases the entire contents so it should be used
@@ -205,9 +243,20 @@ impl MemoryCard {
                 csum ^= self.sector_index as u8;
 
                 if self.sector_index <= 0x3ff {
+                    let mut flash_changed = false;
                     let base = (self.sector_index as usize) * 128;
                     for i in 0..128 {
-                        self.memory[base + i] = self.write_buffer[i];
+                        if self.memory[base + i] != self.write_buffer[i] {
+                            flash_changed = true;
+                            self.memory[base + i] = self.write_buffer[i];
+                        }
+                    }
+
+                    if flash_changed {
+                        // Use wrapping arithmetics in case somebody is hardcore enough to write
+                        // 2**32 sectors. In real time that would take about a year of constant
+                        // writing.
+                        self.write_counter = self.write_counter.wrapping_add(1);
                     }
 
                     // I've tested that the "not_written" flag goes down at this specific moment:
@@ -217,15 +266,7 @@ impl MemoryCard {
                     // The bit only goes down if the write is successful (i.e. it returns 'G': the
                     // index is correct and the checksum is correct)
                     if csum == 0 && self.sector_index <= 0x3ff {
-                        self.write_counter = self.write_counter.wrapping_add(1);
-
-                        // An overflow is very unlikely (who writes 4 billion times to a memory
-                        // card in a single session) but we might as well handle it. We don't want
-                        // write_count to ever go back to zero or we'll think that it's new and
-                        // we'll set the "not_written" flag erroneously.
-                        if self.write_counter == 0 {
-                            self.write_counter = 1;
-                        }
+                        self.has_been_written = true;
                     }
                 }
 
@@ -286,8 +327,8 @@ impl DeviceInterface for MemoryCard {
             1 => {
                 // Bit 3 must be set if we haven't written to this card since it's been inserted in
                 // the system
-                let not_written = (self.write_counter == 0) as u8;
-                let response = not_written << 3;
+                let not_written = !self.has_been_written;
+                let response = (not_written as u8) << 3;
 
                 let (dsr, access_type) = match cmd {
                     b'R' => (Some(360), AccessType::Read),
@@ -361,3 +402,10 @@ pub const BLOCK_SIZE: usize = SECTORS_PER_BLOCK * SECTOR_SIZE;
 
 /// Total size of a memory card in bytes
 pub const FLASH_SIZE: usize = BLOCK_SIZE * 16;
+
+#[test]
+fn test_format() {
+    let mc = MemoryCard::new_formatted();
+
+    assert!(mc.is_format_valid());
+}

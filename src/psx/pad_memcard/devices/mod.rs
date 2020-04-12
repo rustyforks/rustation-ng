@@ -50,6 +50,11 @@ impl<T: DeviceInterface + ?Sized> Peripheral<T> {
         (resp, dsr_state)
     }
 
+    /// Return a reference to the connected device
+    pub fn device(&self) -> &T {
+        &*self.device
+    }
+
     /// Return a mutable reference to the connected device
     pub fn device_mut(&mut self) -> &mut T {
         &mut *self.device

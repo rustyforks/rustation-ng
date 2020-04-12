@@ -94,6 +94,11 @@ impl PadMemCard {
         [&mut self.pad1, &mut self.pad2]
     }
 
+    /// Return a reference to the memory card peripherals being used.
+    pub fn memory_cards(&self) -> [&Peripheral<dyn MemoryCardInterface>; 2] {
+        [&self.memcard1, &self.memcard2]
+    }
+
     /// Return a mutable reference to the memory card peripherals being used.
     pub fn memory_cards_mut(&mut self) -> [&mut Peripheral<dyn MemoryCardInterface>; 2] {
         [&mut self.memcard1, &mut self.memcard2]
