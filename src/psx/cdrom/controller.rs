@@ -132,7 +132,7 @@ impl Controller {
             filter_channel: 0,
             filter_last: None,
             adpcm_last: [[0; 2]; 2],
-            audio_frequency: AudioFrequency::CdDa1x,
+            audio_frequency: AudioFrequency::Da1x,
             audio_buffer: Vec::with_capacity(4096),
             audio_index: 0,
             audio_phase: 0,
@@ -599,11 +599,11 @@ impl Controller {
         self.audio_frequency = match coding.sampling_frequency() {
             XaSamplingFreq::F18_9 => {
                 // Sampling frequency is 18.9kHz, 3/7 * 44.1kHz
-                AudioFrequency::CdXa18k9
+                AudioFrequency::Xa18k9
             }
             XaSamplingFreq::F37_8 => {
                 // Sampling frequency is 37.8kHz, 6/7 * 44.1kHz
-                AudioFrequency::CdXa37k8
+                AudioFrequency::Xa37k8
             }
         };
 
@@ -724,7 +724,7 @@ impl Controller {
         let mut right = first_right;
 
         match self.audio_frequency {
-            AudioFrequency::CdDa2x => {
+            AudioFrequency::Da2x => {
                 // We're running at 2 * 44.1kHz, that means that we run at twice the SPU audio
                 // frequency and must skip every other sample.
                 //
@@ -732,12 +732,12 @@ impl Controller {
                 // for some reason?
                 self.audio_index += 2;
             }
-            AudioFrequency::CdDa1x => {
+            AudioFrequency::Da1x => {
                 // We're running at 44.1kHz, in other words we're running at the normal CD-DA
                 // frequency and we can just return one sample every time
                 self.audio_index += 1;
             }
-            AudioFrequency::CdXa18k9 | AudioFrequency::CdXa37k8 => {
+            AudioFrequency::Xa18k9 | AudioFrequency::Xa37k8 => {
                 // We're running at a fraction of 44.1kHz, we need to resample
                 if resample {
                     left = self.audio_resamplers[0].resample(self.audio_phase);
@@ -745,7 +745,7 @@ impl Controller {
                 }
 
                 // This value is the ratio of the audio frequency to the output frequency of
-                // 44.1kHz in multiples of 1/7th. So for instance for CdXa37k8 the input frequency
+                // 44.1kHz in multiples of 1/7th. So for instance for Xa37k8 the input frequency
                 // is 37.8kHz so phase step will be 6 because 37.8kHz = 6/7 * 44.1kHz
                 let phase_step = self.audio_frequency as u8;
 
@@ -1416,14 +1416,14 @@ mod commands {
 enum AudioFrequency {
     /// CD-DA (normal CD audio) at 2x drive speed, 2 * 44.1kHz
     #[allow(dead_code)]
-    CdDa2x = 14,
+    Da2x = 14,
     /// CD-DA (normal CD audio) at 1x drive speed. That's the usual frequency for audio tracks and
     /// the frequency the PSX's SPU works with.
-    CdDa1x = 7,
+    Da1x = 7,
     /// Compressed CD-ROM XA ADPCM audio sector at 37.8kHz, that is 6/7 * 44.1kHz
-    CdXa37k8 = 6,
+    Xa37k8 = 6,
     /// Compressed CD-ROM XA ADPCM audio sector at 18.9kHz, that is 3/7 * 44.1kHz
-    CdXa18k9 = 3,
+    Xa18k9 = 3,
 }
 
 mod timings {
