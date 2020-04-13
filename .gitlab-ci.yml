@@ -37,9 +37,3 @@ test:nightly:
   image: "rustdocker/rust:nightly"
   allow_failure: true
   <<: *cargo_test
-
-lint:clippy:
-  image: "guangie88/rustfmt-clippy"
-  allow_failure: true
-  script:
-    - cargo clippy -- -D warnings # Turn all warnings into errors
