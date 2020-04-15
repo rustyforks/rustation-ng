@@ -20,6 +20,8 @@
 // Wants to rewrite some numeric comparison chains as match when it doesn't make a lot of sense
 // IMO.
 #![allow(clippy::comparison_chain)]
+// Doesn't let me use r, g, b and y, u, v in the same function!
+#![allow(clippy::many_single_char_names)]
 
 extern crate libc;
 #[macro_use]

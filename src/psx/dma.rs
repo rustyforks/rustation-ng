@@ -1,7 +1,7 @@
 //! The PlayStation DMA, that can be used to copy data between the RAM and various devices (GPU,
 //! CD drive, MDEC, SPU etc...)
 
-use super::{cdrom, gpu, irq, spu, sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{cdrom, gpu, irq, mdec, spu, sync, Addressable, CycleCount, Psx};
 use irq::IrqState;
 use std::ops::{Index, IndexMut};
 
@@ -91,14 +91,9 @@ pub fn run(psx: &mut Psx) {
 }
 
 pub fn load<T: Addressable>(psx: &mut Psx, offset: u32) -> T {
-    if T::width() != AccessWidth::Word {
-        panic!("Unhandled DMA {:?} access", T::width());
-    }
-
-    let _ = psx;
-
     let channel = (offset & 0x70) >> 4;
-    let reg = offset & 0xf;
+    let reg = offset & 0xc;
+    let align = offset & 3;
 
     let v = match channel {
         0..=6 => {
@@ -121,19 +116,16 @@ pub fn load<T: Addressable>(psx: &mut Psx, offset: u32) -> T {
         _ => unreachable!(),
     };
 
-    T::from_u32(v)
+    T::from_u32(v >> (align * 8))
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
     run(psx);
 
-    if T::width() != AccessWidth::Word {
-        panic!("Unhandled DMA {:?} access", T::width());
-    }
-
     let channel = (offset & 0x70) >> 4;
-    let reg = offset & 0xf;
-    let val = val.as_u32();
+    let reg = offset & 0xc;
+    let align = offset & 3;
+    let val = val.as_u32() << (align * 8);
 
     match channel {
         0..=6 => {
@@ -379,11 +371,12 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
 }
 
 /// Check if the device targeted by `port` can either be read from of written to
-fn can_run(psx: &Psx, port: Port, write: bool) -> bool {
+fn can_run(psx: &mut Psx, port: Port, write: bool) -> bool {
     if write {
         match port {
             Port::Spu => true,
             Port::Gpu => psx.gpu.dma_can_write(),
+            Port::MDecIn => mdec::dma_can_write(psx),
             _ => unimplemented!("Can write {:?}?", port),
         }
     } else {
@@ -394,6 +387,7 @@ fn can_run(psx: &Psx, port: Port, write: bool) -> bool {
             Port::Otc => psx.dma[port].control.is_started(),
             // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
             Port::CdRom => true,
+            Port::MDecOut => mdec::dma_can_read(psx),
             _ => unimplemented!("Can read {:?}?", port),
         }
     }
@@ -411,6 +405,10 @@ fn port_store(psx: &mut Psx, port: Port, v: u32) -> CycleCount {
         }
         Port::Gpu => {
             gpu::dma_store(psx, v);
+            0
+        }
+        Port::MDecIn => {
+            mdec::dma_store(psx, v);
             0
         }
         _ => unimplemented!("DMA port store {:?}", port),
@@ -436,6 +434,7 @@ fn port_load(psx: &mut Psx, port: Port) -> (u32, CycleCount) {
         // XXX latency taken from mednafen
         Port::CdRom => (cdrom::dma_load(psx), 8),
         Port::Spu => (spu::dma_load(psx), 0),
+        Port::MDecOut => (mdec::dma_load(psx), 0),
         _ => unimplemented!("DMA port load {:?}", port),
     }
 }

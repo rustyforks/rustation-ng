@@ -11,6 +11,7 @@ mod dma;
 mod gpu;
 mod gte;
 mod irq;
+mod mdec;
 pub mod pad_memcard;
 mod spu;
 mod sync;
@@ -46,6 +47,7 @@ pub struct Psx {
     dma: dma::Dma,
     timers: timers::Timers,
     gpu: gpu::Gpu,
+    mdec: mdec::MDec,
     cdrom: cdrom::CdRom,
     pub pad_memcard: pad_memcard::PadMemCard,
     /// Memory control registers
@@ -91,6 +93,7 @@ impl Psx {
             dma: dma::Dma::new(),
             timers: timers::Timers::new(),
             gpu: gpu::Gpu::new(standard),
+            mdec: mdec::MDec::new(),
             cdrom: cdrom::CdRom::new(disc),
             pad_memcard: pad_memcard::PadMemCard::new(),
             mem_control: [0; 9],
@@ -212,6 +215,11 @@ impl Psx {
             return gpu::load(self, offset);
         }
 
+        if let Some(offset) = map::MDEC.contains(abs_addr) {
+            self.tick(1);
+            return mdec::load(self, offset);
+        }
+
         if let Some(offset) = map::PAD_MEMCARD.contains(abs_addr) {
             self.tick(1);
             // TODO
@@ -309,6 +317,11 @@ impl Psx {
 
         if let Some(offset) = map::GPU.contains(abs_addr) {
             gpu::store(self, offset, val);
+            return;
+        }
+
+        if let Some(offset) = map::MDEC.contains(abs_addr) {
+            mdec::store(self, offset, val);
             return;
         }
 
@@ -623,6 +636,9 @@ pub mod map {
 
     /// GPU Registers
     pub const GPU: Range = Range(0x1f80_1810, 8);
+
+    /// MDEC registers
+    pub const MDEC: Range = Range(0x1f80_1820, 8);
 
     /// SPU registers
     pub const SPU: Range = Range(0x1f80_1c00, 640);
