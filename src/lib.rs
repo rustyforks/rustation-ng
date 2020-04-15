@@ -466,10 +466,10 @@ where
     info!("Found BIOS DB entry for {:?}: {:?}", path, md);
 
     if md.known_bad {
-        let m = format!("Ignoring {:?}: known bad dump", path);
+        let m = format!("{:?}: known bad dump", path);
         Err(Error::BadBios(m))
     } else if !predicate(md) {
-        let m = format!("Ignoring {:?}: rejected by predicate", path);
+        let m = format!("{:?}: rejected by predicate", path);
         Err(Error::BadBios(m))
     } else {
         Ok(bios)
