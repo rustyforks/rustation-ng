@@ -8,7 +8,7 @@ pub mod cop0;
 pub mod cpu;
 pub mod debugger;
 mod dma;
-mod gpu;
+pub mod gpu;
 mod gte;
 mod irq;
 mod mdec;
@@ -46,7 +46,7 @@ pub struct Psx {
     spu: spu::Spu,
     dma: dma::Dma,
     timers: timers::Timers,
-    gpu: gpu::Gpu,
+    pub gpu: gpu::Gpu,
     mdec: mdec::MDec,
     cdrom: cdrom::CdRom,
     pub pad_memcard: pad_memcard::PadMemCard,

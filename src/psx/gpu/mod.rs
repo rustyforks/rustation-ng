@@ -5,7 +5,7 @@ mod rasterizer;
 use super::cpu::CPU_FREQ_HZ;
 use super::{irq, sync, timers, AccessWidth, Addressable, CycleCount, Psx};
 use commands::Command;
-pub use rasterizer::Frame;
+pub use rasterizer::{Frame, RasterizerOption};
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
@@ -38,6 +38,8 @@ pub struct Gpu {
     display_column_end: u16,
     /// True when we're between [display_line_start; display_line_end[
     display_active: bool,
+    /// First column of the display area in VRAM
+    display_vram_x_start: u16,
     /// First line of the display area in VRAM
     display_vram_y_start: u16,
     /// Current value of the draw mode
@@ -93,8 +95,6 @@ pub struct Gpu {
     tex_window: TextureWindow,
     /// Mask bit settings
     mask_settings: MaskSettings,
-    /// Start Display area (top-left corner)
-    display_area_start: u32,
     /// True if the display is disabled,
     display_off: bool,
     /// Next word returned by the GPUREAD command
@@ -113,6 +113,7 @@ impl Gpu {
             display_column_start: 0x200,
             display_column_end: 0xc00,
             display_active: false,
+            display_vram_x_start: 0,
             display_vram_y_start: 0,
             draw_mode: DrawMode::new(),
             dma_direction: DmaDirection::Off,
@@ -140,7 +141,6 @@ impl Gpu {
             draw_offset_y: 0,
             tex_window: TextureWindow::new(),
             mask_settings: MaskSettings::new(),
-            display_area_start: 0,
             display_off: true,
             read_word: 0,
         };
@@ -156,6 +156,10 @@ impl Gpu {
 
     pub fn last_frame(&mut self) -> &Frame {
         self.rasterizer.last_frame()
+    }
+
+    pub fn set_rasterizer_option(&mut self, opt: RasterizerOption) {
+        self.rasterizer.set_option(opt)
     }
 
     /// Pop a command from the `command_fifo` and return it while also sending it to the rasterizer
@@ -186,7 +190,8 @@ impl Gpu {
         self.draw_offset_y = 0;
         self.tex_window.set(0);
         self.mask_settings.set(0);
-        self.display_area_start = 0;
+        self.display_vram_x_start = 0;
+        self.display_vram_y_start = 0;
 
         self.reset_command_fifo();
     }
@@ -493,6 +498,8 @@ pub fn run(psx: &mut Psx) {
 fn handle_eol(psx: &mut Psx) {
     let mut eof = false;
 
+    psx.gpu.rasterizer.end_of_line(psx.gpu.cur_line);
+
     psx.gpu.new_line();
 
     // Next line event will be when we reach the hsync
@@ -513,6 +520,7 @@ fn handle_eol(psx: &mut Psx) {
 
         if cur_line == draw_line {
             // We reached the end of active video, we can tell the frontend to render the frame
+            eof = true;
         }
     }
 
@@ -578,13 +586,17 @@ fn handle_eol(psx: &mut Psx) {
     // Figure out which VRAM line is being displayed
     psx.gpu.cur_line_vram_y = psx.gpu.display_vram_y_start;
     psx.gpu.cur_line_vram_y += if psx.gpu.display_mode.is_true_interlaced() {
-        psx.gpu.cur_line_vram_offset * 2 + psx.gpu.read_bottom_field as u16
+        let off = if psx.gpu.display_active {
+            psx.gpu.read_bottom_field as u16
+        } else {
+            0
+        };
+
+        psx.gpu.cur_line_vram_offset * 2 + off
     } else {
         psx.gpu.cur_line_vram_offset
     };
     psx.gpu.cur_line_vram_y %= VRAM_HEIGHT;
-
-    psx.gpu.rasterizer.end_of_line(cur_line);
 
     if eof {
         draw_frame(psx);
@@ -671,7 +683,11 @@ fn gp1(psx: &mut Psx, val: u32) {
         0x02 => debug!("IRQ1 ack"),
         0x03 => psx.gpu.display_off = (val & 1) != 0,
         0x04 => psx.gpu.dma_direction.set(val & 3),
-        0x05 => psx.gpu.display_area_start = val & 0x7_ffff,
+        0x05 => {
+            // XXX from mednafen: LSB ignored.
+            psx.gpu.display_vram_x_start = (val & 0x3fe) as u16;
+            psx.gpu.display_vram_y_start = ((val >> 10) & 0x1ff) as u16;
+        }
         0x06 => {
             psx.gpu.display_column_start = (val & 0xfff) as u16;
             psx.gpu.display_column_end = ((val >> 12) & 0xfff) as u16;
@@ -880,6 +896,7 @@ impl TextureWindow {
 }
 
 /// Wrapper around the Display Mode register value (set by GP1[0x08])
+#[derive(Copy, Clone)]
 struct DisplayMode(u32);
 
 impl DisplayMode {
@@ -891,7 +908,7 @@ impl DisplayMode {
         self.0 = mode
     }
 
-    fn standard(&self) -> VideoStandard {
+    fn standard(self) -> VideoStandard {
         if self.0 & (1 << 3) != 0 {
             VideoStandard::Pal
         } else {
@@ -899,7 +916,7 @@ impl DisplayMode {
         }
     }
 
-    fn is_interlaced(&self) -> bool {
+    fn is_interlaced(self) -> bool {
         self.0 & (1 << 5) != 0
     }
 
@@ -908,10 +925,32 @@ impl DisplayMode {
     /// you also need to set bit 2 in Display Mode to actually tell the console to use two fields
     /// in VRAM. Without it the console sends the same data for the top and bottom fields, which is
     /// fairly useless.
-    fn is_true_interlaced(&self) -> bool {
+    fn is_true_interlaced(self) -> bool {
         let two_fields = self.0 & (1 << 2) != 0;
 
         self.is_interlaced() && two_fields
+    }
+
+    /// Retrieve the approximate horizontal resolution of the active video. This is an
+    /// approximation because it will also depend on the timing configuration of the output (column
+    /// start/column end etc...).
+    fn xres(self) -> u16 {
+        if (self.0 & (1 << 6)) != 0 {
+            368
+        } else {
+            match self.0 & 3 {
+                0 => 256,
+                1 => 320,
+                2 => 512,
+                3 => 640,
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// True if we output 24 bits per pixel
+    fn output_24bpp(self) -> bool {
+        self.0 & (1 << 4) != 0
     }
 }
 

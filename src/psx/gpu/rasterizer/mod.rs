@@ -64,6 +64,11 @@ impl Handle {
         self.last_frame = LastFrame::Pending;
     }
 
+    pub fn set_option(&mut self, opt: RasterizerOption) {
+        self.push_command(Command::option(opt));
+        self.flush_command_buffer();
+    }
+
     pub fn last_frame(&mut self) -> &Frame {
         match self.last_frame {
             LastFrame::Pending => {
@@ -137,6 +142,8 @@ pub enum Command {
     Gp1(u32),
     /// Special command
     Special(Special),
+    /// Option setting
+    Option(RasterizerOption),
 }
 
 impl Command {
@@ -150,6 +157,10 @@ impl Command {
 
     fn quit() -> Command {
         Command::Special(Special::Quit)
+    }
+
+    fn option(opt: RasterizerOption) -> Command {
+        Command::Option(opt)
     }
 }
 
@@ -165,20 +176,37 @@ pub enum Special {
     EndOfFrame,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum RasterizerOption {
+    DisplayFullVRam(bool),
+}
+
 /// Buffer containing one rendered frame
 pub struct Frame {
     /// Frame pixels in xRGB 8888 format
     pub pixels: Vec<u32>,
-    pub width: usize,
-    pub height: usize,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Frame {
-    fn new(width: usize, height: usize) -> Frame {
+    fn new(width: u32, height: u32) -> Frame {
+        let npixels = width * height;
+
         Frame {
-            pixels: vec![0; width * height],
+            pixels: vec![0; npixels as usize],
             width,
             height,
         }
+    }
+
+    fn set_pixel(&mut self, x: u32, y: u32, p: u32) {
+        debug_assert!(x < self.width);
+        debug_assert!(y < self.height);
+
+        let x = x as usize;
+        let y = y as usize;
+
+        self.pixels[(y * self.width as usize) + x] = p;
     }
 }

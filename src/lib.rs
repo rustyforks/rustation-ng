@@ -48,6 +48,7 @@ use memory_card::MemoryCardFile;
 use psx::bios::Metadata;
 use psx::bios::{Bios, BIOS_SIZE};
 use psx::disc::Disc;
+use psx::gpu::RasterizerOption;
 use psx::pad_memcard::devices::gamepad::{Button, ButtonState, DigitalPad, DualShock, GamePad};
 use psx::pad_memcard::devices::DisconnectedDevice;
 
@@ -73,6 +74,10 @@ struct Context {
     controller_type: [libretro::InputDevice; 2],
     /// Objects used to deal with reading/storing the memory card images to files
     memcard_files: [MemoryCardFile; 2],
+    /// Internal frame width
+    internal_width: u32,
+    /// Internal frame height
+    internal_height: u32,
 }
 
 impl Context {
@@ -86,6 +91,8 @@ impl Context {
             // in `set_controller`
             controller_type: [libretro::InputDevice::None; 2],
             memcard_files: [MemoryCardFile::dummy(), MemoryCardFile::dummy()],
+            internal_width: 640,
+            internal_height: 480,
         };
 
         libretro::Context::refresh_variables(&mut ctx);
@@ -265,6 +272,58 @@ impl Context {
             psx::VideoStandard::Pal => 49.76,
         }
     }
+
+    fn get_geometry(&self) -> libretro::GameGeometry {
+        let upscaling = options::CoreOptions::internal_upscale_factor();
+
+        // XXX For now we only support displaying the full VRAM, fix me later
+        let full_vram = options::CoreOptions::display_full_vram();
+
+        let w;
+        let h;
+        let aspect_ratio;
+
+        if full_vram {
+            w = 1024;
+            h = 512;
+            aspect_ratio = 2. / 1.
+        } else {
+            // Maximum resolution supported by the PlayStation video output is 640x576. That high a
+            // vertical resolution would mean no blanking however, so it doesn't make a lot of
+            // sense.
+            w = 640;
+            h = 480;
+            aspect_ratio = 4. / 3.
+        }
+
+        let max_width = (w * upscaling) as libc::c_uint;
+        let max_height = (h * upscaling) as libc::c_uint;
+
+        libretro::GameGeometry {
+            base_width: self.internal_width,
+            base_height: self.internal_height,
+            max_width,
+            max_height,
+            aspect_ratio,
+        }
+    }
+
+    fn output_frame(&mut self) {
+        let mut frame = self.psx.last_frame();
+
+        if frame.width != self.internal_width || frame.height != self.internal_height {
+            // Internal resolution changed
+            self.internal_width = frame.width;
+            self.internal_height = frame.height;
+
+            let geom = self.get_geometry();
+            libretro::set_geometry(&geom);
+
+            frame = self.psx.last_frame();
+        }
+
+        libretro::frame_done(&frame.pixels, frame.width, frame.height);
+    }
 }
 
 impl ::std::ops::Drop for Context {
@@ -319,9 +378,7 @@ impl libretro::Context for Context {
 
         self.psx.run_frame();
 
-        let frame = self.psx.last_frame();
-
-        libretro::frame_done(&frame.pixels, frame.width, frame.height);
+        self.output_frame();
 
         // Send sound samples
         let samples = self.psx.get_audio_samples();
@@ -333,32 +390,8 @@ impl libretro::Context for Context {
     }
 
     fn get_system_av_info(&self) -> libretro::SystemAvInfo {
-        let upscaling = options::CoreOptions::internal_upscale_factor();
-
-        // XXX For now we only support displaying the full VRAM, fix me later
-        let _full_vram = options::CoreOptions::display_full_vram();
-        let full_vram = true;
-
-        let (w, h) = if full_vram {
-            (1024, 512)
-        } else {
-            // Maximum resolution supported by the PlayStation video output is 640x480
-            (640, 480)
-        };
-
-        let max_width = (w * upscaling) as libc::c_uint;
-        let max_height = (h * upscaling) as libc::c_uint;
-
         libretro::SystemAvInfo {
-            geometry: libretro::GameGeometry {
-                // The base resolution will be overriden using ENVIRONMENT_SET_GEOMETRY before
-                // rendering a frame so this base value is not really important
-                base_width: max_width,
-                base_height: max_height,
-                max_width,
-                max_height,
-                aspect_ratio: 2. / 1.,
-            },
+            geometry: self.get_geometry(),
             timing: libretro::SystemTiming {
                 fps: self.video_output_framerate() as f64,
                 sample_rate: 44_100.,
@@ -366,7 +399,13 @@ impl libretro::Context for Context {
         }
     }
 
-    fn refresh_variables(&mut self) {}
+    fn refresh_variables(&mut self) {
+        let full_vram = options::CoreOptions::display_full_vram();
+
+        self.psx
+            .gpu
+            .set_rasterizer_option(RasterizerOption::DisplayFullVRam(full_vram));
+    }
 
     fn reset(&mut self) {
         match Context::load_disc(&self.disc_path) {

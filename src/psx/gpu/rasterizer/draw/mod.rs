@@ -5,13 +5,13 @@ mod tests;
 
 use std::sync::mpsc;
 
-use super::{Command, CommandBuffer, Frame, Special};
+use super::{Command, CommandBuffer, Frame, RasterizerOption, Special};
 use crate::psx::gpu::commands::{vram_access_dimensions, Shaded};
 use crate::psx::gpu::commands::{NoShading, Position, Transparent};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending, TextureRaw};
 use crate::psx::gpu::commands::{TextureMode, TransparencyMode};
 
-use crate::psx::gpu::{DrawMode, MaskSettings, TextureWindow, TransparencyFunction};
+use crate::psx::gpu::{DisplayMode, DrawMode, MaskSettings, TextureWindow, TransparencyFunction};
 use fixed_point::{FpCoord, FpVar};
 use std::cmp::{max, min};
 use std::fmt;
@@ -49,6 +49,22 @@ pub struct Rasterizer {
     mask_settings: MaskSettings,
     /// Texture mapping state
     tex_mapper: TextureMapper,
+    /// If true we output the entire contents of the VRAM instead of just the visible portion
+    display_full_vram: bool,
+    /// Number of the first line displayed on the screen
+    display_line_start: u16,
+    /// Number of the first line *not* displayed on the screen
+    display_line_end: u16,
+    /// Number of the first column displayed on the screen
+    display_column_start: u16,
+    /// Number of the first column *not* displayed on the screen
+    display_column_end: u16,
+    /// Current value of the display mode
+    display_mode: DisplayMode,
+    /// First column of the display area in VRAM
+    display_vram_x_start: u16,
+    /// First line of the display area in VRAM
+    display_vram_y_start: u16,
 }
 
 impl Rasterizer {
@@ -56,10 +72,10 @@ impl Rasterizer {
         command_channel: mpsc::Receiver<CommandBuffer>,
         frame_channel: mpsc::Sender<Frame>,
     ) -> Rasterizer {
-        Rasterizer {
+        let mut rasterizer = Rasterizer {
             vram: box_array![Pixel::black(); 1024 * 512],
             state: State::WaitingForCommand,
-            cur_frame: Frame::new(1024, 512),
+            cur_frame: Frame::new(0, 0),
             command_channel,
             frame_channel,
             clip_x_min: 0,
@@ -70,7 +86,19 @@ impl Rasterizer {
             draw_offset_y: 0,
             mask_settings: MaskSettings::new(),
             tex_mapper: TextureMapper::new(),
-        }
+            display_full_vram: false,
+            display_line_start: 0x10,
+            display_line_end: 0x100,
+            display_column_start: 0x200,
+            display_column_end: 0xc00,
+            display_mode: DisplayMode::new(),
+            display_vram_x_start: 0,
+            display_vram_y_start: 0,
+        };
+
+        rasterizer.new_frame();
+
+        rasterizer
     }
 
     pub fn run(&mut self) {
@@ -128,9 +156,101 @@ impl Rasterizer {
                     Command::Gp1(v) => self.gp1(*v),
                     Command::Special(Special::Quit) => return,
                     // XXX draw one line at a time
-                    Command::Special(Special::EndOfLine(_)) => (),
+                    Command::Special(Special::EndOfLine(l)) => self.draw_line(*l),
                     Command::Special(Special::EndOfFrame) => self.send_frame(),
+                    Command::Option(opt) => self.set_option(*opt),
                 }
+            }
+        }
+    }
+
+    pub fn set_option(&mut self, opt: RasterizerOption) {
+        match opt {
+            RasterizerOption::DisplayFullVRam(t) => self.display_full_vram = t,
+        }
+    }
+
+    /// Called when we should output a line to the output buffer
+    pub fn draw_line(&mut self, line: u16) {
+        if self.display_full_vram {
+            // We're just going to dump the full VRAM, nothing to do
+            return;
+        }
+
+        if line < self.display_line_start || line >= self.display_line_end {
+            // Video is not active
+            return;
+        }
+
+        let interlaced = self.display_mode.is_true_interlaced();
+
+        let mut frame_y = line - self.display_line_start;
+        if interlaced {
+            frame_y *= 2;
+        }
+
+        let vram_y = self.display_vram_y_start + frame_y;
+
+        self.output_line(self.display_vram_x_start, vram_y, frame_y);
+
+        // XXX For now display interlaced as progressive. It's not technically super accurate but
+        // emulating the interlacing correctly will almost always result in visual artifacts
+        // anyway, so it may be better that way.
+        if interlaced {
+            self.output_line(self.display_vram_x_start, vram_y + 1, frame_y + 1);
+        }
+    }
+
+    fn output_line(&mut self, x_start: u16, vram_y: u16, frame_y: u16) {
+        let x_start = x_start as u32;
+        let frame_y = frame_y as u32;
+        let vram_y = vram_y as i32;
+
+        if frame_y >= self.cur_frame.height {
+            // Out-of-frame. This should only happen if the video mode changed within the current
+            // frame.
+            return;
+        }
+
+        let width = min(self.cur_frame.width, self.display_mode.xres() as u32);
+
+        if self.display_mode.output_24bpp() {
+            // GPU is in 24bpp mode, we need to do some bitwise magic to recreate the values
+            // correctly
+
+            // X position in the framebuffer, in Byte
+            let mut fb_x = (x_start * 2) as i32;
+
+            for x in 0..width {
+                // We need two consecutive pixels
+                let p_x = fb_x >> 1;
+                let p1 = self.read_pixel(p_x, vram_y);
+                let p2 = self.read_pixel((p_x + 1) & 0x3ff, vram_y);
+
+                let p1 = p1.to_mbgr1555() as u32;
+                let p2 = p2.to_mbgr1555() as u32;
+
+                // Reassemble 32bit word
+                let mut p = p1 | (p2 << 16);
+
+                // Realign
+                p >>= (fb_x & 1) * 8;
+                p &= 0xff_ff_ff;
+
+                // Convert from BGR to RGB
+                let mut out = p & 0x00_ff_00;
+                out |= p >> 16;
+                out |= p << 16;
+
+                self.cur_frame.set_pixel(x, frame_y, out);
+
+                fb_x = (fb_x + 3) & 0x7ff;
+            }
+        } else {
+            // GPU outputs pixels "normally", 15bpp native
+            for x in 0..width {
+                let p = self.read_pixel((x_start + x) as i32, vram_y);
+                self.cur_frame.set_pixel(x, frame_y, p.to_rgb888());
             }
         }
     }
@@ -143,22 +263,68 @@ impl Rasterizer {
             // Reset command FIFO
             0x01 => (),
             0x02 => debug!("IRQ1 ack"),
-            // _ => warn!("Unimplemented GP1 {:x}", val),
-            _ => (),
+            0x05 => {
+                // XXX from mednafen: LSB ignored.
+                self.display_vram_x_start = (val & 0x3fe) as u16;
+                self.display_vram_y_start = ((val >> 10) & 0x1ff) as u16;
+            }
+            0x06 => {
+                self.display_column_start = (val & 0xfff) as u16;
+                self.display_column_end = ((val >> 12) & 0xfff) as u16;
+            }
+            0x07 => {
+                self.display_line_start = (val & 0x3ff) as u16;
+                self.display_line_end = ((val >> 10) & 0x3ff) as u16;
+            }
+            0x08 => self.display_mode.set(val & 0xff_ffff),
+            _ => warn!("Unimplemented GP1 {:x}", val),
         }
     }
 
-    fn send_frame(&mut self) {
-        // Full VRAM display
-        for i in 0..(1024 * 512) {
-            self.cur_frame.pixels[i] = self.vram[i].to_rgb888();
-        }
+    /// Creatses a new, blank frame and returns the previous one
+    fn new_frame(&mut self) -> Frame {
+        let (width, height) = if self.display_full_vram {
+            // If we display the full VRAM we don't output one line at a time in the GPU timing
+            // emulation code, we can just copy it fully here. It's not like there's any meaningful
+            // concept of "accuracy" in this mode anyway.
 
-        let mut new_frame = Frame::new(1024, 512);
+            // It's possible for this to fail if `display_full_vram` was just activated and the
+            // current frame doesn't have the proper dimensions. In this case we're going to return
+            // a partially drawn leftover frame which is probably not too important.
+            if self.cur_frame.width == 1024 && self.cur_frame.height == 512 {
+                for i in 0..(1024 * 512) {
+                    self.cur_frame.pixels[i] = self.vram[i].to_rgb888();
+                }
+            }
+
+            (1024, 512)
+        } else {
+            // XXX For now we approximate the dimensions of the visible area of the image.
+            // For better accuracy we should be emulating the output video timings more accurately
+            // but it's probably not worth it for now.
+            let interlaced = self.display_mode.is_true_interlaced();
+
+            let width = self.display_mode.xres();
+
+            let mut height = self.display_line_end - self.display_line_start;
+            if interlaced {
+                height *= 2;
+            }
+
+            (width as u32, height as u32)
+        };
+
+        let mut new_frame = Frame::new(width, height);
 
         ::std::mem::swap(&mut new_frame, &mut self.cur_frame);
 
-        self.frame_channel.send(new_frame).unwrap();
+        new_frame
+    }
+
+    fn send_frame(&mut self) {
+        let frame = self.new_frame();
+
+        self.frame_channel.send(frame).unwrap();
     }
 
     fn reset(&mut self) {
@@ -172,6 +338,13 @@ impl Rasterizer {
         self.draw_offset_y = 0;
         self.tex_mapper.reset();
         self.mask_settings.set(0);
+        self.display_line_start = 0x10;
+        self.display_line_end = 0x100;
+        self.display_column_start = 0x200;
+        self.display_column_end = 0xc00;
+        self.display_mode.set(0);
+        self.display_vram_x_start = 0;
+        self.display_vram_y_start = 0;
     }
 
     fn read_pixel(&self, x: i32, y: i32) -> Pixel {

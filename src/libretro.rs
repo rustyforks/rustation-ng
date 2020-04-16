@@ -645,18 +645,15 @@ static mut ENVIRONMENT: EnvironmentFn = dummy::environment;
 // Higher level helper functions
 //*******************************
 
-pub fn frame_done(frame: &[u32], width: usize, height: usize) {
-    debug_assert!(frame.len() >= width * height);
+pub fn frame_done(frame: &[u32], width: u32, height: u32) {
+    debug_assert!(frame.len() >= (width * height) as usize);
 
     unsafe {
         let data = frame.as_ptr() as *const c_void;
 
-        VIDEO_REFRESH(
-            data,
-            width as u32,
-            height as u32,
-            width * ::std::mem::size_of_val(&frame[0]),
-        );
+        let pitch = width * ::std::mem::size_of_val(&frame[0]) as u32;
+
+        VIDEO_REFRESH(data, width as c_uint, height as c_uint, pitch as size_t);
     }
 }
 
