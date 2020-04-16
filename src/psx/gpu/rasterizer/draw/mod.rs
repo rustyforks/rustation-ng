@@ -65,6 +65,8 @@ pub struct Rasterizer {
     display_vram_x_start: u16,
     /// First line of the display area in VRAM
     display_vram_y_start: u16,
+    /// True if the display is disabled,
+    display_off: bool,
 }
 
 impl Rasterizer {
@@ -94,6 +96,7 @@ impl Rasterizer {
             display_mode: DisplayMode::new(),
             display_vram_x_start: 0,
             display_vram_y_start: 0,
+            display_off: true,
         };
 
         rasterizer.new_frame();
@@ -174,6 +177,11 @@ impl Rasterizer {
     pub fn draw_line(&mut self, line: u16) {
         if self.display_full_vram {
             // We're just going to dump the full VRAM, nothing to do
+            return;
+        }
+
+        if self.display_off {
+            // Output only black pixels
             return;
         }
 
@@ -263,6 +271,9 @@ impl Rasterizer {
             // Reset command FIFO
             0x01 => (),
             0x02 => debug!("IRQ1 ack"),
+            0x03 => self.display_off = (val & 1) != 0,
+            // DMA direction
+            0x04 => (),
             0x05 => {
                 // XXX from mednafen: LSB ignored.
                 self.display_vram_x_start = (val & 0x3fe) as u16;
@@ -277,6 +288,8 @@ impl Rasterizer {
                 self.display_line_end = ((val >> 10) & 0x3ff) as u16;
             }
             0x08 => self.display_mode.set(val & 0xff_ffff),
+            // Get info
+            0x10 => (),
             _ => warn!("Unimplemented GP1 {:x}", val),
         }
     }
