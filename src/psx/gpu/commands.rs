@@ -533,16 +533,9 @@ where
     }
 }
 
-/// Parses the command FIFO for a VRAM store or load and returns the number of words about to be
-/// read/written
-fn vram_access_length_words(psx: &mut Psx) -> u32 {
-    // Pop command
-    psx.gpu.command_pop_to_rasterizer();
-    // Position in VRAM
-    psx.gpu.command_pop_to_rasterizer();
-    // Dimensions
-    let dim = psx.gpu.command_pop_to_rasterizer();
-
+/// Parses the command word for a VRAM store, load or copy and returns the dimensions of the target
+/// rectangle
+pub fn vram_access_dimensions(dim: u32) -> (i32, i32) {
     // Width is in GPU pixels, i.e. 16bits per pixel
     let mut width = dim & 0x3ff;
     let mut height = (dim >> 16) & 0x1ff;
@@ -556,19 +549,57 @@ fn vram_access_length_words(psx: &mut Psx) -> u32 {
         height = 512;
     }
 
+    (width as i32, height as i32)
+}
+
+/// Parses the command word for a VRAM store or load and returns the number of words about to be
+/// read/written
+fn vram_access_length_words(dim: u32) -> i32 {
+    let (width, height) = vram_access_dimensions(dim);
+
     // Total number of words to complete the transfer. Since every pixel is 16bit and we transfer
     // 32bits at a time we need to round up
     (width * height + 1) / 2
 }
 
+fn cmd_vram_copy(psx: &mut Psx) {
+    // Pop command
+    psx.gpu.command_pop_to_rasterizer();
+    // Source position in VRAM
+    psx.gpu.command_pop_to_rasterizer();
+    // Target position in VRAM
+    psx.gpu.command_pop_to_rasterizer();
+    // Dimensions
+    let dim = psx.gpu.command_pop_to_rasterizer();
+
+    let (width, height) = vram_access_dimensions(dim);
+
+    let duration = width * height * 2;
+    psx.gpu.draw_time(duration as CycleCount);
+}
+
 fn cmd_vram_store(psx: &mut Psx) {
-    let nwords = vram_access_length_words(psx);
-    psx.gpu.state = State::VRamStore(nwords);
+    // Pop command
+    psx.gpu.command_pop_to_rasterizer();
+    // Position in VRAM
+    psx.gpu.command_pop_to_rasterizer();
+    // Dimensions
+    let dim = psx.gpu.command_pop_to_rasterizer();
+
+    let nwords = vram_access_length_words(dim);
+    psx.gpu.state = State::VRamStore(nwords as u32);
 }
 
 fn cmd_vram_load(psx: &mut Psx) {
-    let nwords = vram_access_length_words(psx);
-    psx.gpu.state = State::VRamLoad(nwords);
+    // Pop command
+    psx.gpu.command_pop_to_rasterizer();
+    // Position in VRAM
+    psx.gpu.command_pop_to_rasterizer();
+    // Dimensions
+    let dim = psx.gpu.command_pop_to_rasterizer();
+
+    let nwords = vram_access_length_words(dim);
+    psx.gpu.state = State::VRamLoad(nwords as u32);
 }
 
 fn cmd_draw_mode(psx: &mut Psx) {
@@ -1427,9 +1458,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
     },
     // 0x80
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_vram_copy,
+        len: 4,
+        fifo_len: 2,
         out_of_band: false,
     },
     Command {

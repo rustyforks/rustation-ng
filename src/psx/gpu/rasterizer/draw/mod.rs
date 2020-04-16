@@ -6,7 +6,7 @@ mod tests;
 use std::sync::mpsc;
 
 use super::{Command, CommandBuffer, Frame, Special};
-use crate::psx::gpu::commands::Shaded;
+use crate::psx::gpu::commands::{vram_access_dimensions, Shaded};
 use crate::psx::gpu::commands::{NoShading, Position, Transparent};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending, TextureRaw};
 use crate::psx::gpu::commands::{TextureMode, TransparencyMode};
@@ -172,6 +172,16 @@ impl Rasterizer {
         self.draw_offset_y = 0;
         self.tex_mapper.reset();
         self.mask_settings.set(0);
+    }
+
+    fn read_pixel(&self, x: i32, y: i32) -> Pixel {
+        debug_assert!(x >= 0 && x < 1024, "x out of bounds ({})", x);
+        debug_assert!(y >= 0 && y < 1024, "y out of bounds ({})", y);
+
+        let y = y & 0x1ff;
+        let vram_off = y * 1024 + x;
+
+        self.vram[vram_off as usize]
     }
 
     fn draw_solid_pixel<Transparency>(&mut self, x: i32, y: i32, mut color: Pixel)
@@ -1515,6 +1525,34 @@ impl VRamStore {
     }
 }
 
+fn cmd_vram_copy(rasterizer: &mut Rasterizer, params: &[u32]) {
+    let src = params[1];
+    let dst = params[2];
+    let dim = params[3];
+
+    let src_x = (src & 0x3ff) as i32;
+    let src_y = ((src >> 16) & 0x3ff) as i32;
+    let dst_x = (dst & 0x3ff) as i32;
+    let dst_y = ((dst >> 16) & 0x3ff) as i32;
+
+    let (width, height) = vram_access_dimensions(dim);
+
+    // XXX Mednafen uses a temporary buffer of 128 pixels here, presumably to emulate artifacts
+    // when the source and destination zones overlap? Needs more testing.
+    for y in 0..height {
+        let sy = (y + src_y) % 0x1ff;
+        let dy = (y + dst_y) % 0x1ff;
+        for x in 0..width {
+            let sx = (x + src_x) % 0x3ff;
+            let dx = (x + dst_x) % 0x3ff;
+
+            let p = rasterizer.read_pixel(sx, sy);
+            // VRAM copy respects mask bit settings
+            rasterizer.draw_solid_pixel::<Opaque>(dx, dy, p);
+        }
+    }
+}
+
 fn cmd_vram_store(rasterizer: &mut Rasterizer, params: &[u32]) {
     let pos = params[1];
     let dim = params[2];
@@ -1522,20 +1560,9 @@ fn cmd_vram_store(rasterizer: &mut Rasterizer, params: &[u32]) {
     let left = (pos & 0x3ff) as u16;
     let top = ((pos >> 16) & 0x3ff) as u16;
 
-    // Width is in GPU pixels, i.e. 16bits per pixel
-    let mut width = (dim & 0x3ff) as u16;
-    let mut height = ((dim >> 16) & 0x1ff) as u16;
+    let (width, height) = vram_access_dimensions(dim);
 
-    // XXX recheck this, a comment in mednafen says that the results for VRAM load are inconsistent
-    if width == 0 {
-        width = 1024;
-    }
-
-    if height == 0 {
-        height = 512;
-    }
-
-    let store = VRamStore::new(left, top, width, height);
+    let store = VRamStore::new(left, top, width as u16, height as u16);
 
     rasterizer.state = State::VRamStore(store);
 }
@@ -2146,8 +2173,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
     },
     // 0x80
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_vram_copy,
+        len: 4,
     },
     CommandHandler {
         handler: cmd_unimplemented,
