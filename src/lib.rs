@@ -401,10 +401,14 @@ impl libretro::Context for Context {
 
     fn refresh_variables(&mut self) {
         let full_vram = options::CoreOptions::display_full_vram();
-
         self.psx
             .gpu
             .set_rasterizer_option(RasterizerOption::DisplayFullVRam(full_vram));
+
+        let force_transparency = options::CoreOptions::force_transparency();
+        self.psx
+            .gpu
+            .set_rasterizer_option(RasterizerOption::ForceTransparency(force_transparency));
     }
 
     fn reset(&mut self) {
@@ -530,6 +534,8 @@ mod options {
                 => "Internal color depth; dithered 16bpp (native)|32bpp";
             display_full_vram: bool, parse_bool
                 => "Display full VRAM; disabled|enabled";
+            force_transparency: bool, parse_bool
+                => "Force transparency for all draw commands; disabled|enabled";
         });
 
     fn parse_upscale(opt: &str) -> Result<u32, <u32 as FromStr>::Err> {

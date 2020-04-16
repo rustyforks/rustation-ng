@@ -67,6 +67,8 @@ pub struct Rasterizer {
     display_vram_y_start: u16,
     /// True if the display is disabled,
     display_off: bool,
+    /// True to draw opaque pixel as semi-transparent
+    force_transparency: bool,
 }
 
 impl Rasterizer {
@@ -97,6 +99,7 @@ impl Rasterizer {
             display_vram_x_start: 0,
             display_vram_y_start: 0,
             display_off: true,
+            force_transparency: false,
         };
 
         rasterizer.new_frame();
@@ -170,6 +173,7 @@ impl Rasterizer {
     pub fn set_option(&mut self, opt: RasterizerOption) {
         match opt {
             RasterizerOption::DisplayFullVRam(t) => self.display_full_vram = t,
+            RasterizerOption::ForceTransparency(f) => self.force_transparency = f,
         }
     }
 
@@ -396,6 +400,10 @@ impl Rasterizer {
             let mode = self.tex_mapper.draw_mode.transparency_mode();
 
             color.apply_transparency(bg_pixel, mode);
+        } else if self.force_transparency {
+            let bg_pixel = *vram_pixel;
+
+            color.apply_transparency(bg_pixel, TransparencyFunction::Average);
         }
 
         *vram_pixel = color;

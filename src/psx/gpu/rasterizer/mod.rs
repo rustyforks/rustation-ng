@@ -179,6 +179,7 @@ pub enum Special {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum RasterizerOption {
     DisplayFullVRam(bool),
+    ForceTransparency(bool),
 }
 
 /// Buffer containing one rendered frame
