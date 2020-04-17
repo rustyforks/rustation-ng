@@ -947,6 +947,7 @@ fn execute_command(psx: &mut Psx, command: u8) {
         0x0c => (0, 0, commands::demute),
         0x0d => (2, 2, commands::set_filter),
         0x0e => (1, 1, commands::set_mode),
+        0x0f => (0, 0, commands::get_param),
         0x11 => (0, 0, commands::get_loc_p),
         0x15 => (0, 0, commands::seek_l),
         0x19 => (1, 1, commands::test),
@@ -1243,6 +1244,31 @@ mod commands {
         }
 
         controller.push_drive_status();
+    }
+
+    /// Return various parameters of the CDROM controller
+    pub fn get_param(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+        let mut mode = 0u8;
+
+        mode |= (controller.double_speed as u8) << 7;
+        mode |= (controller.xa_adpcm_to_spu as u8) << 6;
+        mode |= (controller.read_whole_sector as u8) << 5;
+        mode |= (controller.sector_size_override as u8) << 4;
+        mode |= (controller.filter_enabled as u8) << 3;
+        mode |= (controller.report_interrupts as u8) << 2;
+        mode |= (controller.autopause as u8) << 1;
+        mode |= controller.cdda_mode as u8;
+
+        let response = [
+            controller.drive_status(),
+            mode,
+            0, // Apparently always 0
+            controller.filter_file,
+            controller.filter_channel,
+        ];
+
+        controller.response.push_slice(&response);
     }
 
     /// Get the current position of the drive head by returning the contents of the Q subchannel

@@ -494,6 +494,9 @@ impl Rasterizer {
             let bg_pixel = *vram_pixel;
             let mode = self.tex_mapper.draw_mode.transparency_mode();
 
+            // XXX if we wanted to be extra-accurate we might want to truncate the color here to
+            // get accurate result in 15bpp. It's unlikely to make a significant difference
+            // however.
             color.apply_transparency(bg_pixel, mode);
         } else if self.force_transparency {
             let bg_pixel = *vram_pixel;
