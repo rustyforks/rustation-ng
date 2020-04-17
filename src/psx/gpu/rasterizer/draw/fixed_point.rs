@@ -54,7 +54,13 @@ impl FpCoord {
 
     /// Returns the smallest possible FpCoord value > 0
     pub fn epsilon() -> FpCoord {
-        FpCoord(1)
+        // XXX For a while I used "1" here but if I do that I get visual artifacts, so I took
+        // mednafen's value of "1 << 11" and it works well. I wish I could pretend to understand
+        // how this works.
+        //
+        // I added the test `test_bad_draw_psx_logo` that showcases one triangle where setting this
+        // value to 1 results in an inaccurate draw (we miss a pixel).
+        FpCoord(1 << 11)
     }
 
     pub fn truncate(self) -> i32 {

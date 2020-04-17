@@ -832,3 +832,70 @@ fn test_overflow() {
 
     rasterizer.run();
 }
+
+/// Test for a broken triangle in PSX's intro when FpCoord::epsilon() is set to 1.
+#[test]
+fn test_bad_draw_psx_logo() {
+    let (mut rasterizer, command_channel, _) = build_rasterizer();
+
+    let commands = vec![
+        // Triangle
+        Command::Gp0(0x200000ff),
+        Command::Gp0(0x00090001),
+        Command::Gp0(0x0000000a),
+        Command::Gp0(0x00040023),
+        Command::Special(Special::Quit),
+    ];
+
+    command_channel.send(commands).unwrap();
+
+    rasterizer.run();
+
+    let x = Pixel::black();
+    let r = bgr_px(0x0000ff);
+
+    let expected: &[&[Pixel]] = &[
+        &[
+            x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, x, x, x, x, x, x, r, r, r, r, r, r, r, r, x, x, x, x, x, x, x, x, x, x, x, x,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, x, x, x, x, x, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, x, x, x, x, x, x,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, x, x, x, x, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, x, x, x, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r,
+            r, r, r, r, r, r, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, x, x, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, x, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, x, x, x, x, x, x, x,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, r, r, r, r, r, r, r, r, r, r, r, r, x, x, x, x, x, x, x, x, x, x, x, x, x, x,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, r, r, r, r, r, r, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+        &[
+            x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x,
+            x, x, x, x, x, x, x, x, x, x, x,
+        ],
+    ];
+
+    check_rasterizer(&rasterizer, &expected);
+}
