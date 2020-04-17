@@ -836,6 +836,11 @@ impl DrawMode {
     fn flip_rect_y(self) -> bool {
         self.0 & (1 << 13) != 0
     }
+
+    /// Return true if dithering is enabled
+    fn dither_enable(self) -> bool {
+        self.0 & (1 << 9) != 0
+    }
 }
 
 /// The various transparency modes

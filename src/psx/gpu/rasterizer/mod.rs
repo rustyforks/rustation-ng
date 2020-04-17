@@ -180,6 +180,8 @@ pub enum Special {
 pub enum RasterizerOption {
     DisplayFullVRam(bool),
     ForceTransparency(bool),
+    Draw24Bpp(bool),
+    DitherForceDisable(bool),
 }
 
 /// Buffer containing one rendered frame

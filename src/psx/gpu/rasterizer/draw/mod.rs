@@ -69,6 +69,27 @@ pub struct Rasterizer {
     display_off: bool,
     /// True to draw opaque pixel as semi-transparent
     force_transparency: bool,
+    /// Dithering tables, used for dithering, 8-to-5bit color component truncation and saturation.
+    ///
+    /// Here's the explanation layer by layer:
+    ///
+    /// * `[_; 4]`: x % 4 to select the right position in the dithering pattern based on the vram
+    ///   position.
+    /// * `[_; 4]`: y % 4 to select the right position in the dithering pattern based on the vram
+    ///   position.
+    ///
+    /// * `[_; 0x200]`: input value, from 0x000 to 0x1ff. Values above 0xff are saturated to 0xff
+    dither_table: [[[u8; 0x200]; 4]; 4],
+    /// True if dithering is currently enabled
+    dither_enabled: bool,
+    /// If true we force disable dithering, regardless of the draw mode. Should probably only be
+    /// used when `draw_24bpp` is also true otherwise you'll get a lot of banding on shaded areas.
+    dithering_force_disable: bool,
+    /// If true we don't truncate the values drawn to the framebuffer to 15bit RGB555 like the real
+    /// hardware but instead keep the full 24bit color depth. If this is true
+    /// `dithering_force_disable` should probably also be true since it doesn't make a lot of sense
+    /// to dither from 24bits to 24 bits...
+    draw_24bpp: bool,
 }
 
 impl Rasterizer {
@@ -100,8 +121,13 @@ impl Rasterizer {
             display_vram_y_start: 0,
             display_off: true,
             force_transparency: false,
+            dither_table: [[[0; 0x200]; 4]; 4],
+            dither_enabled: false,
+            dithering_force_disable: false,
+            draw_24bpp: false,
         };
 
+        rasterizer.rebuild_dither_table();
         rasterizer.new_frame();
 
         rasterizer
@@ -172,8 +198,18 @@ impl Rasterizer {
 
     pub fn set_option(&mut self, opt: RasterizerOption) {
         match opt {
-            RasterizerOption::DisplayFullVRam(t) => self.display_full_vram = t,
-            RasterizerOption::ForceTransparency(f) => self.force_transparency = f,
+            RasterizerOption::DisplayFullVRam(v) => self.display_full_vram = v,
+            RasterizerOption::ForceTransparency(v) => self.force_transparency = v,
+            RasterizerOption::Draw24Bpp(v) => {
+                if v != self.draw_24bpp {
+                    self.draw_24bpp = v;
+                    self.rebuild_dither_table();
+                }
+            }
+            RasterizerOption::DitherForceDisable(v) => {
+                self.dithering_force_disable = v;
+                self.maybe_rebuild_dither_table();
+            }
         }
     }
 
@@ -344,6 +380,63 @@ impl Rasterizer {
         self.frame_channel.send(frame).unwrap();
     }
 
+    /// Rebuild `dither_tables` based on the various dithering and color depth settings
+    fn rebuild_dither_table(&mut self) {
+        // When dithering is enabled DITHER_OFFSETS[x % 4][y % 4] is added to the 8bit value before
+        // truncation to 5 bits
+        const DITHER_OFFSETS: [[i16; 4]; 4] = [
+            [-4, 0, -3, 1],
+            [2, -2, 3, -1],
+            [-3, 1, -4, 0],
+            [3, -1, 2, -2],
+        ];
+
+        self.dither_enabled = self.dither_enable();
+
+        for x in 0..4 {
+            for y in 0..4 {
+                for input_value in 0..0x200 {
+                    let mut out = input_value as i16;
+
+                    if self.dither_enabled {
+                        out += DITHER_OFFSETS[x][y];
+                    }
+
+                    // Saturate to 8bits
+                    let mut out = if out < 0 {
+                        0
+                    } else if out > 0xff {
+                        0xff
+                    } else {
+                        out as u8
+                    };
+
+                    if !self.draw_24bpp {
+                        // 8-to-5 bit truncation. Since we always output 24 bits per pixel we just
+                        // replace the LSBs with the MSBs (this ways blacks remain blacks and
+                        // whites remain white and we effectively lose 3 significant bits)
+                        out &= 0xf8;
+                        out |= out >> 5;
+                    }
+
+                    self.dither_table[x][y][input_value] = out;
+                }
+            }
+        }
+    }
+
+    /// Rebuild dithering tables if we need to activate/deactivate the dithering
+    fn maybe_rebuild_dither_table(&mut self) {
+        if self.dither_enabled != self.dither_enable() {
+            self.rebuild_dither_table();
+        }
+    }
+
+    /// Returns true if dithering should be active
+    fn dither_enable(&self) -> bool {
+        self.tex_mapper.draw_mode.dither_enable() && !self.dithering_force_disable
+    }
+
     fn reset(&mut self) {
         self.clip_x_min = 0;
         self.clip_y_min = 0;
@@ -362,6 +455,8 @@ impl Rasterizer {
         self.display_mode.set(0);
         self.display_vram_x_start = 0;
         self.display_vram_y_start = 0;
+
+        self.maybe_rebuild_dither_table();
     }
 
     fn read_pixel(&self, x: i32, y: i32) -> Pixel {
@@ -374,7 +469,7 @@ impl Rasterizer {
         self.vram[vram_off as usize]
     }
 
-    fn draw_solid_pixel<Transparency>(&mut self, x: i32, y: i32, mut color: Pixel)
+    fn draw_pixel<Transparency>(&mut self, x: i32, y: i32, mut color: Pixel)
     where
         Transparency: TransparencyMode,
     {
@@ -765,17 +860,25 @@ impl Rasterizer {
                 // If the pixel is equal to 0 (including mask bit) then we don't draw it
                 if !texel.is_nul() {
                     if Texture::is_raw_texture() {
-                        self.draw_solid_pixel::<Transparency>(x, y, texel);
+                        // No need to worry about truncation here since textures are always 555
+                        // anyway
+                        self.draw_pixel::<Transparency>(x, y, texel);
                     } else {
                         // Texture blending: the final color is a combination of the texel and
                         // the computed gouraud color
-                        let blend = texel.blend(vars.color());
-                        self.draw_solid_pixel::<Transparency>(x, y, blend);
+                        let blend = self.blend_and_dither(x, y, texel, vars.color());
+                        self.draw_pixel::<Transparency>(x, y, blend);
                     }
                 }
             } else {
                 // No texture
-                let mut color = vars.color();
+                let (r, g, b) = vars.color_components();
+
+                let r = self.dither(x, y, r as u32);
+                let g = self.dither(x, y, g as u32);
+                let b = self.dither(x, y, b as u32);
+
+                let mut color = Pixel::from_rgb(r, g, b);
 
                 // We have to set the mask bit since it's used to test if the pixel should be
                 // transparent, and non-textured transparent draw calls are always fully
@@ -784,7 +887,7 @@ impl Rasterizer {
                     color.set_mask();
                 }
 
-                self.draw_solid_pixel::<Transparency>(x, y, color);
+                self.draw_pixel::<Transparency>(x, y, color);
             }
             vars.translate_right::<Texture, Shading>(deltas);
         }
@@ -854,6 +957,12 @@ impl Rasterizer {
 
         let mut color = origin.color;
 
+        if !Texture::is_textured() {
+            // We're only going to copy this color everywhere, let's truncate it here once and for
+            // all
+            color = self.truncate_color(color);
+        }
+
         if Transparency::is_transparent() {
             color.set_mask();
         }
@@ -866,22 +975,87 @@ impl Rasterizer {
                     // If the pixel is equal to 0 (including mask bit) then we don't draw it
                     if !texel.is_nul() {
                         if Texture::is_raw_texture() {
-                            self.draw_solid_pixel::<Transparency>(x, y, texel);
+                            self.draw_pixel::<Transparency>(x, y, texel);
                         } else {
                             // Texture blending: the final color is a combination of the texel and
-                            // the computed gouraud color
-                            let blend = texel.blend(origin.color);
-                            self.draw_solid_pixel::<Transparency>(x, y, blend);
+                            // the solid color. Rect are never dithered.
+                            let blend = self.blend(texel, origin.color);
+                            self.draw_pixel::<Transparency>(x, y, blend);
                         }
                     }
                 } else {
                     // No texture
-                    self.draw_solid_pixel::<Transparency>(x, y, color);
+                    self.draw_pixel::<Transparency>(x, y, color);
                 }
                 u = u.wrapping_add(u_inc as u8);
             }
             v = v.wrapping_add(v_inc as u8);
         }
+    }
+
+    fn blend(&self, texel: Pixel, color: Pixel) -> Pixel {
+        // If you look at DITHER_OFFSETS when we build the table you can see that
+        // DITHER_OFFSETS[0][1] is equal to 0, therefore even if dithering is enabled this won't
+        // actually modify the value of the pixel beyond normal saturation and truncation.
+        self.blend_and_dither(0, 1, texel, color)
+    }
+
+    /// Perform texture blending and dithering
+    fn blend_and_dither(&self, x: i32, y: i32, texel: Pixel, color: Pixel) -> Pixel {
+        let t_r = texel.red() as u32;
+        let t_g = texel.green() as u32;
+        let t_b = texel.blue() as u32;
+
+        let c_r = color.red() as u32;
+        let c_g = color.green() as u32;
+        let c_b = color.blue() as u32;
+
+        // In order to normalize the value we should be shifting by 8, but texture blending
+        // actually doubles the value, hence the - 1.
+        let mut r = (t_r * c_r) >> (8 - 1);
+        let mut g = (t_g * c_g) >> (8 - 1);
+        let mut b = (t_b * c_b) >> (8 - 1);
+
+        // Perform dithering, saturation and 8-to-5 conversion (if enabled)
+        r = self.dither(x, y, r) as u32;
+        g = self.dither(x, y, g) as u32;
+        b = self.dither(x, y, b) as u32;
+
+        let mask = texel.0 & 0xff00_0000;
+
+        Pixel(mask | b | (g << 8) | (r << 16))
+    }
+
+    fn dither(&self, x: i32, y: i32, input: u32) -> u8 {
+        let x = (x & 3) as usize;
+        let y = (y & 3) as usize;
+        let input = input as usize;
+
+        self.dither_table[x][y][input]
+    }
+
+    /// Apply 8-to-5bit truncation if enabled
+    fn truncate_color(&self, color: Pixel) -> Pixel {
+        let r = color.red();
+        let g = color.green();
+        let b = color.blue();
+        let mask = color.0 & 0xff00_0000;
+
+        let r = self.truncate_component(r) as u32;
+        let g = self.truncate_component(g) as u32;
+        let b = self.truncate_component(b) as u32;
+
+        Pixel(mask | b | (g << 8) | (r << 16))
+    }
+
+    fn truncate_component(&self, c: u8) -> u8 {
+        // If you look at DITHER_OFFSETS when we build the table you can see that
+        // DITHER_OFFSETS[0][1] is equal to 0, therefore even if dithering is enabled this won't
+        // actually modify the value of the pixel beyond normal saturation and truncation.
+        //
+        // If draw_24bpp is true this is a nop since the entry in the table will be the same value
+        // as the index in the table
+        self.dither_table[0][1][c as usize]
     }
 }
 
@@ -1068,11 +1242,17 @@ impl RasterVars {
     }
 
     fn color(&self) -> Pixel {
+        let (r, g, b) = self.color_components();
+
+        Pixel::from_rgb(r, g, b)
+    }
+
+    fn color_components(&self) -> (u8, u8, u8) {
         let r = self.red.truncate() as u8;
         let b = self.blue.truncate() as u8;
         let g = self.green.truncate() as u8;
 
-        Pixel::from_rgb(r, g, b)
+        (r, g, b)
     }
 
     fn u(&self) -> u8 {
@@ -1310,39 +1490,6 @@ impl Pixel {
 
     fn set_mask(&mut self) {
         self.0 |= 0x0100_0000;
-    }
-
-    /// Perform texture blending
-    fn blend(self, gouraud: Pixel) -> Pixel {
-        let t_r = self.red() as u32;
-        let t_g = self.green() as u32;
-        let t_b = self.blue() as u32;
-
-        let g_r = gouraud.red() as u32;
-        let g_g = gouraud.green() as u32;
-        let g_b = gouraud.blue() as u32;
-
-        // In order to normalize the value we should be shifting by 8, but texture blending
-        // actually doubles the value, hence the - 1.
-        let mut r = (t_r * g_r) >> (8 - 1);
-        let mut g = (t_g * g_g) >> (8 - 1);
-        let mut b = (t_b * g_b) >> (8 - 1);
-
-        // XXX Mednafen combines the saturation with the dithering lookup which is quite clever.
-        // That would mean lowering the dithering here however.
-        if r > 0xff {
-            r = 0xff;
-        }
-        if g > 0xff {
-            g = 0xff;
-        }
-        if b > 0xff {
-            b = 0xff;
-        }
-
-        let mask = self.0 & 0xff00_0000;
-
-        Pixel(mask | b | (g << 8) | (r << 16))
     }
 
     /// Blend `self` (the foreground pixel) and `bg_pixel` using the provided transparency mode
@@ -1742,7 +1889,7 @@ fn cmd_vram_copy(rasterizer: &mut Rasterizer, params: &[u32]) {
 
             let p = rasterizer.read_pixel(sx, sy);
             // VRAM copy respects mask bit settings
-            rasterizer.draw_solid_pixel::<Opaque>(dx, dy, p);
+            rasterizer.draw_pixel::<Opaque>(dx, dy, p);
         }
     }
 }
@@ -1778,6 +1925,9 @@ fn cmd_fill_rect(rasterizer: &mut Rasterizer, params: &[u32]) {
 
     let width = ((dim & 0x3ff) + 0xf) & !0xf;
     let height = (dim >> 16) & 0x1ff;
+
+    // XXX Pretty sure there's no dithering for this commands
+    let color = rasterizer.truncate_color(color);
 
     for y in 0..height {
         let y_pos = (start_y + y) & 511;
@@ -1815,6 +1965,7 @@ fn cmd_draw_mode(rasterizer: &mut Rasterizer, params: &[u32]) {
     let mode = params[0];
 
     rasterizer.tex_mapper.set_draw_mode(mode);
+    rasterizer.maybe_rebuild_dither_table();
 }
 
 fn cmd_draw_offset(rasterizer: &mut Rasterizer, params: &[u32]) {

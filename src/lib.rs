@@ -276,7 +276,6 @@ impl Context {
     fn get_geometry(&self) -> libretro::GameGeometry {
         let upscaling = options::CoreOptions::internal_upscale_factor();
 
-        // XXX For now we only support displaying the full VRAM, fix me later
         let full_vram = options::CoreOptions::display_full_vram();
 
         let w;
@@ -409,6 +408,21 @@ impl libretro::Context for Context {
         self.psx
             .gpu
             .set_rasterizer_option(RasterizerOption::ForceTransparency(force_transparency));
+
+        let color_depth = options::CoreOptions::internal_color_depth();
+
+        let d24 = match color_depth {
+            15 => false,
+            24 => true,
+            d => panic!("Unexpected color depth: {}", d),
+        };
+
+        self.psx
+            .gpu
+            .set_rasterizer_option(RasterizerOption::Draw24Bpp(d24));
+        self.psx
+            .gpu
+            .set_rasterizer_option(RasterizerOption::DitherForceDisable(d24));
     }
 
     fn reset(&mut self) {
@@ -529,9 +543,9 @@ mod options {
     libretro_variables!(
         pub struct CoreOptions (prefix = "rustation") {
             internal_upscale_factor: u32, parse_upscale
-                => "Internal upscaling factor; 1x (native)|2x|3x|4x|5x|6x|7x|8x";
+                => "Internal upscaling factor; 1x (native)";
             internal_color_depth: u8, parse_color_depth
-                => "Internal color depth; dithered 16bpp (native)|32bpp";
+                => "Internal color depth; dithered 15bpp (native)|24bpp";
             display_full_vram: bool, parse_bool
                 => "Display full VRAM; disabled|enabled";
             force_transparency: bool, parse_bool
