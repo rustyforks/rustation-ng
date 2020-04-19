@@ -949,6 +949,7 @@ fn execute_command(psx: &mut Psx, command: u8) {
         0x0e => (1, 1, commands::set_mode),
         0x0f => (0, 0, commands::get_param),
         0x11 => (0, 0, commands::get_loc_p),
+        0x13 => (0, 0, commands::get_tn),
         0x15 => (0, 0, commands::seek_l),
         0x19 => (1, 1, commands::test),
         0x1a => (0, 0, commands::get_id),
@@ -1316,6 +1317,39 @@ mod commands {
         for v in &response_bcd {
             controller.response.push(v.bcd());
         }
+    }
+
+    /// Return the first and last track number for the current session
+    pub fn get_tn(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+
+        let first_track;
+        let last_track;
+
+        match controller.disc {
+            Some(ref mut disc) => {
+                let image = disc.image();
+                let toc = image.toc();
+                let tracks = toc.tracks();
+
+                if tracks.is_empty() {
+                    // Disc without any tracks?
+                    unimplemented!();
+                }
+
+                first_track = tracks.first().unwrap().track;
+                last_track = tracks.last().unwrap().track;
+            }
+            None => unimplemented!(),
+        }
+
+        let response = [
+            controller.drive_status(),
+            first_track.bcd(),
+            last_track.bcd(),
+        ];
+
+        controller.response.push_slice(&response);
     }
 
     /// Execute seek. Target is given by previous "set_loc" command.
