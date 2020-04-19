@@ -800,7 +800,7 @@ impl Rasterizer {
                 }
 
                 if y <= self.clip_y_max {
-                    self.rasterize_line::<Transparency, Texture, Shading>(
+                    self.rasterize_scanline::<Transparency, Texture, Shading>(
                         y,
                         left_x.truncate(),
                         right_x.truncate(),
@@ -817,7 +817,7 @@ impl Rasterizer {
                 }
 
                 if y >= self.clip_y_min {
-                    self.rasterize_line::<Transparency, Texture, Shading>(
+                    self.rasterize_scanline::<Transparency, Texture, Shading>(
                         y,
                         left_x.truncate(),
                         right_x.truncate(),
@@ -834,7 +834,7 @@ impl Rasterizer {
     }
 
     /// Rasterize one line from a triangle
-    fn rasterize_line<Transparency, Texture, Shading>(
+    fn rasterize_scanline<Transparency, Texture, Shading>(
         &mut self,
         y: i32,
         left_x: i32,
@@ -875,11 +875,13 @@ impl Rasterizer {
                 }
             } else {
                 // No texture
-                let (r, g, b) = vars.color_components();
+                let (mut r, mut g, mut b) = vars.color_components();
 
-                let r = self.dither(x, y, r as u32);
-                let g = self.dither(x, y, g as u32);
-                let b = self.dither(x, y, b as u32);
+                if Shading::is_shaded() {
+                    r = self.dither(x, y, r as u32);
+                    g = self.dither(x, y, g as u32);
+                    b = self.dither(x, y, b as u32);
+                }
 
                 let mut color = Pixel::from_rgb(r, g, b);
 
