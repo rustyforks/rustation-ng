@@ -87,6 +87,12 @@ pub struct SystemAvInfo {
     pub timing: SystemTiming,
 }
 
+#[repr(C)]
+pub enum RumbleEffect {
+    Strong = 0,
+    Weak = 1,
+}
+
 pub type EnvironmentFn = unsafe extern "C" fn(cmd: c_uint, data: *mut c_void) -> bool;
 
 pub type VideoRefreshFn =
@@ -99,6 +105,14 @@ pub type InputPollFn = extern "C" fn();
 
 pub type InputStateFn =
     extern "C" fn(port: c_uint, device: c_uint, index: c_uint, id: c_uint) -> i16;
+
+pub type SetRumbleStateFn =
+    extern "C" fn(port: c_uint, effect: RumbleEffect, strength: u16) -> bool;
+
+#[repr(C)]
+struct RumbleInterface {
+    set_rumble_state: SetRumbleStateFn,
+}
 
 #[repr(C)]
 pub struct GameInfo {
@@ -130,6 +144,7 @@ pub enum Environment {
     GetVariable = 15,
     SetVariables = 16,
     GetVariableUpdate = 17,
+    GetRumbleInterface = 23,
     GetLogInterface = 27,
     GetSaveDirectory = 31,
     SetSystemAvInfo = 32,
@@ -638,6 +653,7 @@ pub mod log {
 static mut VIDEO_REFRESH: VideoRefreshFn = dummy::video_refresh;
 static mut INPUT_POLL: InputPollFn = dummy::input_poll;
 static mut INPUT_STATE: InputStateFn = dummy::input_state;
+static mut SET_RUMBLE_STATE: SetRumbleStateFn = dummy::set_rumble_state;
 static mut AUDIO_SAMPLE_BATCH: AudioSampleBatchFn = dummy::audio_sample_batch;
 static mut ENVIRONMENT: EnvironmentFn = dummy::environment;
 
@@ -704,6 +720,10 @@ pub fn key_pressed(port: u8, k: Key) -> bool {
 
 pub fn axis_state(port: usize, input: AnalogInput, axis: AnalogAxis) -> i16 {
     unsafe { INPUT_STATE(port as _, InputDevice::Analog as _, input as _, axis as _) }
+}
+
+pub fn set_rumble(port: usize, effect: RumbleEffect, strength: u16) -> bool {
+    unsafe { SET_RUMBLE_STATE(port as _, effect, strength) }
 }
 
 pub fn get_system_directory() -> Option<PathBuf> {
@@ -832,6 +852,7 @@ pub extern "C" fn retro_api_version() -> c_uint {
 
 #[no_mangle]
 pub extern "C" fn retro_set_environment(callback: EnvironmentFn) {
+    println!("SET ENVIRONMENT");
     unsafe { ENVIRONMENT = callback }
 
     super::init_variables();
@@ -981,6 +1002,8 @@ pub extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
         None => return false,
     };
 
+    init_rumble();
+
     match super::load_game(path) {
         Some(c) => {
             unsafe {
@@ -991,6 +1014,26 @@ pub extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
         None => {
             error!("Couldn't load game!");
             false
+        }
+    }
+}
+
+/// Init rumble interface. Should be called in retro_load_game, calling it in retro_set_environment
+/// sometimes fails.
+fn init_rumble() {
+    let mut rumble_iface = RumbleInterface {
+        set_rumble_state: dummy::set_rumble_state,
+    };
+
+    unsafe {
+        let ok = call_environment_mut(Environment::GetRumbleInterface, &mut rumble_iface);
+
+        if ok {
+            info!("Rumble interface available");
+            SET_RUMBLE_STATE = rumble_iface.set_rumble_state
+        } else {
+            warn!("No rumble interface, vibration feedback won't work");
+            SET_RUMBLE_STATE = dummy::set_rumble_state;
         }
     }
 }
@@ -1050,6 +1093,10 @@ pub mod dummy {
 
     pub extern "C" fn environment(_: c_uint, _: *mut c_void) -> bool {
         panic!("Called missing environment callback");
+    }
+
+    pub extern "C" fn set_rumble_state(_: c_uint, _: super::RumbleEffect, _: u16) -> bool {
+        false
     }
 
     pub struct Context;

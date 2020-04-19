@@ -151,6 +151,17 @@ impl Context {
                 libretro::axis_state(port, libretro::AnalogInput::Right, libretro::AnalogAxis::Y);
 
             device.set_axis_state((left_x, left_y), (right_x, right_y));
+
+            let (strong, weak) = device.get_rumble();
+
+            // Values are 8 bits on the PSX
+            let mut strong = strong as u16;
+            strong |= strong << 8;
+            libretro::set_rumble(port, libretro::RumbleEffect::Strong, strong);
+
+            let mut weak = weak as u16;
+            weak |= weak << 8;
+            libretro::set_rumble(port, libretro::RumbleEffect::Weak, weak);
         }
     }
 

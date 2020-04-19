@@ -28,6 +28,8 @@ impl<T: DeviceInterface + ?Sized> Peripheral<T> {
         // Prepare for incoming command
         self.active = true;
         self.seq = 0;
+
+        self.device.select();
     }
 
     /// The 1st return value is the response byte. The 2nd return value contains the state of the
@@ -71,6 +73,9 @@ pub trait DeviceInterface {
     /// Human-readable description of the device
     fn description(&self) -> String;
 
+    /// Called every time the device is selected (i.e. the "/select" signal goes low)
+    fn select(&mut self) {}
+
     /// Handle a command byte sent by the console. `seq` is the byte position in the current
     /// command starting with `1` since byte `0` is expected to always be `0x01` when addressing a
     /// controller and is handled at the top level.
@@ -96,7 +101,6 @@ impl DeviceInterface for DisconnectedDevice {
 
 impl GamePad for DisconnectedDevice {
     fn set_button_state(&mut self, _: Button, _: ButtonState) {}
-    fn set_axis_state(&mut self, _: (i16, i16), _: (i16, i16)) {}
 }
 
 impl MemoryCardInterface for DisconnectedDevice {
