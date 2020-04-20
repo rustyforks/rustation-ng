@@ -443,6 +443,12 @@ impl DualShock {
                     false
                 }
             };
+
+            if !self.rumble_unlocked {
+                // Make sure we don't stay stuck with motors activated
+                self.rumble = (0, 0);
+            }
+
             false
         };
 
