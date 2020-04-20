@@ -2,7 +2,7 @@ use super::{DeviceInterface, DsrState};
 
 /// Digital buttons on a PlayStation controller. The value assigned to each button is the bit
 /// position in the 16bit word returned in the serial protocol
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
     Select = 0,
     L3 = 1,
@@ -20,12 +20,19 @@ pub enum Button {
     Circle = 13,
     Cross = 14,
     Square = 15,
+    Analog = 0xff,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ButtonState {
     Pressed,
     Released,
+}
+
+impl ButtonState {
+    fn is_pressed(self) -> bool {
+        self == ButtonState::Pressed
+    }
 }
 
 pub trait GamePad: DeviceInterface {
@@ -53,6 +60,11 @@ impl DigitalPad {
 
 impl GamePad for DigitalPad {
     fn set_button_state(&mut self, button: Button, state: ButtonState) {
+        if button == Button::Analog {
+            // No analog button on the digital pad
+            return;
+        }
+
         let s = self.0;
 
         let mask = 1 << (button as usize);
@@ -112,6 +124,8 @@ impl DeviceInterface for DigitalPad {
 pub struct DualShock {
     /// State of the digital buttons
     buttons: u16,
+    /// State of the analog selection button
+    analog_pressed: bool,
     /// State of the left stick. These are the values returned by the pad on the serial link:
     /// 0x00 all the way to one side, 0xff all the way to the other, 0x80 when the stick is
     /// centered.
@@ -158,6 +172,7 @@ impl DualShock {
             rumble_config: [0xff; 6],
             rumble_unlocked: false,
             command_internal: 0,
+            analog_pressed: false,
         }
     }
 
@@ -458,6 +473,19 @@ impl DualShock {
 
 impl GamePad for DualShock {
     fn set_button_state(&mut self, button: Button, state: ButtonState) {
+        if button == Button::Analog {
+            let was_pressed = self.analog_pressed;
+
+            self.analog_pressed = state.is_pressed();
+
+            if !self.analog_mode_locked && !was_pressed && self.analog_pressed {
+                // Analog button was just pressed and the mode isn't locked, toggle analog mode
+                self.analog_mode = !self.analog_mode;
+            }
+
+            return;
+        }
+
         let s = self.buttons;
 
         let mask = 1 << (button as usize);

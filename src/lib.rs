@@ -105,63 +105,84 @@ impl Context {
     fn poll_controllers(&mut self) {
         let gamepads = self.psx.pad_memcard.gamepads_mut();
 
-        // Update buttons
         for port in 0..2 {
             let ty = self.controller_type[port];
+
+            // Update buttons
             let has_buttons =
                 ty == libretro::InputDevice::JoyPad || ty == libretro::InputDevice::Analog;
 
-            if !has_buttons {
-                // Nothing to do
-                continue;
+            let mut select_pressed = false;
+            let mut r3_pressed = false;
+
+            if has_buttons {
+                let device = gamepads[port].device_mut();
+
+                for &(retrobutton, psxbutton) in &BUTTON_MAP {
+                    let state = if libretro::button_pressed(port, retrobutton) {
+                        match retrobutton {
+                            libretro::JoyPadButton::Select => select_pressed = true,
+                            libretro::JoyPadButton::R3 => r3_pressed = true,
+                            _ => (),
+                        }
+
+                        ButtonState::Pressed
+                    } else {
+                        ButtonState::Released
+                    };
+
+                    device.set_button_state(psxbutton, state);
+                }
             }
 
-            let device = gamepads[port].device_mut();
+            // Update analog sticks
+            let has_sticks = ty == libretro::InputDevice::Analog;
 
-            for &(retrobutton, psxbutton) in &BUTTON_MAP {
-                let state = if libretro::button_pressed(port, retrobutton) {
+            if has_sticks {
+                let device = gamepads[port].device_mut();
+
+                // Special combo for the Analog button: Select + R3
+                let analog_state = if select_pressed && r3_pressed {
                     ButtonState::Pressed
                 } else {
                     ButtonState::Released
                 };
+                device.set_button_state(Button::Analog, analog_state);
 
-                device.set_button_state(psxbutton, state);
+                let left_x = libretro::axis_state(
+                    port,
+                    libretro::AnalogInput::Left,
+                    libretro::AnalogAxis::X,
+                );
+                let left_y = libretro::axis_state(
+                    port,
+                    libretro::AnalogInput::Left,
+                    libretro::AnalogAxis::Y,
+                );
+                let right_x = libretro::axis_state(
+                    port,
+                    libretro::AnalogInput::Right,
+                    libretro::AnalogAxis::X,
+                );
+                let right_y = libretro::axis_state(
+                    port,
+                    libretro::AnalogInput::Right,
+                    libretro::AnalogAxis::Y,
+                );
+
+                device.set_axis_state((left_x, left_y), (right_x, right_y));
+
+                let (strong, weak) = device.get_rumble();
+
+                // Values are 8 bits on the PSX
+                let mut strong = strong as u16;
+                strong |= strong << 8;
+                libretro::set_rumble(port, libretro::RumbleEffect::Strong, strong);
+
+                let mut weak = weak as u16;
+                weak |= weak << 8;
+                libretro::set_rumble(port, libretro::RumbleEffect::Weak, weak);
             }
-        }
-
-        // Update analog sticks
-        for port in 0..2 {
-            let ty = self.controller_type[port];
-            let has_sticks = ty == libretro::InputDevice::Analog;
-
-            if !has_sticks {
-                // Nothing to do
-                continue;
-            }
-
-            let device = gamepads[port].device_mut();
-
-            let left_x =
-                libretro::axis_state(port, libretro::AnalogInput::Left, libretro::AnalogAxis::X);
-            let left_y =
-                libretro::axis_state(port, libretro::AnalogInput::Left, libretro::AnalogAxis::Y);
-            let right_x =
-                libretro::axis_state(port, libretro::AnalogInput::Right, libretro::AnalogAxis::X);
-            let right_y =
-                libretro::axis_state(port, libretro::AnalogInput::Right, libretro::AnalogAxis::Y);
-
-            device.set_axis_state((left_x, left_y), (right_x, right_y));
-
-            let (strong, weak) = device.get_rumble();
-
-            // Values are 8 bits on the PSX
-            let mut strong = strong as u16;
-            strong |= strong << 8;
-            libretro::set_rumble(port, libretro::RumbleEffect::Strong, strong);
-
-            let mut weak = weak as u16;
-            weak |= weak << 8;
-            libretro::set_rumble(port, libretro::RumbleEffect::Weak, weak);
         }
     }
 
