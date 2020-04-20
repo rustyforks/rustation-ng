@@ -78,6 +78,8 @@ struct Context {
     internal_width: u32,
     /// Internal frame height
     internal_height: u32,
+    /// Button combination used to control the analog button
+    analog_combo: AnalogCombo,
 }
 
 impl Context {
@@ -93,6 +95,7 @@ impl Context {
             memcard_files: [MemoryCardFile::dummy(), MemoryCardFile::dummy()],
             internal_width: 640,
             internal_height: 480,
+            analog_combo: AnalogCombo::SelectR3,
         };
 
         libretro::Context::refresh_variables(&mut ctx);
@@ -113,6 +116,7 @@ impl Context {
                 ty == libretro::InputDevice::JoyPad || ty == libretro::InputDevice::Analog;
 
             let mut select_pressed = false;
+            let mut l3_pressed = false;
             let mut r3_pressed = false;
 
             if has_buttons {
@@ -123,6 +127,7 @@ impl Context {
                         match retrobutton {
                             libretro::JoyPadButton::Select => select_pressed = true,
                             libretro::JoyPadButton::R3 => r3_pressed = true,
+                            libretro::JoyPadButton::L3 => l3_pressed = true,
                             _ => (),
                         }
 
@@ -141,13 +146,20 @@ impl Context {
             if has_sticks {
                 let device = gamepads[port].device_mut();
 
-                // Special combo for the Analog button: Select + R3
-                let analog_state = if select_pressed && r3_pressed {
-                    ButtonState::Pressed
-                } else {
-                    ButtonState::Released
+                // Special combo for the Analog button
+                let analog_pressed = match self.analog_combo {
+                    AnalogCombo::SelectR3 => select_pressed && r3_pressed,
+                    AnalogCombo::SelectL3 => select_pressed && l3_pressed,
+                    AnalogCombo::L3R3 => l3_pressed && r3_pressed,
                 };
-                device.set_button_state(Button::Analog, analog_state);
+                device.set_button_state(
+                    Button::Analog,
+                    if analog_pressed {
+                        ButtonState::Pressed
+                    } else {
+                        ButtonState::Released
+                    },
+                );
 
                 let left_x = libretro::axis_state(
                     port,
@@ -431,6 +443,8 @@ impl libretro::Context for Context {
     }
 
     fn refresh_variables(&mut self) {
+        self.analog_combo = options::CoreOptions::analog_combo();
+
         let full_vram = options::CoreOptions::display_full_vram();
         self.psx
             .gpu
@@ -567,9 +581,17 @@ where
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum AnalogCombo {
+    SelectR3,
+    SelectL3,
+    L3R3,
+}
+
 mod options {
     //! Core options
 
+    use super::AnalogCombo;
     use std::str::FromStr;
 
     libretro_variables!(
@@ -582,6 +604,9 @@ mod options {
                 => "Display full VRAM; disabled|enabled";
             force_transparency: bool, parse_bool
                 => "Force transparency for all draw commands; disabled|enabled";
+            analog_combo: AnalogCombo, parse_analog_combo
+                => "Analog toggle button combo; \
+                Select + R3|Select + L3|L3 + R3";
         });
 
     fn parse_upscale(opt: &str) -> Result<u32, <u32 as FromStr>::Err> {
@@ -602,6 +627,17 @@ mod options {
             "false" | "disabled" | "off" => Ok(false),
             _ => Err(()),
         }
+    }
+
+    fn parse_analog_combo(opt: &str) -> Result<AnalogCombo, ()> {
+        let combo = match opt {
+            "Select + L3" => AnalogCombo::SelectR3,
+            "Select + R3" => AnalogCombo::SelectL3,
+            "L3 + R3" => AnalogCombo::L3R3,
+            _ => return Err(()),
+        };
+
+        Ok(combo)
     }
 }
 
