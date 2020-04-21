@@ -13,6 +13,7 @@ use crate::psx::{CycleCount, Psx};
 use cdimage::bcd::Bcd;
 use cdimage::msf::Msf;
 use cdimage::sector::{Sector, XaBitsPerSample, XaCodingInfo, XaForm, XaSamplingFreq};
+use cdimage::TrackFormat;
 
 type AsyncResponse = fn(&mut Psx) -> CycleCount;
 
@@ -161,6 +162,7 @@ impl Controller {
             DriveState::Seeking(_, _) => motor_on | (1 << 6),
             DriveState::Paused => motor_on,
             DriveState::ReadToc => motor_on, // XXX not sure about this one
+            DriveState::Playing => motor_on | (1 << 7),
         }
     }
 
@@ -451,11 +453,27 @@ impl Controller {
                 self.drive_state = match after_seek {
                     AfterSeek::Read => DriveState::Reading,
                     AfterSeek::Pause => DriveState::Paused,
+                    AfterSeek::Play => DriveState::Playing,
                 };
             }
             DriveState::Reading => {
+                // XXX Test Subchannel Q byte 0 for the "data flag".
+
                 if self.xa_adpcm_to_spu && self.handle_xa_adpcm_sector() {
                     // Sector is meant to be streamed directly to the SPU, don't notify software
+                    for_software = false;
+                }
+
+                if self.cdda_mode {
+                    // XXX According to mednafen is cdda_mode is true and we have an audio sector
+                    // (as identified by the Q subchannel), the audio *is* sent to the SPU.
+                    unimplemented!("CDDA mode while reading!");
+                }
+            }
+            DriveState::Playing => {
+                // XXX Test Subchannel Q byte 0 for lack of "data flag"
+                if self.cdda_mode {
+                    self.handle_da_sector();
                     for_software = false;
                 }
             }
@@ -491,6 +509,10 @@ impl Controller {
                 if for_software {
                     self.notify(IrqCode::SectorReady);
                 }
+                self.position = self.position.next().unwrap();
+                Some(cps)
+            }
+            DriveState::Playing => {
                 self.position = self.position.next().unwrap();
                 Some(cps)
             }
@@ -555,6 +577,42 @@ impl Controller {
         self.decode_xa_adpcm_sector();
 
         true
+    }
+
+    /// We're playing a regular CD-DA audio track, send audio to the SPU
+    fn handle_da_sector(&mut self) {
+        let format = self.sector.metadata().format;
+
+        if format != TrackFormat::Audio {
+            unimplemented!("Got DA sector that's not audio! ({:?})", format);
+        }
+
+        // CD-DA is always 2352 bytes per track which gives 588 pairs of 16bit stereo samples.
+        self.audio_buffer.resize(2352 / 4, [0, 0]);
+        self.audio_index = 0;
+        self.audio_frequency = if self.double_speed {
+            AudioFrequency::Da2x
+        } else {
+            AudioFrequency::Da1x
+        };
+
+        // Copy the full sector into the audio buffer
+        let raw = self.sector.data_2352().unwrap();
+
+        for (n, pair) in self.audio_buffer.iter_mut().enumerate() {
+            let raw_pos = n << 2;
+
+            let left_lo = raw[raw_pos] as u16;
+            let left_hi = raw[raw_pos + 1] as u16;
+            let right_lo = raw[raw_pos + 2] as u16;
+            let right_hi = raw[raw_pos + 4] as u16;
+
+            let left = left_lo | (left_hi << 8);
+            let right = right_lo | (right_hi << 8);
+
+            pair[0] = left as i16;
+            pair[1] = right as i16;
+        }
     }
 
     /// Called when we have an XA ADPCM sector and we must send it to the SPU
@@ -774,6 +832,24 @@ impl Controller {
         self.audio_resamplers[0].restart();
         self.audio_resamplers[1].restart();
     }
+
+    /// Returns the start (INDEX01) of the given track in the disc, or None if the track doesn't
+    /// exist
+    fn get_track_start(&mut self, track: Bcd) -> Option<Msf> {
+        match self.disc {
+            Some(ref mut disc) => {
+                let image = disc.image();
+                let toc = image.toc();
+                let tracks = toc.tracks();
+
+                match tracks.iter().find(|t| t.track == track) {
+                    Some(t) => Some(t.start),
+                    None => None,
+                }
+            }
+            None => None,
+        }
+    }
 }
 
 pub fn run(psx: &mut Psx, cycles: CycleCount) {
@@ -942,6 +1018,7 @@ fn execute_command(psx: &mut Psx, command: u8) {
     let (min_param, max_param, handler): (u8, u8, fn(&mut Psx)) = match command {
         0x01 => (0, 0, commands::get_stat),
         0x02 => (3, 3, commands::set_loc),
+        0x03 => (0, 1, commands::play),
         // ReadN
         0x06 => (0, 0, commands::read),
         0x09 => (0, 0, commands::pause),
@@ -1043,6 +1120,8 @@ enum DriveState {
     Seeking(SeekType, AfterSeek),
     /// The drive is reading a sector
     Reading,
+    /// The drive is playing an audio track
+    Playing,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -1058,6 +1137,7 @@ enum SeekType {
 enum AfterSeek {
     Pause,
     Read,
+    Play,
 }
 
 mod commands {
@@ -1092,6 +1172,52 @@ mod commands {
         controller.seek_target_pending = true;
 
         controller.push_drive_status();
+    }
+
+    /// Start playing an audio track
+    pub fn play(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+
+        controller.push_drive_status();
+
+        controller.restart_audio();
+
+        if !controller.params.is_empty() {
+            // We're given a track to seek to before we start playing
+            let track = controller.params.pop();
+            let track = match Bcd::from_binary(track) {
+                Some(t) => t,
+                None => unimplemented!("Invalid BCD: {:x}", track),
+            };
+
+            let start_msf = match controller.get_track_start(track) {
+                Some(msf) => msf,
+                None => unimplemented!("Track {} not found", track),
+            };
+
+            controller.next_seek_target = start_msf;
+
+            controller.seek_target_pending = true;
+            let delay = controller.do_seek(SeekType::Audio, AfterSeek::Play);
+            controller.next_sector = Some(delay);
+            return;
+        }
+
+        if controller.drive_state == DriveState::Playing {
+            // Nothing to do
+            return;
+        }
+
+        // XXX Taken from mednafen, this is different from the "read" algorithm, need to
+        // double-check
+        if !controller.seek_target_pending && controller.drive_state != DriveState::Playing {
+            // Seek back to the actual target sector since we might have drifted away
+            controller.next_seek_target = controller.seek_target;
+            controller.seek_target_pending = true;
+        }
+
+        let delay = controller.do_seek(SeekType::Audio, AfterSeek::Play);
+        controller.next_sector = Some(delay);
     }
 
     /// Start data read sequence. This is the implementation for both ReadN and ReadS, apparently
@@ -1364,18 +1490,9 @@ mod commands {
             None => unimplemented!("Invalid BCD: {:x}", track),
         };
 
-        let start_msf = match controller.disc {
-            Some(ref mut disc) => {
-                let image = disc.image();
-                let toc = image.toc();
-                let tracks = toc.tracks();
-
-                match tracks.iter().find(|t| t.track == track) {
-                    Some(t) => t.start,
-                    None => unimplemented!("Track {} not found", track),
-                }
-            }
-            None => unimplemented!(),
+        let start_msf = match controller.get_track_start(track) {
+            Some(msf) => msf,
+            None => unimplemented!("Track {} not found", track),
         };
 
         // Frame isn't returned by this command
