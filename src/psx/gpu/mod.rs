@@ -698,8 +698,7 @@ fn gp1(psx: &mut Psx, val: u32) {
         }
         0x08 => psx.gpu.display_mode.set(val & 0xff_ffff),
         0x10 => psx.gpu.gp1_get_info(val),
-        // _ => unimplemented!("GP1 0x{:08x}", val),
-        _ => (),
+        _ => unimplemented!("GP1 0x{:08x}", val),
     }
 }
 
