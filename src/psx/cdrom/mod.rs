@@ -300,6 +300,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
 
             psx.cdrom.host_response.pop()
         }
+        2 => psx.cdrom.read_byte(),
         3 => match psx.cdrom.index {
             0 => psx.cdrom.irq_mask | 0xe0,
             1 => psx.cdrom.irq_flags | 0xe0,
