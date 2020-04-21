@@ -53,8 +53,10 @@ pub struct CdRom {
     rx_active: bool,
     /// The drive controller itself, running on a separate chip.
     controller: Controller,
+    /// Pending mixer configuration waiting for apply
+    pending_mixer: Mixer,
     /// CDROM audio mixer connected to the SPU
-    mixer: Mixer,
+    active_mixer: Mixer,
 }
 
 impl CdRom {
@@ -71,7 +73,8 @@ impl CdRom {
             rx_index: 0,
             rx_active: false,
             controller: Controller::new(disc),
-            mixer: Mixer::new(),
+            pending_mixer: Mixer::new(),
+            active_mixer: Mixer::new(),
         }
     }
 
@@ -233,7 +236,7 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                 maybe_start_command(psx);
             }
             // ATV2 register
-            3 => psx.cdrom.mixer.cd_right_to_spu_right = v,
+            3 => psx.cdrom.pending_mixer.cd_right_to_spu_right = v,
             _ => unimplemented!(
                 "Store to CD register {}.{}: 0x{:x}",
                 off,
@@ -245,9 +248,9 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             0 => psx.cdrom.push_parameter(v),
             1 => irq_set_mask(psx, v),
             // ATV0 register
-            2 => psx.cdrom.mixer.cd_left_to_spu_left = v,
+            2 => psx.cdrom.pending_mixer.cd_left_to_spu_left = v,
             // ATV3 register
-            3 => psx.cdrom.mixer.cd_right_to_spu_left = v,
+            3 => psx.cdrom.pending_mixer.cd_right_to_spu_left = v,
             _ => unreachable!(),
         },
         3 => match psx.cdrom.index {
@@ -265,9 +268,18 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
                 }
             }
             // ATV1 register
-            2 => psx.cdrom.mixer.cd_left_to_spu_right = v,
+            2 => psx.cdrom.pending_mixer.cd_left_to_spu_right = v,
             // ADPCTL register
-            3 => warn!("CDROM Mixer apply {:02x}", v),
+            3 => {
+                if v & (1 << 5) != 0 {
+                    // Apply mixer config
+                    psx.cdrom.active_mixer = psx.cdrom.pending_mixer;
+                }
+                if v & 1 != 0 {
+                    // XXX No$ says that it's mute but mednafen doesn't appear to implement it
+                    unimplemented!("Maybe-mute bit");
+                }
+            }
             _ => unreachable!(),
         },
         _ => unimplemented!(
@@ -320,7 +332,39 @@ pub fn dma_load(psx: &mut Psx) -> u32 {
 /// Called by the SPU at 44.1kHz to advance our audio state machine and return a new sample. True
 /// if we want the samples to be resampled if necessary
 pub fn run_audio_cycle(psx: &mut Psx, resample: bool) -> (i16, i16) {
-    psx.cdrom.controller.run_audio_cycle(resample)
+    let (in_left, in_right) = psx.cdrom.controller.run_audio_cycle(resample);
+
+    // Apply mixer
+    let in_left = in_left as i32;
+    let in_right = in_right as i32;
+
+    let mixer = psx.cdrom.active_mixer;
+
+    let l_to_l = mixer.cd_left_to_spu_left as i32;
+    let r_to_l = mixer.cd_right_to_spu_left as i32;
+    let l_to_r = mixer.cd_left_to_spu_right as i32;
+    let r_to_r = mixer.cd_right_to_spu_right as i32;
+
+    let out_left = (in_left * l_to_l + in_right * r_to_l) >> 7;
+    let out_right = (in_left * l_to_r + in_right * r_to_r) >> 7;
+
+    let clamp_left = if out_left > i16::max_value() as i32 {
+        i16::max_value()
+    } else if out_left < i16::min_value() as i32 {
+        i16::min_value()
+    } else {
+        out_left as i16
+    };
+
+    let clamp_right = if out_right > i16::max_value() as i32 {
+        i16::max_value()
+    } else if out_right < i16::min_value() as i32 {
+        i16::min_value()
+    } else {
+        out_right as i16
+    };
+
+    (clamp_left, clamp_right)
 }
 
 fn irq_ack(psx: &mut Psx, ack_mask: u8) {
@@ -390,6 +434,7 @@ fn maybe_process_notification(psx: &mut Psx) {
 
 /// CD-DA Audio playback mixer. The CDROM's audio stereo output can be mixed arbitrarily before
 /// reaching the SPU stereo input.
+#[derive(Copy, Clone)]
 struct Mixer {
     cd_left_to_spu_left: u8,
     cd_left_to_spu_right: u8,
