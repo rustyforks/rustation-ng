@@ -10,6 +10,7 @@ use super::Fifo;
 use crate::psx::cpu::CPU_FREQ_HZ;
 use crate::psx::{CycleCount, Psx};
 
+use cdimage::bcd::Bcd;
 use cdimage::msf::Msf;
 use cdimage::sector::{Sector, XaBitsPerSample, XaCodingInfo, XaForm, XaSamplingFreq};
 
@@ -842,7 +843,9 @@ pub fn predict_next_sync(psx: &mut Psx) -> CycleCount {
     } else {
         // Check for async response.
         if let Some((delay, _)) = controller.async_response {
-            if delay < next_sync {
+            // It's possible for delay to be 0 here if there's an async event pending and we have
+            // an unacknowledged IRQ
+            if delay > 0 && delay < next_sync {
                 next_sync = delay;
             }
         }
@@ -950,6 +953,7 @@ fn execute_command(psx: &mut Psx, command: u8) {
         0x0f => (0, 0, commands::get_param),
         0x11 => (0, 0, commands::get_loc_p),
         0x13 => (0, 0, commands::get_tn),
+        0x14 => (1, 1, commands::get_td),
         0x15 => (0, 0, commands::seek_l),
         0x19 => (1, 1, commands::test),
         0x1a => (0, 0, commands::get_id),
@@ -1058,7 +1062,7 @@ mod commands {
     //! The various CD-ROM commands
 
     use super::disc::Region;
-    use super::{timings, AfterSeek, CycleCount, DriveState, IrqCode, Msf, Psx, SeekType};
+    use super::{timings, AfterSeek, Bcd, CycleCount, DriveState, IrqCode, Msf, Psx, SeekType};
 
     /// Read the drive's status byte
     pub fn get_stat(psx: &mut Psx) {
@@ -1348,6 +1352,38 @@ mod commands {
             first_track.bcd(),
             last_track.bcd(),
         ];
+
+        controller.response.push_slice(&response);
+    }
+
+    /// Return the first and last track number for the current session
+    pub fn get_td(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+
+        let track = controller.params.pop();
+        let track = match Bcd::from_binary(track) {
+            Some(t) => t,
+            None => unimplemented!("Invalid BCD: {:x}", track),
+        };
+
+        let start_msf = match controller.disc {
+            Some(ref mut disc) => {
+                let image = disc.image();
+                let toc = image.toc();
+                let tracks = toc.tracks();
+
+                match tracks.iter().find(|t| t.track == track) {
+                    Some(t) => t.start,
+                    None => unimplemented!("Track {} not found", track),
+                }
+            }
+            None => unimplemented!(),
+        };
+
+        // Frame isn't returned by this command
+        let (m, s, _f) = start_msf.into_bcd();
+
+        let response = [controller.drive_status(), m.bcd(), s.bcd()];
 
         controller.response.push_slice(&response);
     }
