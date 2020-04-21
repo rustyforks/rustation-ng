@@ -955,6 +955,7 @@ fn execute_command(psx: &mut Psx, command: u8) {
         0x13 => (0, 0, commands::get_tn),
         0x14 => (1, 1, commands::get_td),
         0x15 => (0, 0, commands::seek_l),
+        0x16 => (0, 0, commands::seek_p),
         0x19 => (1, 1, commands::test),
         0x1a => (0, 0, commands::get_id),
         // ReadS
@@ -1046,9 +1047,10 @@ enum DriveState {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum SeekType {
-    /// According no No$ in this is used to seek data tracks. It won't work properly for audio
-    /// tracks.
+    /// Seek "L", used mainly to seek data tracks
     Data,
+    /// Seek "P", used mainly to seek audio tracks
+    Audio,
 }
 
 /// Describes what state the drive should be put in after the seek sequence has completed
@@ -1240,11 +1242,7 @@ mod commands {
         controller.autopause = (mode >> 1) & 1 != 0;
         controller.cdda_mode = mode & 1 != 0;
 
-        if controller.cdda_mode
-            || controller.autopause
-            || controller.report_interrupts
-            || controller.sector_size_override
-        {
+        if controller.autopause || controller.report_interrupts || controller.sector_size_override {
             unimplemented!("CDROM: unhandled mode: {:02x}", mode);
         }
 
@@ -1389,12 +1387,30 @@ mod commands {
     }
 
     /// Execute seek. Target is given by previous "set_loc" command.
+    ///
+    /// This version of seek is supposed to only work on data tracks as it uses the CD-ROM sector
+    /// header to aim at the final location (according to No$, and as far as I can tell mednafen
+    /// implements it that way).
     pub fn seek_l(psx: &mut Psx) {
         let controller = &mut psx.cdrom.controller;
 
         controller.push_drive_status();
 
         let seek_time = controller.do_seek(SeekType::Data, AfterSeek::Pause);
+
+        controller.schedule_async_response(seek_time, async_seek_l);
+    }
+
+    /// Execute seek. Target is given by previous "set_loc" command.
+    ///
+    /// This version of seek is supposed to use the subchannel Q data to aim at the final location
+    /// and should therefore work anywhere on disc, not just data tracks.
+    pub fn seek_p(psx: &mut Psx) {
+        let controller = &mut psx.cdrom.controller;
+
+        controller.push_drive_status();
+
+        let seek_time = controller.do_seek(SeekType::Audio, AfterSeek::Pause);
 
         controller.schedule_async_response(seek_time, async_seek_l);
     }
