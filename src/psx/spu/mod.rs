@@ -5,7 +5,7 @@
 mod fifo;
 mod fir;
 
-use super::{cdrom, cpu, sync, AccessWidth, Addressable, CycleCount, Psx};
+use super::{cdrom, cpu, irq, sync, AccessWidth, Addressable, CycleCount, Psx};
 use fifo::DecoderFifo;
 use std::ops::{Index, IndexMut};
 
@@ -362,7 +362,8 @@ fn run_voice_decoder(psx: &mut Psx, voice: u8) {
         // We have enough data in the decoder FIFO, no need to decode more
         if psx.spu.irq_enabled() {
             // Test prev address
-            unimplemented!();
+            let prev = psx.spu[voice].cur_index.wrapping_sub(1) & 0x3_ffff;
+            check_for_irq(psx, prev);
         }
     } else {
         // True if we're starting a new ADPCM block
@@ -384,7 +385,7 @@ fn run_voice_decoder(psx: &mut Psx, voice: u8) {
 
         if psx.spu.irq_enabled() {
             // Test current address
-            unimplemented!();
+            check_for_irq(psx, psx.spu[voice].cur_index);
         }
 
         if new_block {
@@ -448,7 +449,7 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::voice::ADPCM_ADSR_HI => voice.adsr.set_conf_hi(val),
             regmap::voice::CURRENT_ADSR_VOLUME => voice.set_level(val as i16),
             regmap::voice::ADPCM_REPEAT_INDEX => {
-                let loop_index = (RamIndex::from(val) << 2) & 0x3_ffff;
+                let loop_index = to_ram_index(val);
                 voice.set_loop_index(loop_index);
             }
             _ => (),
@@ -475,7 +476,14 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
             regmap::VOICE_STATUS_LO => to_lo(&mut psx.spu.voice_looped, val),
             regmap::VOICE_STATUS_HI => to_hi(&mut psx.spu.voice_looped, val),
             regmap::REVERB_BASE => (),
-            regmap::TRANSFER_START_INDEX => psx.spu.ram_index = to_ram_index(val),
+            regmap::IRQ_ADDRESS => {
+                psx.spu.irq_addr = to_ram_index(val);
+                check_for_irq(psx, psx.spu.ram_index);
+            }
+            regmap::TRANSFER_START_INDEX => {
+                psx.spu.ram_index = to_ram_index(val);
+                check_for_irq(psx, psx.spu.ram_index);
+            }
             regmap::TRANSFER_FIFO => transfer(psx, val),
             regmap::CONTROL => {
                 if psx.spu.irq_enabled() {
@@ -530,7 +538,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
     run(psx);
 
     if T::width() != AccessWidth::HalfWord {
-        panic!("Unhandled {:?} SPU load", T::width());
+        warn!("{:?} SPU load", T::width());
     }
 
     let index = (off >> 1) as usize;
@@ -612,7 +620,7 @@ fn ram_read(psx: &mut Psx, index: RamIndex) -> u16 {
 fn check_for_irq(psx: &mut Psx, index: RamIndex) {
     if psx.spu.irq_enabled() && index == psx.spu.irq_addr {
         psx.spu.irq = true;
-        panic!("Trigger SPU IRQ!");
+        irq::trigger(psx, irq::Interrupt::Spu);
     }
 }
 
@@ -1312,7 +1320,7 @@ impl AdpcmHeader {
 
 /// Convert a register value to a ram index
 fn to_ram_index(v: u16) -> RamIndex {
-    RamIndex::from(v) << 2
+    (RamIndex::from(v) << 2) & 0x3f_ffff
 }
 
 fn to_hi(r: &mut u32, v: u16) {
@@ -1364,6 +1372,7 @@ mod regmap {
     pub const VOICE_STATUS_HI: usize = 0xcf;
 
     pub const REVERB_BASE: usize = 0xd1;
+    pub const IRQ_ADDRESS: usize = 0xd2;
     pub const TRANSFER_START_INDEX: usize = 0xd3;
     pub const TRANSFER_FIFO: usize = 0xd4;
     pub const CONTROL: usize = 0xd5;
