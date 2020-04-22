@@ -3,7 +3,7 @@
 //! Unless otherwise noted the expected output was generated on a real PlayStation (model
 //! SCPH-7502, PAL).
 
-use super::{Command, CommandBuffer, Frame, Pixel, Rasterizer, Special};
+use super::{Command, CommandBuffer, Frame, Pixel, Rasterizer};
 use std::sync::mpsc;
 
 fn build_rasterizer() -> (
@@ -73,7 +73,7 @@ fn quad_rect_solid_opaque() {
         vertex_coord(2, 6),
         vertex_coord(4, 2),
         vertex_coord(4, 6),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -109,7 +109,7 @@ fn triangle_solid_opaque_pyramid_up() {
         vertex_coord(5, 2),
         vertex_coord(2, 5),
         vertex_coord(8, 5),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -140,7 +140,7 @@ fn triangle_solid_opaque_pyramid_down() {
         vertex_coord(5, 5),
         vertex_coord(2, 2),
         vertex_coord(8, 2),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -171,7 +171,7 @@ fn triangle_solid_opaque_flat_up() {
         vertex_coord(5, 1),
         vertex_coord(2, 6),
         vertex_coord(9, 6),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -203,7 +203,7 @@ fn triangle_solid_opaque_flat_down() {
         vertex_coord(5, 6),
         vertex_coord(2, 1),
         vertex_coord(9, 1),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -235,7 +235,7 @@ fn triangle_solid_opaque_flat_right() {
         vertex_coord(6, 5),
         vertex_coord(1, 2),
         vertex_coord(1, 9),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -270,7 +270,7 @@ fn triangle_solid_opaque_flat_left() {
         vertex_coord(1, 5),
         vertex_coord(6, 2),
         vertex_coord(6, 9),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -305,7 +305,7 @@ fn triangle_solid_opaque_slant_top_left() {
         vertex_coord(2, 2),
         vertex_coord(4, 6),
         vertex_coord(9, 6),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -337,7 +337,7 @@ fn triangle_solid_opaque_slant_top_right() {
         vertex_coord(8, 2),
         vertex_coord(1, 6),
         vertex_coord(6, 6),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -369,7 +369,7 @@ fn triangle_solid_opaque_slant_bot_left() {
         vertex_coord(2, 6),
         vertex_coord(4, 2),
         vertex_coord(9, 2),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -401,7 +401,7 @@ fn triangle_solid_opaque_slant_bot_right() {
         vertex_coord(9, 6),
         vertex_coord(2, 2),
         vertex_coord(7, 2),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -433,7 +433,7 @@ fn triangle_solid_opaque_mid_right() {
         vertex_coord(1, 1),
         vertex_coord(8, 5),
         vertex_coord(3, 8),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -467,7 +467,7 @@ fn triangle_solid_opaque_mid_left() {
         vertex_coord(9, 0),
         vertex_coord(1, 4),
         vertex_coord(6, 9),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -503,7 +503,7 @@ fn triangle_solid_opaque_big1() {
         vertex_coord(0, 0),
         vertex_coord(0, 500),
         vertex_coord(125, 500),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -549,7 +549,7 @@ fn triangle_solid_opaque_big2() {
         vertex_coord(0, 0),
         vertex_coord(0, 500),
         vertex_coord(126, 500),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -606,7 +606,7 @@ fn triangle_solid_opaque_draw_limits() {
         vertex_coord(-10, -1),
         vertex_coord(-11, 510),
         vertex_coord(1013, 510),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -647,7 +647,7 @@ fn triangle_solid_opaque_false_friends() {
         vertex_coord(0, 7),
         vertex_coord(1, 12),
         vertex_coord(5, 11),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -691,7 +691,7 @@ fn gouraud_rgb_right() {
         vertex_coord(1, 9),
         Command::Gp0(0x00ff0000),
         vertex_coord(9, 9),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -825,7 +825,7 @@ fn test_overflow() {
         Command::Gp0(0x009d0133),
         Command::Gp0(0x00a57670),
         Command::Gp0(0x00a4012b),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
@@ -844,7 +844,7 @@ fn test_bad_draw_psx_logo() {
         Command::Gp0(0x00090001),
         Command::Gp0(0x0000000a),
         Command::Gp0(0x00040023),
-        Command::Special(Special::Quit),
+        Command::Quit,
     ];
 
     command_channel.send(commands).unwrap();
