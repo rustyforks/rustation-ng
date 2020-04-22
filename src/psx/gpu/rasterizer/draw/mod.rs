@@ -2439,16 +2439,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_variable::<Opaque, NoTexture>,
+        len: 3,
     },
     CommandHandler {
         handler: cmd_handle_rect_variable::<Transparent, NoTexture>,
         len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_variable::<Transparent, NoTexture>,
+        len: 3,
     },
     CommandHandler {
         handler: cmd_handle_rect_variable::<Opaque, TextureBlending>,

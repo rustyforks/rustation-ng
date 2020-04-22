@@ -1282,9 +1282,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_variable::<Opaque, NoTexture>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
@@ -1294,9 +1294,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
-        fifo_len: 1,
+        handler: cmd_handle_rect_variable::<Transparent, NoTexture>,
+        len: 3,
+        fifo_len: 3,
         out_of_band: false,
     },
     Command {
