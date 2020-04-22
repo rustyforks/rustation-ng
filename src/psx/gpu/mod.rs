@@ -558,6 +558,10 @@ fn handle_eol(psx: &mut Psx) {
             // Prepare for the next frame, if we're currently sending the bottom field it means
             // that we're going to switch to the top
             psx.gpu.read_bottom_field = !psx.gpu.bottom_field;
+            psx.gpu.rasterizer.field_change(psx.gpu.read_bottom_field);
+        } else if psx.gpu.read_bottom_field {
+            psx.gpu.read_bottom_field = false;
+            psx.gpu.rasterizer.field_change(psx.gpu.read_bottom_field);
         }
 
         if !psx.gpu.frame_drawn {
@@ -586,13 +590,13 @@ fn handle_eol(psx: &mut Psx) {
     // Figure out which VRAM line is being displayed
     psx.gpu.cur_line_vram_y = psx.gpu.display_vram_y_start;
     psx.gpu.cur_line_vram_y += if psx.gpu.display_mode.is_true_interlaced() {
-        let off = if psx.gpu.display_active {
+        let field_off = if psx.gpu.display_active {
             psx.gpu.read_bottom_field as u16
         } else {
             0
         };
 
-        psx.gpu.cur_line_vram_offset * 2 + off
+        (psx.gpu.cur_line_vram_offset << 1) | field_off
     } else {
         psx.gpu.cur_line_vram_offset
     };
@@ -839,6 +843,11 @@ impl DrawMode {
     /// Return true if dithering is enabled
     fn dither_enable(self) -> bool {
         self.0 & (1 << 9) != 0
+    }
+
+    /// True if the GPU is allowed to draw to the display area
+    fn draw_to_display_area(self) -> bool {
+        self.0 & (1 << 10) != 0
     }
 }
 

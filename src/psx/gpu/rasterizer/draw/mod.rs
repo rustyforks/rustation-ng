@@ -5,7 +5,7 @@ mod tests;
 
 use std::sync::mpsc;
 
-use super::{Command, CommandBuffer, Frame, RasterizerOption, Special};
+use super::{Command, CommandBuffer, Frame, RasterizerOption};
 use crate::psx::gpu::commands::{vram_access_dimensions, Shaded};
 use crate::psx::gpu::commands::{NoShading, Position, Transparent};
 use crate::psx::gpu::commands::{NoTexture, Opaque, ShadingMode, TextureBlending, TextureRaw};
@@ -90,6 +90,8 @@ pub struct Rasterizer {
     /// `dithering_force_disable` should probably also be true since it doesn't make a lot of sense
     /// to dither from 24bits to 24 bits...
     draw_24bpp: bool,
+    /// True if we're interlaced and display the bottom field
+    display_bottom_field: bool,
 }
 
 impl Rasterizer {
@@ -125,6 +127,7 @@ impl Rasterizer {
             dither_enabled: false,
             dithering_force_disable: false,
             draw_24bpp: false,
+            display_bottom_field: false,
         };
 
         rasterizer.rebuild_dither_table();
@@ -186,14 +189,39 @@ impl Rasterizer {
                         }
                     }
                     Command::Gp1(v) => self.gp1(*v),
-                    Command::Special(Special::Quit) => return,
+                    Command::Quit => return,
                     // XXX draw one line at a time
-                    Command::Special(Special::EndOfLine(l)) => self.draw_line(*l),
-                    Command::Special(Special::EndOfFrame) => self.send_frame(),
+                    Command::EndOfLine(l) => self.draw_line(*l),
+                    Command::EndOfFrame => self.send_frame(),
+                    Command::FieldChanged(f) => self.display_bottom_field = *f,
                     Command::Option(opt) => self.set_option(*opt),
                 }
             }
         }
+    }
+
+    /// Returns `false` if the GPU config forbids writing to this line because it's currently
+    /// displayed (currently only useful for interlaced output)
+    pub fn can_draw_to_line(&self, y: i32) -> bool {
+        if self.tex_mapper.draw_mode.draw_to_display_area() {
+            // We can draw to display, no worries
+            return true;
+        }
+
+        if !self.display_mode.is_true_interlaced() {
+            // XXX We only implement the test for interlaced output for now, since that's the most
+            // common situation where this leads to visual glitches
+            return true;
+        }
+
+        // XXX This is how mednafen does it so it's probably safe enough but in practice this is
+        // probably very wrong: we should probably still be able to draw to these lines if the X is
+        // outside of the display. We should also be able to draw to these lines if they're below
+        // or above the display area. In practice interlaced is uncommon enough that it's probably
+        // good enough.
+        let y_is_bottom = ((y + self.display_vram_y_start as i32) & 1) != 0;
+
+        y_is_bottom != self.display_bottom_field
     }
 
     pub fn set_option(&mut self, opt: RasterizerOption) {
@@ -230,23 +258,14 @@ impl Rasterizer {
             return;
         }
 
-        let interlaced = self.display_mode.is_true_interlaced();
-
         let mut frame_y = line - self.display_line_start;
-        if interlaced {
-            frame_y *= 2;
+        if self.display_mode.is_true_interlaced() {
+            frame_y = (frame_y << 1) | (self.display_bottom_field as u16);
         }
 
         let vram_y = self.display_vram_y_start + frame_y;
 
         self.output_line(self.display_vram_x_start, vram_y, frame_y);
-
-        // XXX For now display interlaced as progressive. It's not technically super accurate but
-        // emulating the interlacing correctly will almost always result in visual artifacts
-        // anyway, so it may be better that way.
-        if interlaced {
-            self.output_line(self.display_vram_x_start, vram_y + 1, frame_y + 1);
-        }
     }
 
     fn output_line(&mut self, x_start: u16, vram_y: u16, frame_y: u16) {
@@ -256,7 +275,7 @@ impl Rasterizer {
 
         if frame_y >= self.cur_frame.height {
             // Out-of-frame. This should only happen if the video mode changed within the current
-            // frame.
+            // frame, or for the very last line of the bottom field when we're interlaced.
             return;
         }
 
@@ -336,6 +355,8 @@ impl Rasterizer {
 
     /// Creatses a new, blank frame and returns the previous one
     fn new_frame(&mut self) -> Frame {
+        let interlaced = self.display_mode.is_true_interlaced();
+
         let (width, height) = if self.display_full_vram {
             // If we display the full VRAM we don't output one line at a time in the GPU timing
             // emulation code, we can just copy it fully here. It's not like there's any meaningful
@@ -355,23 +376,29 @@ impl Rasterizer {
             // XXX For now we approximate the dimensions of the visible area of the image.
             // For better accuracy we should be emulating the output video timings more accurately
             // but it's probably not worth it for now.
-            let interlaced = self.display_mode.is_true_interlaced();
 
             let width = self.display_mode.xres();
 
             let mut height = self.display_line_end - self.display_line_start;
             if interlaced {
                 height *= 2;
+                // Last line of the bottom field isn't drawn
+                height -= 1;
             }
 
             (width as u32, height as u32)
         };
 
-        let mut new_frame = Frame::new(width, height);
+        if width == self.cur_frame.width && height == self.cur_frame.height {
+            self.cur_frame.clone()
+        } else {
+            // Resolution changed, create a whole new frame
+            let mut new_frame = Frame::new(width, height);
 
-        ::std::mem::swap(&mut new_frame, &mut self.cur_frame);
+            ::std::mem::swap(&mut new_frame, &mut self.cur_frame);
 
-        new_frame
+            new_frame
+        }
     }
 
     fn send_frame(&mut self) {
@@ -849,6 +876,10 @@ impl Rasterizer {
         let start_x = max(left_x, self.clip_x_min);
         let end_x = min(right_x, self.clip_x_max + 1);
 
+        if !self.can_draw_to_line(y) {
+            return;
+        }
+
         if start_x >= end_x {
             // Line is either 0-length or clipped
             return;
@@ -973,6 +1004,11 @@ impl Rasterizer {
         }
 
         for y in y_start..y_end {
+            if !self.can_draw_to_line(y) {
+                v = v.wrapping_add(v_inc as u8);
+                continue;
+            }
+
             let mut u = u_start;
             for x in x_start..x_end {
                 if Texture::is_textured() {
@@ -994,6 +1030,7 @@ impl Rasterizer {
                 }
                 u = u.wrapping_add(u_inc as u8);
             }
+
             v = v.wrapping_add(v_inc as u8);
         }
     }
@@ -1936,6 +1973,11 @@ fn cmd_fill_rect(rasterizer: &mut Rasterizer, params: &[u32]) {
 
     for y in 0..height {
         let y_pos = (start_y + y) & 511;
+
+        if !rasterizer.can_draw_to_line(y_pos as i32) {
+            continue;
+        }
+
         for x in 0..width {
             // Fill rect is supposed to ignore clip space and mask completely.
             //
@@ -2242,8 +2284,8 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 8,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, NoTexture, Shaded>,
+        len: 8,
     },
     CommandHandler {
         handler: cmd_handle_poly_quad::<Opaque, TextureBlending, Shaded>,

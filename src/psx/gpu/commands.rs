@@ -309,6 +309,12 @@ where
         npixels
     };
 
+    // XXX Handle !draw_to_display_area for non-interlaced output
+    if !psx.gpu.draw_mode.draw_to_display_area() && psx.gpu.display_mode.is_true_interlaced() {
+        // We'll only draw every other line
+        draw_time /= 2;
+    }
+
     draw_time
 }
 
@@ -477,6 +483,12 @@ where
         // "base" time above. Not sure what's up with that.
         draw_time = (draw_time * 3) / 2
     };
+
+    // XXX Handle !draw_to_display_area for non-interlaced output
+    if !psx.gpu.draw_mode.draw_to_display_area() && psx.gpu.display_mode.is_true_interlaced() {
+        // We'll only draw every other line
+        draw_time /= 2;
+    }
 
     draw_time
 }
@@ -1039,8 +1051,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, NoTexture, Shaded>,
+        len: 8,
         fifo_len: 1,
         out_of_band: false,
     },

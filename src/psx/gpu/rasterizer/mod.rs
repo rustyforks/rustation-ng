@@ -44,16 +44,25 @@ impl Handle {
 
     /// Notify the rasterizer that a line has been fully displayed on the TV output
     pub fn end_of_line(&mut self, line: u16) {
-        self.push_command(Command::end_of_line(line));
+        self.push_command(Command::EndOfLine(line));
 
         // Flush after each line
         self.flush_command_buffer();
     }
 
+    /// When displaying interlaced video this is called when the displayed field changed
+    pub fn field_change(&mut self, bottom_field: bool) {
+        // This should be called just after the end of the line, so there shouldn't be any need to
+        // flush
+        debug_assert!(self.command_buffer.is_empty());
+
+        self.push_command(Command::FieldChanged(bottom_field));
+    }
+
     /// Notify the rasterizer that the current frame is done drawing and should be returned through
     /// the frame channel
     pub fn end_of_frame(&mut self) {
-        self.push_command(Command::end_of_frame());
+        self.push_command(Command::EndOfFrame);
         self.flush_command_buffer();
 
         // Make sure we were not already waiting for a frame
@@ -95,7 +104,7 @@ impl Handle {
 impl ::std::ops::Drop for Handle {
     fn drop(&mut self) {
         self.command_buffer.clear();
-        self.push_command(Command::quit());
+        self.push_command(Command::Quit);
 
         self.flush_command_buffer();
 
@@ -140,40 +149,22 @@ pub enum Command {
     Gp0(u32),
     /// GP1 register command
     Gp1(u32),
-    /// Special command
-    Special(Special),
+    /// Terminate rasterization
+    Quit,
+    /// Finalize current line
+    EndOfLine(u16),
+    /// Field changed. Contains `true` if we're displaying the bottom field, `false` otherwise
+    FieldChanged(bool),
+    /// Finalize frame and return it through `frame_channel`
+    EndOfFrame,
     /// Option setting
     Option(RasterizerOption),
 }
 
 impl Command {
-    pub fn end_of_line(line: u16) -> Command {
-        Command::Special(Special::EndOfLine(line))
-    }
-
-    pub fn end_of_frame() -> Command {
-        Command::Special(Special::EndOfFrame)
-    }
-
-    fn quit() -> Command {
-        Command::Special(Special::Quit)
-    }
-
     fn option(opt: RasterizerOption) -> Command {
         Command::Option(opt)
     }
-}
-
-/// Special commands in bits [27:24] when bits [31:28] are 0xf. Value 0x0 is reserved for GP1
-/// commands
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Special {
-    /// Terminate rasterization
-    Quit,
-    /// Finalize current line
-    EndOfLine(u16),
-    /// Finalize frame and return it through `frame_channel`
-    EndOfFrame,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -185,6 +176,7 @@ pub enum RasterizerOption {
 }
 
 /// Buffer containing one rendered frame
+#[derive(Clone)]
 pub struct Frame {
     /// Frame pixels in xRGB 8888 format
     pub pixels: Vec<u32>,

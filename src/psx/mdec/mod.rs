@@ -290,8 +290,6 @@ impl MDec {
     }
 
     fn next_block(&mut self) {
-        println!("{:?} done", self.current_block);
-
         if self.command.is_monochrome() {
             self.idct_matrix.idct(&self.block_coeffs, &mut self.block_y);
 
