@@ -314,8 +314,9 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                 let v = psx.xmem.ram_load(cur_addr);
                 port_store(psx, port, v)
             } else {
-                let (v, read_delay) = port_load(psx, port);
-                psx.xmem.ram_store(cur_addr, v);
+                let (v, offset, read_delay) = port_load(psx, port);
+                psx.xmem
+                    .ram_store((cur_addr.wrapping_add(offset)) & 0x1f_fffc, v);
                 read_delay
             };
 
@@ -415,28 +416,39 @@ fn port_store(psx: &mut Psx, port: Port, v: u32) -> CycleCount {
     }
 }
 
-/// Perform a DMA port read and returns the value alongside with the delay penalty for the read
-fn port_load(psx: &mut Psx, port: Port) -> (u32, CycleCount) {
-    match port {
+/// Perform a DMA port read and returns the value alongside with the write offset (for MDEC, 0
+/// elsewhere) and the delay penalty for the read
+fn port_load(psx: &mut Psx, port: Port) -> (u32, u32, CycleCount) {
+    let mut offset = 0;
+    let mut delay = 0;
+
+    let v = match port {
         Port::Otc => {
             let channel = &psx.dma[port];
 
-            let v = if channel.remaining_words == 1 {
+            if channel.remaining_words == 1 {
                 // Last entry contains the end of table marker
                 0xff_ffff
             } else {
                 // Pointer to the previous entry
                 channel.cur_address.wrapping_sub(4) & 0x1f_ffff
-            };
-
-            (v, 0)
+            }
         }
         // XXX latency taken from mednafen
-        Port::CdRom => (cdrom::dma_load(psx), 8),
-        Port::Spu => (spu::dma_load(psx), 0),
-        Port::MDecOut => (mdec::dma_load(psx), 0),
+        Port::CdRom => {
+            delay = 8;
+            cdrom::dma_load(psx)
+        }
+        Port::Spu => spu::dma_load(psx),
+        Port::MDecOut => {
+            let (v, off) = mdec::dma_load(psx);
+            offset = off;
+            v
+        }
         _ => unimplemented!("DMA port load {:?}", port),
-    }
+    };
+
+    (v, offset, delay)
 }
 
 /// The 7 DMA channels

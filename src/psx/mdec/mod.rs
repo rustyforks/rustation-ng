@@ -33,6 +33,12 @@ pub struct MDec {
     block_u: Macroblock,
     /// Buffer for the currently decoded Cr macroblock.
     block_v: Macroblock,
+    /// DMA block line length in 32bit words
+    dma_block_line_length: u8,
+    /// Block line offset for DMA read
+    dma_block_line: u8,
+    /// Block column offset for DMA read
+    dma_block_column: u8,
 }
 
 impl MDec {
@@ -54,6 +60,9 @@ impl MDec {
             block_y: Macroblock::new(),
             block_u: Macroblock::new(),
             block_v: Macroblock::new(),
+            dma_block_line_length: 0,
+            dma_block_line: 0,
+            dma_block_column: 0,
         }
     }
 
@@ -76,6 +85,14 @@ impl MDec {
                             self.block_index = 0;
                             self.command_remaining = self.command.block_len();
                             self.state = State::Decoding;
+
+                            self.dma_block_line_length = match self.command.output_depth() {
+                                OutputDepth::D4 | OutputDepth::D8 => 0,
+                                OutputDepth::D15 => 4,
+                                OutputDepth::D24 => 6,
+                            };
+                            self.dma_block_line = 0;
+                            self.dma_block_column = self.dma_block_line_length;
                         }
                         2 => {
                             // Load quantization matrices
@@ -113,7 +130,7 @@ impl MDec {
                 State::LoadIdctMatrix => {
                     let next_word = self.input_fifo.pop();
 
-                    let index = (32 - self.command_remaining) as usize;
+                    let index = (32 - self.command_remaining) as u8;
 
                     let index = index * 2;
 
@@ -122,8 +139,8 @@ impl MDec {
 
                     // XXX The loss of precision in the bitshift looks suspicious to me but that's
                     // what mednafen does. Probably worth investigating on the real hardware.
-                    self.idct_matrix[index] = c1 >> 3;
-                    self.idct_matrix[index + 1] = c2 >> 3;
+                    self.idct_matrix.set(index, c1 >> 3);
+                    self.idct_matrix.set(index + 1, c2 >> 3);
 
                     self.command_remaining = self.command_remaining.wrapping_sub(1);
                     if self.command_remaining == 0 {
@@ -295,6 +312,8 @@ impl MDec {
 
             unimplemented!();
         } else {
+            let finished_block = self.current_block;
+
             let generate_pixels = {
                 let (idct_target, generate_pixels, next_block) = match self.current_block {
                     BlockType::Y1 => (&mut self.block_y, true, BlockType::Y2),
@@ -318,7 +337,7 @@ impl MDec {
                 if self.command.output_depth() == OutputDepth::D15 {
                     self.generate_pixels_rgb15();
                 } else {
-                    self.generate_pixels_rgb24();
+                    self.generate_pixels_rgb24(finished_block);
                 }
             }
         }
@@ -349,12 +368,19 @@ impl MDec {
         }
     }
 
-    fn generate_pixels_rgb24(&mut self) {
+    fn generate_pixels_rgb24(&mut self, block_type: BlockType) {
+        let t = block_type as usize;
+
         for y in 0..8 {
+            let uv_y = (y >> 1) | (t & 2) << 1;
+            let uv_x = (t & 1) << 2;
+
             for x in 0..8 {
+                let uv_x = uv_x + (x >> 1);
+
                 let l = self.block_y[y * 8 + x];
-                let u = self.block_u[y * 8 + x];
-                let v = self.block_v[y * 8 + x];
+                let u = self.block_u[uv_y * 8 + uv_x];
+                let v = self.block_v[uv_y * 8 + uv_x];
 
                 let (r, g, b) = yuv_to_rgb(l, u, v);
 
@@ -420,10 +446,30 @@ pub fn dma_can_read(psx: &mut Psx) -> bool {
     psx.mdec.dma_can_read()
 }
 
-pub fn dma_load(psx: &mut Psx) -> u32 {
+/// Retuns the word being loaded as well as the offset in VRAM
+pub fn dma_load(psx: &mut Psx) -> (u32, u32) {
     run(psx);
 
-    psx.mdec.read_word()
+    let mdec = &mut psx.mdec;
+
+    let v = mdec.read_word();
+
+    let line = mdec.dma_block_line as u32;
+    let line_length = mdec.dma_block_line_length as u32;
+
+    let mut offset = (line & 7) * line_length;
+
+    if line & 8 != 0 {
+        offset = offset.wrapping_sub(line_length * 7);
+    }
+
+    mdec.dma_block_column -= 1;
+    if mdec.dma_block_column == 0 {
+        mdec.dma_block_column = mdec.dma_block_line_length;
+        mdec.dma_block_line = mdec.dma_block_line.wrapping_add(1);
+    }
+
+    (v, (offset as u32) << 2)
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -503,6 +549,13 @@ impl IdctMatrix {
         IdctMatrix([0; 64])
     }
 
+    fn set(&mut self, index: u8, coef: i16) {
+        // We shuffle the table to make it a bit more cache friendly in `idct` as well as making it
+        // easier to implement it using SIMD
+        let index = ((index & 7) << 3) | ((index >> 3) & 7);
+        self[index as usize] = coef;
+    }
+
     /// Compute the Inverse Discrete Cosine Transform of `coeffs` and store the result in `block`
     fn idct(&self, coeffs: &MacroblockCoeffs, block: &mut Macroblock) {
         // XXX This function could greatly benefit from SIMD code when Rust supports it. The full
@@ -518,7 +571,7 @@ impl IdctMatrix {
                     let coef = coeffs[y * 8 + c] as i32;
 
                     // XXX what happens in case of overflow? Should test on real hardware.
-                    sum += coef * self[c * 8 + x] as i32
+                    sum += coef * self[x * 8 + c] as i32;
                 }
 
                 let v = (sum + 0x4000) >> 15;
@@ -536,7 +589,7 @@ impl IdctMatrix {
                     let coef = block_tmp[y * 8 + c] as i32;
 
                     // XXX what happens in case of overflow? Should test on real hardware.
-                    sum += coef * self[c * 8 + x] as i32
+                    sum += coef * self[x * 8 + c] as i32;
                 }
 
                 let v = (sum + 0x4000) >> 15;
@@ -696,11 +749,11 @@ impl MacroblockCoeffs {
     fn set_zigzag(&mut self, pos: u8, coeff: i16) {
         // Zigzag LUT
         let zigzag: [u8; 64] = [
-            0x00, 0x01, 0x08, 0x10, 0x09, 0x02, 0x03, 0x0a, 0x11, 0x18, 0x20, 0x19, 0x12, 0x0b,
-            0x04, 0x05, 0x0c, 0x13, 0x1a, 0x21, 0x28, 0x30, 0x29, 0x22, 0x1b, 0x14, 0x0d, 0x06,
-            0x07, 0x0e, 0x15, 0x1c, 0x23, 0x2a, 0x31, 0x38, 0x39, 0x32, 0x2b, 0x24, 0x1d, 0x16,
-            0x0f, 0x17, 0x1e, 0x25, 0x2c, 0x33, 0x3a, 0x3b, 0x34, 0x2d, 0x26, 0x1f, 0x27, 0x2e,
-            0x35, 0x3c, 0x3d, 0x36, 0x2f, 0x37, 0x3e, 0x3f,
+            0x00, 0x08, 0x01, 0x02, 0x09, 0x10, 0x18, 0x11, 0x0a, 0x03, 0x04, 0x0b, 0x12, 0x19,
+            0x20, 0x28, 0x21, 0x1a, 0x13, 0x0c, 0x05, 0x06, 0x0d, 0x14, 0x1b, 0x22, 0x29, 0x30,
+            0x38, 0x31, 0x2a, 0x23, 0x1c, 0x15, 0x0e, 0x07, 0x0f, 0x16, 0x1d, 0x24, 0x2b, 0x32,
+            0x39, 0x3a, 0x33, 0x2c, 0x25, 0x1e, 0x17, 0x1f, 0x26, 0x2d, 0x34, 0x3b, 0x3c, 0x35,
+            0x2e, 0x27, 0x2f, 0x36, 0x3d, 0x3e, 0x37, 0x3f,
         ];
 
         if pos >= 64 {
@@ -727,5 +780,98 @@ impl Index<usize> for MacroblockCoeffs {
 impl IndexMut<usize> for MacroblockCoeffs {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.0[index as usize]
+    }
+}
+
+#[test]
+fn test_quantize_dc() {
+    // XXX These values are taken from Mednafen at the moment, it
+    // would be better to validate against the real hardware.
+    assert_eq!(quantize(0, 0, None), 0);
+    assert_eq!(quantize(0, 255, None), 0);
+    assert_eq!(quantize(1, 0, None), 32);
+    assert_eq!(quantize(1, 1, None), 8);
+    assert_eq!(quantize(1, 2, None), 24);
+    assert_eq!(quantize(1, 255, None), 4072);
+    assert_eq!(quantize(2, 0, None), 64);
+    assert_eq!(quantize(5, 204, None), 16312);
+    assert_eq!(quantize(5, 205, None), 16383);
+    assert_eq!(quantize(5, 206, None), 16383);
+    assert_eq!(quantize(5, 255, None), 16383);
+    assert_eq!(quantize(512, 0, None), -16384);
+    assert_eq!(quantize(512, 1, None), -8184);
+    assert_eq!(quantize(512, 2, None), -16376);
+    assert_eq!(quantize(589, 0, None), -13920);
+    assert_eq!(quantize(589, 1, None), -6952);
+    assert_eq!(quantize(589, 2, None), -13912);
+    assert_eq!(quantize(1023, 255, None), -4072);
+    assert_eq!(quantize(1023, 0, None), -32);
+}
+
+#[test]
+fn test_quantize_ac() {
+    // XXX These values are taken from Mednafen at the moment, it
+    // would be better to validate against the real hardware.
+    assert_eq!(quantize(0, 0, Some(0)), 0);
+    assert_eq!(quantize(0, 0, Some(63)), 0);
+    assert_eq!(quantize(0, 1, Some(1)), 0);
+    assert_eq!(quantize(0, 255, Some(63)), 0);
+    assert_eq!(quantize(1, 0, Some(0)), 32);
+    assert_eq!(quantize(1, 1, Some(0)), 32);
+    assert_eq!(quantize(1, 1, Some(1)), -8);
+    assert_eq!(quantize(1, 1, Some(7)), -8);
+    assert_eq!(quantize(1, 1, Some(8)), 8);
+    assert_eq!(quantize(1, 1, Some(15)), 8);
+    assert_eq!(quantize(1, 1, Some(16)), 24);
+    assert_eq!(quantize(1, 39, Some(62)), 4824);
+    assert_eq!(quantize(1, 255, Some(63)), 16383);
+    assert_eq!(quantize(1, 255, Some(32)), 16312);
+    assert_eq!(quantize(2, 0, Some(0)), 64);
+    assert_eq!(quantize(511, 255, Some(63)), 16383);
+    assert_eq!(quantize(512, 0, Some(0)), -16384);
+    assert_eq!(quantize(1000, 0, Some(0)), -768);
+    assert_eq!(quantize(1000, 2, Some(57)), -5464);
+    assert_eq!(quantize(1000, 220, Some(27)), -16384);
+    assert_eq!(quantize(1003, 80, Some(3)), -10072);
+}
+
+#[test]
+fn test_idct() {
+    let coeffs = MacroblockCoeffs([
+        0, 257, 514, 771, 1028, 1285, 1542, 1799, 8, 265, 522, 779, 1036, 1293, 1550, 1807, 16,
+        273, 530, 787, 1044, 1301, 1558, 1815, 24, 281, 538, 795, 1052, 1309, 1566, 1823, 32, 289,
+        546, 803, 1060, 1317, 1574, 1831, 40, 297, 554, 811, 1068, 1325, 1582, 1839, 48, 305, 562,
+        819, 1076, 1333, 1590, 1847, 56, 313, 570, 827, 1084, 1341, 1598, 1855,
+    ]);
+
+    // This is the "standard" IDCT table used in most PSX games
+    let idct_coeffs: [i16; 64] = [
+        23170, 23170, 23170, 23170, 23170, 23170, 23170, 23170, 32138, 27245, 18204, 6392, -6393,
+        -18205, -27246, -32139, 30273, 12539, -12540, -30274, -30274, -12540, 12539, 30273, 27245,
+        -6393, -32139, -18205, 18204, 32138, 6392, -27246, 23170, -23171, -23171, 23170, 23170,
+        -23171, -23171, 23170, 18204, -32139, 6392, 27245, -27246, -6393, 32138, -18205, 12539,
+        -30274, 30273, -12540, -12540, 30273, -30274, 12539, 6392, -18205, 27245, -32139, 32138,
+        -27246, 18204, -6393,
+    ];
+
+    let mut matrix = IdctMatrix::new();
+
+    for (i, b) in idct_coeffs.iter().enumerate() {
+        // The "weird" bitshift used by mednafen
+        matrix.set(i as u8, b >> 3);
+    }
+
+    let mut block = Macroblock::new();
+
+    matrix.idct(&coeffs, &mut block);
+
+    let expected = Macroblock([
+        -128, -95, 71, -27, 38, -5, 22, 9, 127, 96, -75, 27, -40, 4, -23, -10, 127, -39, 30, -11,
+        16, -2, 9, 4, -117, 33, -26, 9, -14, 1, -8, -3, 62, -18, 14, -5, 7, -1, 4, 2, -52, 14, -11,
+        4, -6, 1, -4, -2, 21, -6, 5, -2, 3, 0, 1, 1, -14, 3, -3, 1, -1, 0, -1, 0,
+    ]);
+
+    for i in 0..64 {
+        assert_eq!(expected.0[i], block.0[i]);
     }
 }
