@@ -299,7 +299,9 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
                 }
             }
         } else if control.is_chopped() {
-            unimplemented!("Implement chop");
+            let channel = &mut psx.dma[port];
+            channel.cur_address = channel.base;
+            channel.remaining_words = channel.block_size;
         }
 
         if do_copy {
@@ -334,7 +336,10 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
         }
 
         if control.is_chopped() {
-            unimplemented!("Implement chop");
+            let channel = &mut psx.dma[port];
+
+            channel.base = channel.cur_address;
+            channel.block_size = channel.remaining_words;
         }
 
         if psx.dma[port].remaining_words == 0 {
