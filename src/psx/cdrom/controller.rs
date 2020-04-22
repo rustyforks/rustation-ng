@@ -172,6 +172,17 @@ impl Controller {
         self.response.push(status);
     }
 
+    /// Returns the status with the error bit set
+    fn drive_error(&self) -> u8 {
+        self.drive_status() | 1
+    }
+
+    /// Push the drive status in the response FIFO
+    fn push_drive_error(&mut self) {
+        let status = self.drive_error();
+        self.response.push(status);
+    }
+
     pub fn start_command(&mut self) {
         debug_assert!(!self.in_command());
 
@@ -1491,7 +1502,13 @@ mod commands {
 
         let start_msf = match controller.get_track_start(track) {
             Some(msf) => msf,
-            None => unimplemented!("Track {} not found", track),
+            None => {
+                warn!("Get TD for unknown track {}", track);
+                controller.push_drive_error();
+                controller.response.push(0x10);
+                controller.irq_code = IrqCode::Error;
+                return;
+            }
         };
 
         // Frame isn't returned by this command
