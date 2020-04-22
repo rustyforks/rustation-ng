@@ -713,7 +713,7 @@ impl Controller {
                         let s = audio_data[(i << 2) | (unit >> 1)];
 
                         // Convert the sample to 8 bit by setting the low 4 bits to 0
-                        if unit & 1 != 0 {
+                        if unit & 1 == 0 {
                             s << 4
                         } else {
                             s & 0xf0
@@ -729,8 +729,7 @@ impl Controller {
                     sample >>= shift;
                     let sample_1 = i32::from(self.adpcm_last[channel][0]);
                     let sample_2 = i32::from(self.adpcm_last[channel][1]);
-                    sample += (sample_1 * wp) >> 6;
-                    sample += (sample_2 * wn) >> 6;
+                    sample += (sample_1 * wp + sample_2 * wn) >> 6;
 
                     // Saturate to 16 bits
                     let sample = if sample > i16::max_value() as i32 {
