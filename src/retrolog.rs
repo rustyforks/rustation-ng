@@ -1,7 +1,6 @@
 //! Logger implementation using libretro as a backend
 
 use super::libretro;
-use log;
 
 use std::io::{stderr, Write};
 
