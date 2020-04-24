@@ -132,6 +132,10 @@ pub struct DualShock {
     left_stick: (u8, u8),
     /// State of the right stick
     right_stick: (u8, u8),
+    /// Calibration factor for the left stick
+    left_stick_radius: f32,
+    /// Calibration factor for the right stick
+    right_stick_radius: f32,
     /// DualShock can optionally deactivate their analog function. This way they behave like
     /// digital gamepads.
     analog_mode: bool,
@@ -163,6 +167,8 @@ impl DualShock {
             buttons: 0xffff,
             left_stick: (0x80, 0x80),
             right_stick: (0x80, 0x80),
+            left_stick_radius: 0.7,
+            right_stick_radius: 0.7,
             analog_mode: false,
             analog_mode_locked: false,
             dualshock_mode: false,
@@ -497,17 +503,63 @@ impl GamePad for DualShock {
     }
 
     fn set_axis_state(&mut self, left: (i16, i16), right: (i16, i16)) {
-        // XXX calibrate the sticks like I did in beetle
+        // Here's how the calibration works: at the start left_stick_radius and
+        // right_stick_radius are set to a small-ish value. Every time we receive controller
+        // axis input from the frontend we compute the current distance between the center and
+        // the current position. If it's greater than the corresponding *_stick_radius we
+        // update it. This way we should quickly get a good estimate of the effective stick radius
+        // of the controller we're using (at least once the user bothers to reach the full range of
+        // the stick).
+        fn radius(pos: (i16, i16)) -> f32 {
+            let x = (pos.0 as f32) / (i16::max_value() as f32);
+            let y = (pos.1 as f32) / (i16::max_value() as f32);
 
-        fn i16_to_u8(v: i16) -> u8 {
-            let v = (v >> 8) as u8;
-
-            // The pad returns 0x80 at 0 so we need to offset
-            v.wrapping_add(0x80)
+            (x * x + y * y).sqrt()
         }
 
-        self.left_stick = (i16_to_u8(left.0), i16_to_u8(left.1));
-        self.right_stick = (i16_to_u8(right.0), i16_to_u8(right.1));
+        let left_radius = radius(left);
+        if left_radius > self.left_stick_radius {
+            self.left_stick_radius = left_radius;
+        }
+
+        let right_radius = radius(right);
+        if right_radius > self.right_stick_radius {
+            self.right_stick_radius = right_radius;
+        }
+
+        // This represents the maximal value the DualShock sticks can reach, where 1.0 would be the
+        // maximum value along the X or Y axis. On my DualShock I can *almost* reach the corner of
+        // the square (I read x = 0x00, y = 0x05)
+        const DUALSHOCK_ANALOG_RADIUS: f32 = 1.387;
+
+        // Now that we know both the real and emulated radii we can scale the values we've received
+        // to compensate
+        let l_scaling = DUALSHOCK_ANALOG_RADIUS / self.left_stick_radius;
+        let r_scaling = DUALSHOCK_ANALOG_RADIUS / self.right_stick_radius;
+
+        fn scale(v: i16, scaling: f32) -> u8 {
+            let mut v = f32::from(v) * scaling;
+
+            // The frontend sends us 16bits of resolution per axis but the PSX only uses 8, so we
+            // scale down
+            v /= 0x100 as f32;
+
+            // The pad returns 0x80 at 0 so we need to offset
+            v += 0x80 as f32;
+
+            let v = v as i32;
+
+            if v > 0xff {
+                0xffu8
+            } else if v < 0 {
+                0
+            } else {
+                v as u8
+            }
+        }
+
+        self.left_stick = (scale(left.0, l_scaling), scale(left.1, l_scaling));
+        self.right_stick = (scale(right.0, r_scaling), scale(right.1, r_scaling));
 
         // XXX assume that this function is called exactly once per frame
         self.run_frame();
