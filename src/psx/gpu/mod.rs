@@ -684,7 +684,8 @@ fn gp1(psx: &mut Psx, val: u32) {
     match op {
         0x00 => psx.gpu.reset(),
         0x01 => psx.gpu.reset_command_fifo(),
-        0x02 => debug!("IRQ1 ack"),
+        // IRQ1 ack
+        0x02 => (),
         0x03 => psx.gpu.display_off = (val & 1) != 0,
         0x04 => psx.gpu.dma_direction.set(val & 3),
         0x05 => {
