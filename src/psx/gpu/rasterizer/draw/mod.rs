@@ -22,6 +22,9 @@ enum State {
     WaitingForCommand,
     /// We're uploading data to the VRAM.
     VRamStore(VRamStore),
+    /// We're in the middle of a polyline. The u8 is the opcode for this line, then we store the
+    /// position of the end of the last drawn segment (i.e. the start of the next segment)
+    PolyLine(u8, Vertex),
 }
 
 pub struct Rasterizer {
@@ -92,6 +95,10 @@ pub struct Rasterizer {
     draw_24bpp: bool,
     /// True if we're interlaced and display the bottom field
     display_bottom_field: bool,
+    /// Draw the outline of triangles and quads
+    draw_wireframe: bool,
+    /// If false we don't draw triangles or quads
+    draw_polygons: bool,
 }
 
 impl Rasterizer {
@@ -128,6 +135,8 @@ impl Rasterizer {
             dithering_force_disable: false,
             draw_24bpp: false,
             display_bottom_field: false,
+            draw_wireframe: false,
+            draw_polygons: true,
         };
 
         rasterizer.rebuild_dither_table();
@@ -147,8 +156,8 @@ impl Rasterizer {
                     Command::Gp0(v) => {
                         match self.state {
                             State::WaitingForCommand => {
-                                let op = v >> 24;
-                                let h = &GP0_COMMANDS[op as usize];
+                                let opcode = v >> 24;
+                                let h = &GP0_COMMANDS[opcode as usize];
                                 // The longest possible draw command is 12 word long (shaded and
                                 // textured quad)
                                 let mut params = [0; 12];
@@ -186,12 +195,38 @@ impl Rasterizer {
                                     }
                                 }
                             }
+                            State::PolyLine(opcode, _) => {
+                                if *v & 0xf000_f000 == 0x5000_5000 {
+                                    // End-of-line marker
+                                    self.state = State::WaitingForCommand;
+                                } else {
+                                    // We have a new segment. The GPU code is supposed to send us
+                                    // one full vertex at a time so we should have enough in the
+                                    // buffer to continue unconditionally
+                                    let mut params = [0; 2];
+                                    let is_shaded = (opcode & 0x10) != 0;
+                                    let len = 1 + (is_shaded as usize);
+
+                                    params[0] = *v;
+                                    if is_shaded {
+                                        params[1] = match command_i.next() {
+                                            Some(Command::Gp0(v)) => *v,
+                                            other => {
+                                                panic!("Expected GP0 command, got {:?}", other)
+                                            }
+                                        };
+                                    }
+
+                                    let h = &GP0_COMMANDS[opcode as usize];
+                                    (h.handler)(self, &params[..len]);
+                                }
+                            }
                         }
                     }
                     Command::Gp1(v) => self.gp1(*v),
                     Command::Quit => return,
                     // XXX draw one line at a time
-                    Command::EndOfLine(l) => self.draw_line(*l),
+                    Command::EndOfLine(l) => self.finish_line(*l),
                     Command::EndOfFrame => self.send_frame(),
                     Command::FieldChanged(f) => self.display_bottom_field = *f,
                     Command::Option(opt) => self.set_option(*opt),
@@ -238,11 +273,13 @@ impl Rasterizer {
                 self.dithering_force_disable = v;
                 self.maybe_rebuild_dither_table();
             }
+            RasterizerOption::Wireframe(v) => self.draw_wireframe = v,
+            RasterizerOption::DrawPolygons(v) => self.draw_polygons = v,
         }
     }
 
     /// Called when we should output a line to the output buffer
-    pub fn draw_line(&mut self, line: u16) {
+    pub fn finish_line(&mut self, line: u16) {
         if self.display_full_vram {
             // We're just going to dump the full VRAM, nothing to do
             return;
@@ -929,10 +966,6 @@ impl Rasterizer {
         }
     }
 
-    fn get_texel(&self, u: u8, v: u8) -> Pixel {
-        self.tex_mapper.get_texel(u, v, &self.vram)
-    }
-
     fn draw_rect<Transparency, Texture>(&mut self, origin: Vertex, width: i32, height: i32)
     where
         Transparency: TransparencyMode,
@@ -1033,6 +1066,109 @@ impl Rasterizer {
 
             v = v.wrapping_add(v_inc as u8);
         }
+    }
+
+    fn draw_line<Transparency, Shading>(&mut self, mut start: Vertex, mut end: Vertex)
+    where
+        Transparency: TransparencyMode,
+        Shading: ShadingMode,
+    {
+        let start_x = start.x();
+        let start_y = start.y();
+        let end_x = end.x();
+        let end_y = end.y();
+
+        let dx = (start_x - end_x).abs();
+        let dy = (start_y - end_y).abs();
+
+        let long_edge = max(dx, dy);
+
+        if long_edge == 0 {
+            // 0-length line, nothing to do
+            return;
+        }
+
+        if dx >= 1024 || dy >= 512 {
+            // Line is too long, ignore
+            return;
+        }
+
+        let min_x = min(start_x, end_x);
+        let max_x = max(start_x, end_x);
+        let min_y = min(start_y, end_y);
+        let max_y = max(start_y, end_y);
+
+        let clipped = min_y > self.clip_y_max
+            || max_y < self.clip_y_min
+            || min_x > self.clip_x_max
+            || max_x < self.clip_x_min;
+
+        if clipped {
+            // The line is completely outside of the clipping area
+            return;
+        }
+
+        // Start at the leftmost edge.
+        // XXX Apparently if both sides have the same X we start from the end? This is what
+        // mednafen does.
+        if start.x() >= end.x() {
+            ::std::mem::swap(&mut start, &mut end);
+        }
+
+        // We're going to follow the long edge one pixel at a time. That means that one of the
+        // values below will necessarily be +1 or -1.
+        let dx_dt = FpCoord::new_dxdy(end_x - start_x, long_edge);
+        let dy_dt = FpCoord::new_dxdy(end_y - start_y, long_edge);
+
+        let mut lx = FpCoord::new_line_x(start_x);
+        let mut ly = FpCoord::new_line_y(start_y, end_y < start_y);
+
+        for _t in 0..long_edge {
+            let x = lx.truncate() & 0x7ff;
+            let y = ly.truncate() & 0x7ff;
+
+            lx += dx_dt;
+            ly += dy_dt;
+
+            if !self.can_draw_to_line(y) {
+                continue;
+            }
+
+            let clipped = y > self.clip_y_max
+                || y < self.clip_y_min
+                || x > self.clip_x_max
+                || x < self.clip_x_min;
+
+            if clipped {
+                continue;
+            }
+
+            let (r, g, b) = if Shading::is_shaded() {
+                // XXX todo
+                unimplemented!()
+            } else {
+                (start.red(), start.green(), start.blue())
+            };
+
+            // Lines are *always* dithered, even when not shaded (unlike triangles)
+            let r = self.dither(x, y, r as u32);
+            let g = self.dither(x, y, g as u32);
+            let b = self.dither(x, y, b as u32);
+
+            let mut color = Pixel::from_rgb(r, g, b);
+
+            // We have to set the mask bit since it's used to test if the pixel should be
+            // transparent, and non-textured transparent draw calls are always fully transparent.
+            if Transparency::is_transparent() {
+                color.set_mask();
+            }
+
+            self.draw_pixel::<Transparency>(x, y, color);
+        }
+    }
+
+    fn get_texel(&self, u: u8, v: u8) -> Pixel {
+        self.tex_mapper.get_texel(u, v, &self.vram)
     }
 
     fn blend(&self, texel: Pixel, color: Pixel) -> Pixel {
@@ -1724,21 +1860,44 @@ where
         }
     }
 
-    let triangle = [
-        vertices[0].clone(),
-        vertices[1].clone(),
-        vertices[2].clone(),
-    ];
-    rasterizer.draw_triangle::<Transparency, Texture, Shading>(triangle);
+    if rasterizer.draw_polygons {
+        let triangle = [
+            vertices[0].clone(),
+            vertices[1].clone(),
+            vertices[2].clone(),
+        ];
+        rasterizer.draw_triangle::<Transparency, Texture, Shading>(triangle);
 
-    // Clippy wants us to remove the last clone here, but doing so generates a compilation error
-    #[allow(clippy::redundant_clone)]
-    let triangle = [
-        vertices[1].clone(),
-        vertices[2].clone(),
-        vertices[3].clone(),
-    ];
-    rasterizer.draw_triangle::<Transparency, Texture, Shading>(triangle);
+        let triangle = [
+            vertices[1].clone(),
+            vertices[2].clone(),
+            vertices[3].clone(),
+        ];
+        rasterizer.draw_triangle::<Transparency, Texture, Shading>(triangle);
+    }
+
+    if rasterizer.draw_wireframe {
+        // Draw the quad outline
+        let color = Pixel::from_rgb(0x00, 0x00, 0xff);
+
+        for v in &mut vertices {
+            v.color = color;
+        }
+
+        rasterizer.draw_line::<Opaque, NoShading>(vertices[0].clone(), vertices[1].clone());
+        rasterizer.draw_line::<Opaque, NoShading>(vertices[1].clone(), vertices[3].clone());
+        rasterizer.draw_line::<Opaque, NoShading>(vertices[3].clone(), vertices[2].clone());
+        rasterizer.draw_line::<Opaque, NoShading>(vertices[2].clone(), vertices[0].clone());
+
+        // Draw the diagonal in a different color
+        let mut diag0 = vertices[1].clone();
+        let mut diag1 = vertices[2].clone();
+
+        let color = Pixel::from_rgb(0x00, 0xff, 0xff);
+        diag0.color = color;
+        diag1.color = color;
+        rasterizer.draw_line::<Opaque, NoShading>(diag0, diag1);
+    }
 }
 
 fn cmd_handle_poly_tri<Transparency, Texture, Shading>(rasterizer: &mut Rasterizer, params: &[u32])
@@ -1779,7 +1938,22 @@ where
         }
     }
 
-    rasterizer.draw_triangle::<Transparency, Texture, Shading>(vertices);
+    if rasterizer.draw_polygons {
+        rasterizer.draw_triangle::<Transparency, Texture, Shading>(vertices.clone());
+    }
+
+    if rasterizer.draw_wireframe {
+        // Draw the triangle's outline
+        let color = Pixel::from_rgb(0x00, 0xff, 0x00);
+
+        for v in &mut vertices {
+            v.color = color;
+        }
+
+        rasterizer.draw_line::<Opaque, NoShading>(vertices[0].clone(), vertices[1].clone());
+        rasterizer.draw_line::<Opaque, NoShading>(vertices[1].clone(), vertices[2].clone());
+        rasterizer.draw_line::<Opaque, NoShading>(vertices[2].clone(), vertices[0].clone());
+    }
 }
 
 fn cmd_handle_rect<Transparency, Texture>(
@@ -1855,6 +2029,78 @@ where
     Texture: TextureMode,
 {
     cmd_handle_rect::<Transparency, Texture>(rasterizer, params, Some((16, 16)));
+}
+
+fn cmd_handle_polyline<Transparency, Shading>(rasterizer: &mut Rasterizer, params: &[u32])
+where
+    Transparency: TransparencyMode,
+    Shading: ShadingMode,
+{
+    let mut index = 0;
+
+    let (opcode, start_vertex) = match &rasterizer.state {
+        // We're in the middle of a polyline, use the previous segment's end as start vertex
+        State::PolyLine(o, v) => (*o, v.clone()),
+        // New command
+        _ => {
+            let mut v = Vertex::new(0);
+            // Command + color
+            let cmd = params[index];
+            let opcode = cmd >> 24;
+            v.color = Pixel::from_command(cmd);
+            index += 1;
+
+            // Start position
+            v.set_position(params[index]);
+            index += 1;
+
+            (opcode as u8, v)
+        }
+    };
+
+    let mut end_vertex = Vertex::new(0);
+
+    if Shading::is_shaded() {
+        end_vertex.color = Pixel::from_command(params[index]);
+        index += 1;
+    } else {
+        end_vertex.color = start_vertex.color;
+    };
+    end_vertex.set_position(params[index]);
+
+    rasterizer.draw_line::<Transparency, Shading>(start_vertex, end_vertex.clone());
+
+    rasterizer.state = State::PolyLine(opcode, end_vertex);
+}
+
+fn cmd_handle_line<Transparency, Shading>(rasterizer: &mut Rasterizer, params: &[u32])
+where
+    Transparency: TransparencyMode,
+    Shading: ShadingMode,
+{
+    let mut index = 0;
+
+    let mut start_vertex = Vertex::new(0);
+    // Command + color
+    start_vertex.color = Pixel::from_command(params[index]);
+    index += 1;
+
+    // Start position
+    start_vertex.set_position(params[index]);
+    index += 1;
+
+    let mut end_vertex = Vertex::new(0);
+
+    if Shading::is_shaded() {
+        end_vertex.color = Pixel::from_command(params[index]);
+        index += 1;
+    } else {
+        end_vertex.color = start_vertex.color;
+    };
+
+    end_vertex.set_position(params[index]);
+
+    rasterizer.draw_line::<Transparency, Shading>(start_vertex, end_vertex);
 }
 
 #[derive(Debug)]
@@ -2305,133 +2551,133 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
     },
     // 0x40
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
     },
     // 0x50
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
     },
     // 0x60
     CommandHandler {

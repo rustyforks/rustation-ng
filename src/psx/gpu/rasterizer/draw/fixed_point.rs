@@ -30,6 +30,36 @@ impl FpCoord {
         f - FpCoord::epsilon()
     }
 
+    /// Create a new FpCoord that's equal to v + 0.5
+    pub fn new_center(v: i32) -> FpCoord {
+        let mut f = FpCoord::new(v);
+
+        f.0 |= 1 << (FP_COORD_SHIFT - 1);
+
+        f
+    }
+
+    pub fn new_line_x(x: i32) -> FpCoord {
+        let mut f = FpCoord::new_center(x);
+
+        // XXX from mednafen, not sure why that's necessary. Maybe it should be just *below* 0.5?
+        // but then why 1 << 10 and not 1 << 11 as usual?
+        f.0 -= 1 << 10;
+
+        f
+    }
+
+    pub fn new_line_y(y: i32, going_up: bool) -> FpCoord {
+        let mut f = FpCoord::new_center(y);
+
+        // XXX same remark as for new_line_x
+        if going_up {
+            f.0 -= 1 << 10;
+        }
+
+        f
+    }
+
     /// Create a new dx/dy slope ratio. The result is rounded to the available precision away from
     /// 0. `dy` *must* be greater than 0.
     pub fn new_dxdy(dx: i32, dy: i32) -> FpCoord {
@@ -140,7 +170,7 @@ impl FpVar {
     pub fn new_center(v: i32) -> FpVar {
         let mut f = FpVar::new(v);
 
-        f.0 += 1 << (FP_VAR_SHIFT - 1);
+        f.0 |= 1 << (FP_VAR_SHIFT - 1);
 
         f
     }

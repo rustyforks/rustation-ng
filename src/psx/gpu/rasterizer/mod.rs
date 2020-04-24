@@ -173,6 +173,8 @@ pub enum RasterizerOption {
     ForceTransparency(bool),
     Draw24Bpp(bool),
     DitherForceDisable(bool),
+    Wireframe(bool),
+    DrawPolygons(bool),
 }
 
 /// Buffer containing one rendered frame

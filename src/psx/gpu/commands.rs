@@ -1,6 +1,7 @@
 //! Implementation of the various GP0 commands.
 
 use super::{CycleCount, Psx, State};
+use std::cmp::max;
 
 /// Description of the various GP0 commands
 pub struct Command {
@@ -111,7 +112,7 @@ impl ShadingMode for Shaded {
 }
 
 /// A vertex's coordinates
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Position {
     pub x: i32,
     pub y: i32,
@@ -529,20 +530,90 @@ where
     psx.gpu.draw_time(draw_time);
 }
 
+/// Computes line-drawing timings
+fn line_draw_time<Transparency, Shading>(
+    _psx: &mut Psx,
+    start: Position,
+    end: Position,
+) -> CycleCount
+where
+    Transparency: TransparencyMode,
+    Shading: ShadingMode,
+{
+    let mut draw_time = 16;
+
+    let w = (start.x - end.x).abs();
+    let h = (start.y - end.y).abs();
+
+    if w >= 1024 || h >= 512 {
+        // Line is too long, ignore
+        return draw_time;
+    }
+
+    // XXX from mednafen. Doesn't change depending on the transparency and shading mode which I
+    // find odd.
+    draw_time += max(w, h) * 2;
+
+    draw_time
+}
+
 fn cmd_handle_line<Transparency, Shading>(psx: &mut Psx)
 where
     Transparency: TransparencyMode,
     Shading: ShadingMode,
 {
-    warn!("handle line!");
-
-    psx.gpu.command_fifo.pop();
-    psx.gpu.command_fifo.pop();
-    psx.gpu.command_fifo.pop();
+    // Pop command + color
+    psx.gpu.command_pop_to_rasterizer();
+    // Start position
+    let pos = psx.gpu.command_pop_to_rasterizer();
+    let start_pos = Position::from_command(pos);
 
     if Shading::is_shaded() {
-        psx.gpu.command_fifo.pop();
+        // Pop end color
+        psx.gpu.command_pop_to_rasterizer();
     }
+
+    // Pop end position
+    let pos = psx.gpu.command_pop_to_rasterizer();
+    let end_pos = Position::from_command(pos);
+
+    let draw_time = line_draw_time::<Transparency, Shading>(psx, start_pos, end_pos);
+    psx.gpu.draw_time(draw_time);
+}
+
+fn cmd_handle_polyline<Transparency, Shading>(psx: &mut Psx)
+where
+    Transparency: TransparencyMode,
+    Shading: ShadingMode,
+{
+    let (opcode, start_pos) = match psx.gpu.state {
+        // We're in the middle of a polyline, use the previous segment's end as start position
+        State::PolyLine(o, p) => (o, p),
+        // New command
+        _ => {
+            // Pop command + color
+            let cmd = psx.gpu.command_pop_to_rasterizer();
+            let opcode = cmd >> 24;
+            // Pop start position
+            let pos = psx.gpu.command_pop_to_rasterizer();
+            (opcode as u8, Position::from_command(pos))
+        }
+    };
+
+    if Shading::is_shaded() {
+        // Pop end color
+        psx.gpu.command_pop_to_rasterizer();
+    }
+
+    // Pop end position
+    let pos = psx.gpu.command_pop_to_rasterizer();
+    let end_pos = Position::from_command(pos);
+
+    let draw_time = line_draw_time::<Transparency, Shading>(psx, start_pos, end_pos);
+    psx.gpu.draw_time(draw_time);
+
+    // Update state for the next segment
+    psx.gpu.state = State::PolyLine(opcode, end_pos);
 }
 
 /// Parses the command word for a VRAM store, load or copy and returns the dimensions of the target
@@ -1088,8 +1159,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -1100,80 +1171,80 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, NoShading>,
+        len: 3,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -1185,8 +1256,8 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
@@ -1197,80 +1268,80 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_line::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Opaque, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_polyline::<Transparent, Shaded>,
+        len: 4,
         fifo_len: 1,
         out_of_band: false,
     },

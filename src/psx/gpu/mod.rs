@@ -4,7 +4,7 @@ mod rasterizer;
 
 use super::cpu::CPU_FREQ_HZ;
 use super::{irq, sync, timers, AccessWidth, Addressable, CycleCount, Psx};
-use commands::Command;
+use commands::{Command, Position};
 pub use rasterizer::{Frame, RasterizerOption};
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
@@ -15,6 +15,9 @@ enum State {
     /// We're drawing the first triangle of a quad. The CycleCount is the number of cycles we'll
     /// have to use to draw the 2nd triangle.
     InQuad(CycleCount),
+    /// We're in the middle of a polyline. The u8 is the opcode for this line, then we store the
+    /// position of the end of the last drawn segment (i.e. the start of the next segment)
+    PolyLine(u8, Position),
     /// We're uploading data to the VRAM. The u32 is the number of 32bit words left to transfer.
     VRamStore(u32),
     /// We're downloading data from the VRAM. The u32 is the number of 32bit words left to
@@ -709,6 +712,8 @@ fn gp1(psx: &mut Psx, val: u32) {
 
 /// Attempt to execute a command from the `command_fifo`
 fn process_commands(psx: &mut Psx) {
+    let pending_commands = !psx.gpu.command_fifo.is_empty();
+
     match psx.gpu.state {
         State::Idle => run_next_command(psx),
         State::InQuad(draw_time) => {
@@ -719,10 +724,30 @@ fn process_commands(psx: &mut Psx) {
                 psx.gpu.state = State::Idle;
             }
         }
+        State::PolyLine(opcode, _) => {
+            if psx.gpu.draw_time_budget >= 0 && pending_commands {
+                let next = psx.gpu.command_fifo.peek();
+                if next & 0xf000_f000 == 0x5000_5000 {
+                    // End-of-line marker
+                    psx.gpu.command_pop_to_rasterizer();
+                    psx.gpu.state = State::Idle;
+                } else {
+                    // Shaded polylines require 2 words per segment, solid polylines only 1
+                    let is_shaded = (opcode & 0x10) != 0;
+                    let words_per_segment = 1 + (is_shaded as usize);
+
+                    if psx.gpu.command_fifo.len() >= words_per_segment {
+                        // We can draw the next segment
+                        let cmd = &commands::GP0_COMMANDS[opcode as usize];
+                        (cmd.handler)(psx);
+                    }
+                }
+            }
+        }
         State::VRamStore(ref mut nwords) => {
-            if !psx.gpu.command_fifo.is_empty() {
-                let w = psx.gpu.command_fifo.pop();
-                psx.gpu.rasterizer.push_gp0(w);
+            if pending_commands {
+                let v = psx.gpu.command_fifo.pop();
+                psx.gpu.rasterizer.push_gp0(v);
                 *nwords -= 1;
 
                 if *nwords == 0 {

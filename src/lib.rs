@@ -22,6 +22,8 @@
 #![allow(clippy::comparison_chain)]
 // Doesn't let me use r, g, b and y, u, v in the same function!
 #![allow(clippy::many_single_char_names)]
+// I get a lot of false positives in the GPU draw code for this one
+#![allow(clippy::redundant_clone)]
 
 extern crate libc;
 #[macro_use]
@@ -469,6 +471,18 @@ impl libretro::Context for Context {
         self.psx
             .gpu
             .set_rasterizer_option(RasterizerOption::DitherForceDisable(d24));
+
+        let (wf, draw_poly) = match options::CoreOptions::wireframe() {
+            options::WireframeMode::Disabled => (false, true),
+            options::WireframeMode::Overlay => (true, true),
+            options::WireframeMode::Exclusive => (true, false),
+        };
+        self.psx
+            .gpu
+            .set_rasterizer_option(RasterizerOption::Wireframe(wf));
+        self.psx
+            .gpu
+            .set_rasterizer_option(RasterizerOption::DrawPolygons(draw_poly));
     }
 
     fn reset(&mut self) {
@@ -594,6 +608,13 @@ mod options {
     use super::AnalogCombo;
     use std::str::FromStr;
 
+    #[derive(PartialEq, Eq)]
+    pub enum WireframeMode {
+        Disabled,
+        Overlay,
+        Exclusive,
+    }
+
     libretro_variables!(
         pub struct CoreOptions (prefix = "rustation") {
             internal_upscale_factor: u32, parse_upscale
@@ -604,6 +625,8 @@ mod options {
                 => "Display full VRAM; disabled|enabled";
             force_transparency: bool, parse_bool
                 => "Force transparency for all draw commands; disabled|enabled";
+            wireframe: WireframeMode, parse_wireframe
+                => "Draw wireframe for triangles and quads; disabled|overlay|wireframe only";
             analog_combo: AnalogCombo, parse_analog_combo
                 => "Analog toggle button combo; \
                 Select + R3|Select + L3|L3 + R3";
@@ -638,6 +661,17 @@ mod options {
         };
 
         Ok(combo)
+    }
+
+    fn parse_wireframe(opt: &str) -> Result<WireframeMode, ()> {
+        let mode = match opt {
+            "disabled" => WireframeMode::Disabled,
+            "overlay" => WireframeMode::Overlay,
+            "wireframe only" => WireframeMode::Exclusive,
+            _ => return Err(()),
+        };
+
+        Ok(mode)
     }
 }
 
