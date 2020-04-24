@@ -631,8 +631,8 @@ mod options {
 
     fn parse_analog_combo(opt: &str) -> Result<AnalogCombo, ()> {
         let combo = match opt {
-            "Select + L3" => AnalogCombo::SelectR3,
-            "Select + R3" => AnalogCombo::SelectL3,
+            "Select + R3" => AnalogCombo::SelectR3,
+            "Select + L3" => AnalogCombo::SelectL3,
             "L3 + R3" => AnalogCombo::L3R3,
             _ => return Err(()),
         };
