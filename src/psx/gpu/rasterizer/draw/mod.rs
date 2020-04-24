@@ -366,7 +366,8 @@ impl Rasterizer {
             0x00 => self.reset(),
             // Reset command FIFO
             0x01 => (),
-            0x02 => debug!("IRQ1 ack"),
+            // IRQ1 ack
+            0x02 => (),
             0x03 => self.display_off = (val & 1) != 0,
             // DMA direction
             0x04 => (),
