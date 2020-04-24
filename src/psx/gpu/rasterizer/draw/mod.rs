@@ -2055,6 +2055,9 @@ where
             v.set_position(params[index]);
             index += 1;
 
+            v.position.x += rasterizer.draw_offset_x;
+            v.position.y += rasterizer.draw_offset_y;
+
             (opcode as u8, v)
         }
     };
@@ -2068,6 +2071,8 @@ where
         end_vertex.color = start_vertex.color;
     };
     end_vertex.set_position(params[index]);
+    end_vertex.position.x += rasterizer.draw_offset_x;
+    end_vertex.position.y += rasterizer.draw_offset_y;
 
     rasterizer.draw_line::<Transparency, Shading>(start_vertex, end_vertex.clone());
 
@@ -2089,6 +2094,8 @@ where
     // Start position
     start_vertex.set_position(params[index]);
     index += 1;
+    start_vertex.position.x += rasterizer.draw_offset_x;
+    start_vertex.position.y += rasterizer.draw_offset_y;
 
     let mut end_vertex = Vertex::new(0);
 
@@ -2100,6 +2107,8 @@ where
     };
 
     end_vertex.set_position(params[index]);
+    end_vertex.position.x += rasterizer.draw_offset_x;
+    end_vertex.position.y += rasterizer.draw_offset_y;
 
     rasterizer.draw_line::<Transparency, Shading>(start_vertex, end_vertex);
 }
