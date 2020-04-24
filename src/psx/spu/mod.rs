@@ -426,10 +426,38 @@ pub fn dma_load(psx: &mut Psx) -> u32 {
 }
 
 pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
-    if T::width() != AccessWidth::HalfWord {
-        panic!("Unhandled {:?} SPU store", T::width());
+    match T::width() {
+        AccessWidth::Word => {
+            // Word writes behave like two u16
+            let v = val.as_u32();
+            store16(psx, off | 2, (v >> 16) as u16);
+            // XXX *Sometimes* on the real hardware this 2nd write doesn't pass. I'm not really
+            // sure what causes it exactly, sometimes after 32bit writes the lower half of the
+            // register keeps its old value. I suspect that these two consecutive 16bit writes
+            // can be interrupted in between sometimes, but I'm not really sure by what or in what
+            // circumstances.
+            store16(psx, off, v as u16);
+        }
+        AccessWidth::HalfWord => store16(psx, off, val.as_u16()),
+        AccessWidth::Byte => {
+            if off & 1 != 0 {
+                // Byte writes that aren't 16bit aligned don't do anything
+                warn!(
+                    "SPU write isn't 16bit-aligned: *0x{:x} = 0x{:x}",
+                    off,
+                    val.as_u32()
+                );
+                return;
+            }
+            // In my tests halfword-aligned byte writes are handled exactly like Halfword writes,
+            // they even write the full 16bit register value
+            // XXX refactor our access code to handle that properly
+            unimplemented!("Byte SPU store!");
+        }
     }
+}
 
+fn store16(psx: &mut Psx, off: u32, val: u16) {
     let val = val.as_u16();
 
     let index = (off >> 1) as usize;
@@ -533,19 +561,37 @@ pub fn store<T: Addressable>(psx: &mut Psx, off: u32, val: T) {
 }
 
 pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
+    let v = match T::width() {
+        AccessWidth::Word => {
+            let hi = load16(psx, off | 2) as u32;
+            let lo = load16(psx, off) as u32;
+
+            lo | (hi << 16)
+        }
+        AccessWidth::HalfWord => load16(psx, off) as u32,
+        AccessWidth::Byte => {
+            let mut h = load16(psx, off) as u32;
+
+            // If the byte is not halfword-aligned we read the high byte
+            h >>= (off & 1) * 8;
+
+            h & 0xff
+        }
+    };
+
+    T::from_u32(v)
+}
+
+fn load16(psx: &mut Psx, off: u32) -> u16 {
     // This is probably very heavy handed, mednafen only syncs from the CD code and never on
     // register access
     run(psx);
-
-    if T::width() != AccessWidth::HalfWord {
-        warn!("{:?} SPU load", T::width());
-    }
 
     let index = (off >> 1) as usize;
 
     let reg_v = psx.spu.regs[index];
 
-    let v = if index < 0xc0 {
+    if index < 0xc0 {
         let voice = &psx.spu.voices[index >> 3];
 
         match index & 7 {
@@ -561,7 +607,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
             regmap::CURRENT_VOLUME_LEFT => psx.spu.main_volume_left.level() as u16,
             regmap::CURRENT_VOLUME_RIGHT => psx.spu.main_volume_right.level() as u16,
             // Nobody seems to know what this register is for, but mednafen returns 0
-            regmap::UNKNOWN => return T::from_u32(0),
+            regmap::UNKNOWN => 0,
             _ => reg_v,
         }
     } else if index < 0x130 {
@@ -580,9 +626,7 @@ pub fn load<T: Addressable>(psx: &mut Psx, off: u32) -> T {
         v as u16
     } else {
         reg_v
-    };
-
-    T::from_u32(u32::from(v))
+    }
 }
 
 /// Write the SPU ram at the `ram_index` an increment it.
