@@ -651,7 +651,7 @@ impl Rasterizer {
             return;
         }
 
-        if x_max < self.clip_x_min || x_min >= self.clip_x_max {
+        if x_max < self.clip_x_min || x_min > self.clip_x_max {
             // The triangle is fully to the left or right of the draw area, we don't have anything
             // to draw
             return;
@@ -997,10 +997,10 @@ impl Rasterizer {
         };
 
         let mut x_start = origin.x();
-        let x_end = min(x_start + width, self.clip_x_max - 1);
+        let x_end = min(x_start + width, self.clip_x_max + 1);
 
         let mut y_start = origin.y();
-        let y_end = min(y_start + height, self.clip_y_max - 1);
+        let y_end = min(y_start + height, self.clip_y_max + 1);
 
         if x_start < self.clip_x_min {
             if Texture::is_textured() {
