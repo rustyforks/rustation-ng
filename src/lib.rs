@@ -24,6 +24,8 @@
 #![allow(clippy::many_single_char_names)]
 // I get a lot of false positives in the GPU draw code for this one
 #![allow(clippy::redundant_clone)]
+// Useless warning in rasterizer code
+#![allow(clippy::useless_let_if_seq)]
 
 extern crate libc;
 #[macro_use]

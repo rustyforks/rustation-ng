@@ -1074,6 +1074,13 @@ impl Rasterizer {
         Transparency: TransparencyMode,
         Shading: ShadingMode,
     {
+        // Start at the leftmost edge.
+        // XXX Apparently if both sides have the same X we start from the end? This is what
+        // mednafen does.
+        if start.x() >= end.x() {
+            ::std::mem::swap(&mut start, &mut end);
+        }
+
         let start_x = start.x();
         let start_y = start.y();
         let end_x = end.x();
@@ -1109,27 +1116,47 @@ impl Rasterizer {
             return;
         }
 
-        // Start at the leftmost edge.
-        // XXX Apparently if both sides have the same X we start from the end? This is what
-        // mednafen does.
-        if start.x() >= end.x() {
-            ::std::mem::swap(&mut start, &mut end);
-        }
-
         // We're going to follow the long edge one pixel at a time. That means that one of the
         // values below will necessarily be +1 or -1.
         let dx_dt = FpCoord::new_dxdy(end_x - start_x, long_edge);
         let dy_dt = FpCoord::new_dxdy(end_y - start_y, long_edge);
 
+        let dr_dt;
+        let dg_dt;
+        let db_dt;
+
+        if Shading::is_shaded() {
+            dr_dt = FpVar::new(end.red() - start.red()) / long_edge;
+            dg_dt = FpVar::new(end.green() - start.green()) / long_edge;
+            db_dt = FpVar::new(end.blue() - start.blue()) / long_edge;
+        } else {
+            dr_dt = FpVar::new(0);
+            dg_dt = FpVar::new(0);
+            db_dt = FpVar::new(0);
+        }
+
         let mut lx = FpCoord::new_line_x(start_x);
         let mut ly = FpCoord::new_line_y(start_y, end_y < start_y);
+
+        let mut red = FpVar::new_center(start.red());
+        let mut green = FpVar::new_center(start.green());
+        let mut blue = FpVar::new_center(start.blue());
 
         for _t in 0..long_edge {
             let x = lx.truncate() & 0x7ff;
             let y = ly.truncate() & 0x7ff;
+            let r = red.truncate();
+            let g = green.truncate();
+            let b = blue.truncate();
 
             lx += dx_dt;
             ly += dy_dt;
+
+            if Shading::is_shaded() {
+                red += dr_dt;
+                green += dg_dt;
+                blue += db_dt;
+            }
 
             if !self.can_draw_to_line(y) {
                 continue;
@@ -1143,13 +1170,6 @@ impl Rasterizer {
             if clipped {
                 continue;
             }
-
-            let (r, g, b) = if Shading::is_shaded() {
-                // XXX todo
-                unimplemented!()
-            } else {
-                (start.red(), start.green(), start.blue())
-            };
 
             // Lines are *always* dithered, even when not shaded (unlike triangles)
             let r = self.dither(x, y, r as u32);
