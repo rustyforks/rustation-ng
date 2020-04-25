@@ -1364,7 +1364,7 @@ impl AdpcmHeader {
 
 /// Convert a register value to a ram index
 fn to_ram_index(v: u16) -> RamIndex {
-    (RamIndex::from(v) << 2) & 0x3f_ffff
+    (RamIndex::from(v) << 2) & 0x3_ffff
 }
 
 fn to_hi(r: &mut u32, v: u16) {
