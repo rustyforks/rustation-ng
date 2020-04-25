@@ -2455,16 +2455,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, NoTexture, NoShading>,
+        len: 4,
     },
     CommandHandler {
         handler: cmd_handle_poly_tri::<Transparent, NoTexture, NoShading>,
         len: 4,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, NoTexture, NoShading>,
+        len: 4,
     },
     CommandHandler {
         handler: cmd_handle_poly_tri::<Opaque, TextureBlending, NoShading>,
@@ -2487,16 +2487,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 5,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, NoTexture, NoShading>,
+        len: 5,
     },
     CommandHandler {
         handler: cmd_handle_poly_quad::<Transparent, NoTexture, NoShading>,
         len: 5,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, NoTexture, NoShading>,
+        len: 5,
     },
     CommandHandler {
         handler: cmd_handle_poly_quad::<Opaque, TextureBlending, NoShading>,
@@ -2520,40 +2520,40 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 6,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, NoTexture, Shaded>,
+        len: 6,
     },
     CommandHandler {
         handler: cmd_handle_poly_tri::<Transparent, NoTexture, Shaded>,
         len: 6,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, NoTexture, Shaded>,
+        len: 6,
     },
     CommandHandler {
         handler: cmd_handle_poly_tri::<Opaque, TextureBlending, Shaded>,
         len: 9,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Opaque, TextureBlending, Shaded>,
+        len: 9,
     },
     CommandHandler {
         handler: cmd_handle_poly_tri::<Transparent, TextureBlending, Shaded>,
         len: 9,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_tri::<Transparent, TextureBlending, Shaded>,
+        len: 9,
     },
     CommandHandler {
         handler: cmd_handle_poly_quad::<Opaque, NoTexture, Shaded>,
         len: 8,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, NoTexture, Shaded>,
+        len: 8,
     },
     CommandHandler {
         handler: cmd_handle_poly_quad::<Transparent, NoTexture, Shaded>,
@@ -2568,16 +2568,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 12,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Opaque, TextureBlending, Shaded>,
+        len: 12,
     },
     CommandHandler {
         handler: cmd_handle_poly_quad::<Transparent, TextureBlending, Shaded>,
         len: 12,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_poly_quad::<Transparent, TextureBlending, Shaded>,
+        len: 12,
     },
     // 0x40
     CommandHandler {
@@ -2747,16 +2747,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 2,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_1x1::<Opaque, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_handle_rect_1x1::<Transparent, NoTexture>,
         len: 2,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_1x1::<Transparent, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_handle_rect_1x1::<Opaque, TextureBlending>,
@@ -2780,16 +2780,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 2,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_8x8::<Opaque, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_handle_rect_8x8::<Transparent, NoTexture>,
         len: 2,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_8x8::<Transparent, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_handle_rect_8x8::<Opaque, TextureBlending>,
@@ -2812,16 +2812,16 @@ pub static GP0_COMMANDS: [CommandHandler; 0x100] = [
         len: 2,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_16x16::<Opaque, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_handle_rect_16x16::<Transparent, NoTexture>,
         len: 2,
     },
     CommandHandler {
-        handler: cmd_unimplemented,
-        len: 1,
+        handler: cmd_handle_rect_16x16::<Transparent, NoTexture>,
+        len: 2,
     },
     CommandHandler {
         handler: cmd_handle_rect_16x16::<Opaque, TextureBlending>,
