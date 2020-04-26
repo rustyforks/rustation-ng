@@ -445,6 +445,38 @@ impl Rasterizer {
         self.frame_channel.send(frame).unwrap();
     }
 
+    /// Create a new frame with the given `width` and `height` and send the pixels in the VRAM
+    /// region locatied at `left`x`top`. Used to implement VRAM reads
+    fn send_vram_rect(&mut self, left: u16, top: u16, width: u16, height: u16) {
+        if width == 0 || height == 0 {
+            // Nothing to do
+            return;
+        }
+
+        let left = left as u32;
+        let top = top as u32;
+        let height = height as u32;
+        let width = width as u32;
+
+        let mut frame = Frame::new(width, height);
+
+        for y in 0..height {
+            let y_off = ((top + y) & 0x1ff) * 1024;
+            for x in 0..width {
+                let x_off = (left + x) & 0x3ff;
+                let vram_pos = y_off + x_off;
+
+                let p = self.vram[vram_pos as usize];
+                // XXX I reuse Frame here for simplicity but since VRAM loads are 16 bits we waste
+                // half the storage here.
+                frame.set_pixel(x, y, p.to_mbgr1555() as u32);
+            }
+        }
+
+        // Send to the main thread
+        self.frame_channel.send(frame).unwrap();
+    }
+
     /// Rebuild `dither_tables` based on the various dithering and color depth settings
     fn rebuild_dither_table(&mut self) {
         // When dithering is enabled DITHER_OFFSETS[x % 4][y % 4] is added to the 8bit value before
@@ -2194,7 +2226,7 @@ fn cmd_vram_copy(rasterizer: &mut Rasterizer, params: &[u32]) {
     let dst_x = (dst & 0x3ff) as i32;
     let dst_y = ((dst >> 16) & 0x3ff) as i32;
 
-    let (width, height) = vram_access_dimensions(dim);
+    let (width, height) = vram_access_dimensions(dim, false);
 
     // XXX Mednafen uses a temporary buffer of 128 pixels here, presumably to emulate artifacts
     // when the source and destination zones overlap? Needs more testing.
@@ -2219,7 +2251,7 @@ fn cmd_vram_store(rasterizer: &mut Rasterizer, params: &[u32]) {
     let left = (pos & 0x3ff) as u16;
     let top = ((pos >> 16) & 0x3ff) as u16;
 
-    let (width, height) = vram_access_dimensions(dim);
+    let (width, height) = vram_access_dimensions(dim, false);
 
     let store = VRamStore::new(left, top, width as u16, height as u16);
 
@@ -2227,9 +2259,15 @@ fn cmd_vram_store(rasterizer: &mut Rasterizer, params: &[u32]) {
 }
 
 fn cmd_vram_load(rasterizer: &mut Rasterizer, params: &[u32]) {
-    let _ = rasterizer;
-    let _ = params;
-    warn!("Implement VRAM load");
+    let pos = params[1];
+    let dim = params[2];
+
+    let left = (pos & 0x3ff) as u16;
+    let top = ((pos >> 16) & 0x3ff) as u16;
+
+    let (width, height) = vram_access_dimensions(dim, true);
+
+    rasterizer.send_vram_rect(left, top, width as u16, height as u16);
 }
 
 /// Fill a rectangle with a solid color

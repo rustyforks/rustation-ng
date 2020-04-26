@@ -394,6 +394,7 @@ fn can_run(psx: &mut Psx, port: Port, write: bool) -> bool {
             // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
             Port::CdRom => true,
             Port::MDecOut => mdec::dma_can_read(psx),
+            Port::Gpu => true,
             _ => unimplemented!("Can read {:?}?", port),
         }
     }
@@ -450,6 +451,7 @@ fn port_load(psx: &mut Psx, port: Port) -> (u32, u32, CycleCount) {
             offset = off;
             v
         }
+        Port::Gpu => gpu::dma_load(psx),
         _ => unimplemented!("DMA port load {:?}", port),
     };
 

@@ -618,7 +618,7 @@ where
 
 /// Parses the command word for a VRAM store, load or copy and returns the dimensions of the target
 /// rectangle
-pub fn vram_access_dimensions(dim: u32) -> (i32, i32) {
+pub fn vram_access_dimensions(dim: u32, is_load: bool) -> (i32, i32) {
     // Width is in GPU pixels, i.e. 16bits per pixel
     let mut width = dim & 0x3ff;
     let mut height = (dim >> 16) & 0x1ff;
@@ -628,7 +628,12 @@ pub fn vram_access_dimensions(dim: u32) -> (i32, i32) {
         width = 1024;
     }
 
-    if height == 0 {
+    // XXX not sure about this difference, taken from mednafen
+    if is_load {
+        if height > 0x200 {
+            height &= 0x1ff;
+        }
+    } else if height == 0 {
         height = 512;
     }
 
@@ -637,8 +642,8 @@ pub fn vram_access_dimensions(dim: u32) -> (i32, i32) {
 
 /// Parses the command word for a VRAM store or load and returns the number of words about to be
 /// read/written
-fn vram_access_length_words(dim: u32) -> i32 {
-    let (width, height) = vram_access_dimensions(dim);
+fn vram_access_length_words(dim: u32, is_load: bool) -> i32 {
+    let (width, height) = vram_access_dimensions(dim, is_load);
 
     // Total number of words to complete the transfer. Since every pixel is 16bit and we transfer
     // 32bits at a time we need to round up
@@ -655,7 +660,7 @@ fn cmd_vram_copy(psx: &mut Psx) {
     // Dimensions
     let dim = psx.gpu.command_pop_to_rasterizer();
 
-    let (width, height) = vram_access_dimensions(dim);
+    let (width, height) = vram_access_dimensions(dim, false);
 
     let duration = width * height * 2;
     psx.gpu.draw_time(duration as CycleCount);
@@ -669,7 +674,7 @@ fn cmd_vram_store(psx: &mut Psx) {
     // Dimensions
     let dim = psx.gpu.command_pop_to_rasterizer();
 
-    let nwords = vram_access_length_words(dim);
+    let nwords = vram_access_length_words(dim, false);
     psx.gpu.state = State::VRamStore(nwords as u32);
 }
 
@@ -681,8 +686,16 @@ fn cmd_vram_load(psx: &mut Psx) {
     // Dimensions
     let dim = psx.gpu.command_pop_to_rasterizer();
 
-    let nwords = vram_access_length_words(dim);
-    psx.gpu.state = State::VRamLoad(nwords as u32);
+    let nwords = vram_access_length_words(dim, true);
+    if nwords > 0 {
+        // Flush the command to the rasterizer immediately since it'll have to send us the buffer
+        // back
+        psx.gpu.rasterizer.flush_command_buffer();
+
+        // Let's not block waiting for the reply right now, instead set the frame to None so that
+        // we can hopefully a little bit longer before we have to stall for the other thread
+        psx.gpu.state = State::VRamLoad(None);
+    }
 }
 
 fn cmd_draw_mode(psx: &mut Psx) {
@@ -783,173 +796,173 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: false,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     // 0x10
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
-        handler: cmd_unimplemented,
+        handler: cmd_nop,
         len: 1,
         fifo_len: 1,
-        out_of_band: false,
+        out_of_band: true,
     },
     Command {
         handler: cmd_unimplemented,

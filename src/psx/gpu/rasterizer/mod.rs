@@ -92,6 +92,12 @@ impl Handle {
         }
     }
 
+    /// Must be called after a VRAM load command has been sent to the rasterizer and before
+    /// finishing the current frame to receive the loaded pixels
+    pub fn receive_vram_load(&mut self) -> Frame {
+        self.frame_channel.recv().unwrap()
+    }
+
     pub fn push_gp0(&mut self, gp0: u32) {
         self.push_command(Command::Gp0(gp0));
     }
@@ -180,7 +186,7 @@ pub enum RasterizerOption {
 /// Buffer containing one rendered frame
 #[derive(Clone)]
 pub struct Frame {
-    /// Frame pixels in xRGB 8888 format
+    /// Frame pixels in xRGB 8888 format. Its size must always be *exactly* `width * height`.
     pub pixels: Vec<u32>,
     pub width: u32,
     pub height: u32,

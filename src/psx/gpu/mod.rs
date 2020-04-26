@@ -9,22 +9,6 @@ pub use rasterizer::{Frame, RasterizerOption};
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
-#[derive(PartialEq, Eq, Debug)]
-enum State {
-    Idle,
-    /// We're drawing the first triangle of a quad. The CycleCount is the number of cycles we'll
-    /// have to use to draw the 2nd triangle.
-    InQuad(CycleCount),
-    /// We're in the middle of a polyline. The u8 is the opcode for this line, then we store the
-    /// position of the end of the last drawn segment (i.e. the start of the next segment)
-    PolyLine(u8, Position),
-    /// We're uploading data to the VRAM. The u32 is the number of 32bit words left to transfer.
-    VRamStore(u32),
-    /// We're downloading data from the VRAM. The u32 is the number of 32bit words left to
-    /// transfer.
-    VRamLoad(u32),
-}
-
 pub struct Gpu {
     state: State,
     rasterizer: rasterizer::Handle,
@@ -158,6 +142,14 @@ impl Gpu {
     }
 
     pub fn last_frame(&mut self) -> &Frame {
+        // If we were waiting for a VRAM read we must fetch it before attempting to recover a
+        // frame, otherwise we'll receive the VRAM read from the rasterizer and think that it's a
+        // frame...
+        if let State::VRamLoad(None) = self.state {
+            let frame = self.rasterizer.receive_vram_load();
+            self.state = State::VRamLoad(Some((frame, 0)));
+        }
+
         self.rasterizer.last_frame()
     }
 
@@ -290,7 +282,7 @@ impl Gpu {
     /// Computes the value of the status register's "idle" bit
     fn is_idle(&self) -> bool {
         // TODO: add "InCmd" when we implement it
-        self.state == State::Idle && self.draw_time_budget >= 0 && self.command_fifo.is_empty()
+        self.state.is_idle() && self.draw_time_budget >= 0 && self.command_fifo.is_empty()
     }
 
     /// Attempt to write `command` to the command FIFO, returns `true` if successful, `false` if
@@ -411,6 +403,7 @@ impl Gpu {
     fn gp1_get_info(&mut self, val: u32) {
         // XXX what happens if we're in the middle of a framebuffer read?
         let v = match val & 0xf {
+            2 => self.tex_window.0,
             3 => {
                 let top = self.clip_y_min as u32;
                 let left = self.clip_x_min as u32;
@@ -653,21 +646,57 @@ pub fn dma_store(psx: &mut Psx, val: u32) {
     gp0(psx, val);
 }
 
+pub fn dma_load(psx: &mut Psx) -> u32 {
+    read(psx)
+}
+
 /// Handles loads from GP0
 fn read(psx: &mut Psx) -> u32 {
-    if let State::VRamLoad(ref mut nwords) = psx.gpu.state {
-        *nwords -= 1;
-        if *nwords == 0 {
-            psx.gpu.state = State::Idle;
-        }
+    match psx.gpu.state {
+        State::VRamLoad(ref mut vram_load) => {
+            let (frame, pos) = match vram_load {
+                None => {
+                    // We haven't received the frame from the renderer yet, let's do that now
+                    let frame = psx.gpu.rasterizer.receive_vram_load();
+                    *vram_load = Some((frame, 0));
+                    vram_load.as_mut().unwrap()
+                }
+                Some(ref mut s) => s,
+            };
 
-        // XXX implement me
-        0
-    } else {
-        // XXX I'm not really sure about this one. Is the read_word normally pushed in the FIFO?
-        // What happens if you send a GP1[0x10] and then immediately attempt to read the
-        // framebuffer? Needs more testing
-        psx.gpu.read_word
+            // If we reach this point we should have at least one pixel left.
+            //
+            // XXX Watch out: frame pixels are u32 but in this case they're really u16 and the top
+            // 16bits is unused. I'm just being lazy and reuse the same structure for frame draws
+            // and VRAM reads.
+            let p1 = frame.pixels[*pos as usize];
+            *pos += 1;
+
+            let to_read = frame.pixels.len() - *pos as usize;
+
+            let p2 = if to_read > 1 {
+                let p2 = frame.pixels[*pos as usize];
+                *pos += 1;
+                p2
+            } else if to_read == 1 {
+                // Last pixel
+                let p2 = frame.pixels[*pos as usize];
+                psx.gpu.state = State::Idle;
+                p2
+            } else {
+                // No more pixels
+                psx.gpu.state = State::Idle;
+                0
+            };
+
+            p1 | (p2 << 16)
+        }
+        _ => {
+            // XXX I'm not really sure about this one. Is the read_word normally pushed in the
+            // FIFO?  What happens if you send a GP1[0x10] and then immediately attempt to read the
+            // framebuffer? Needs more testing
+            psx.gpu.read_word
+        }
     }
 }
 
@@ -756,6 +785,7 @@ fn process_commands(psx: &mut Psx) {
             }
         }
         // We don't process commands in VRAM Load mode
+        // XXX validate on real hardware
         State::VRamLoad(_) => (),
     }
 }
@@ -794,6 +824,33 @@ fn run_next_command(psx: &mut Psx) {
 
     // Invoke the callback to actually implement the command
     (command.handler)(psx);
+}
+
+enum State {
+    Idle,
+    /// We're drawing the first triangle of a quad. The CycleCount is the number of cycles we'll
+    /// have to use to draw the 2nd triangle.
+    InQuad(CycleCount),
+    /// We're in the middle of a polyline. The u8 is the opcode for this line, then we store the
+    /// position of the end of the last drawn segment (i.e. the start of the next segment)
+    PolyLine(u8, Position),
+    /// We're uploading data to the VRAM. The u32 is the number of 32bit words left to transfer.
+    VRamStore(u32),
+    /// We're downloading data from the VRAM. Since this comes from the rasterizer we set the
+    /// Option to `None` while we're waiting for the rasterizer to send us the data, then we store
+    /// the received frame when we receive it, alongside a counter that tells us how many bytes
+    /// we've left to read
+    VRamLoad(Option<(Frame, u32)>),
+}
+
+impl State {
+    fn is_idle(&self) -> bool {
+        if let State::Idle = self {
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Wrapper around the Draw Mode register value (set by GP0[0xe1] and polygon draw commands)
