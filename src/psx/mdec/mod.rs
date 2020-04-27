@@ -1,6 +1,7 @@
 mod fifo;
 
 use super::{AccessWidth, Addressable, CycleCount, Psx};
+use std::cmp::min;
 use std::ops::{Index, IndexMut};
 
 /// Motion Decoder (sometimes called macroblock or movie decoder).
@@ -199,6 +200,7 @@ impl MDec {
 
         // TODO [16:18] Current block
 
+        // Data output format for the current command
         r |= self.command.output_format() << 23;
 
         r |= (self.dma_can_read() as u32) << 27;
@@ -332,10 +334,9 @@ impl MDec {
             };
 
             if generate_pixels {
-                // We have Y, U and V macroblocks, we can convert the
-                // value and generate RGB pixels
+                // We have Y, U and V macroblocks, we can convert the value and generate RGB pixels
                 if self.command.output_depth() == OutputDepth::D15 {
-                    self.generate_pixels_rgb15();
+                    self.generate_pixels_rgb15(finished_block);
                 } else {
                     self.generate_pixels_rgb24(finished_block);
                 }
@@ -346,30 +347,20 @@ impl MDec {
         self.block_index = 0;
     }
 
-    fn generate_pixels_rgb15(&mut self) {
-        for y in 0..8 {
-            for x in 0..8 {
-                let l = self.block_y[y * 8 + x];
-                let u = self.block_u[y * 8 + x];
-                let v = self.block_v[y * 8 + x];
-
-                let (r, g, b) = yuv_to_rgb(l, u, v);
-
-                // Convert to RGB555
-                let r = i16::from(r) >> 3;
-                let g = i16::from(g) >> 3;
-                let b = i16::from(b) >> 3;
-
-                let v = r | (g << 5) | (b << 5);
-
-                self.output_fifo.push(v as u8);
-                self.output_fifo.push((v >> 8) as u8);
-            }
-        }
-    }
-
-    fn generate_pixels_rgb24(&mut self, block_type: BlockType) {
+    fn generate_pixels_rgb15(&mut self, block_type: BlockType) {
         let t = block_type as usize;
+
+        let mut xor_mask = if self.command.output_signed() {
+            // By changing the MSB of every component we effectively subtract 0x80, therefore
+            // "centering" the value around 0.
+            (1 << 4) | (1 << (5 + 4)) | (1 << (10 + 4))
+        } else {
+            0
+        };
+
+        // This should be a simple OR but since we know that the MSB is going to be zero we can
+        // combine it into the XOR for the same result
+        xor_mask |= (self.command.d15_msb() as u16) << 15;
 
         for y in 0..8 {
             let uv_y = (y >> 1) | (t & 2) << 1;
@@ -384,9 +375,42 @@ impl MDec {
 
                 let (r, g, b) = yuv_to_rgb(l, u, v);
 
-                self.output_fifo.push(r);
-                self.output_fifo.push(g);
-                self.output_fifo.push(b);
+                // Convert to RGB555 with rounding
+                let r = min((u16::from(r) + 4) >> 3, 0x1f);
+                let g = min((u16::from(g) + 4) >> 3, 0x1f);
+                let b = min((u16::from(b) + 4) >> 3, 0x1f);
+
+                let v = (r | (g << 5) | (b << 10)) ^ xor_mask;
+
+                self.output_fifo.push(v as u8);
+                self.output_fifo.push((v >> 8) as u8);
+            }
+        }
+    }
+
+    fn generate_pixels_rgb24(&mut self, block_type: BlockType) {
+        let t = block_type as usize;
+
+        // By changing the MSB of every component we effectively subtract 0x80, therefore
+        // "centering" the value around 0.
+        let xor_mask = (self.command.output_signed() as u8) << 7;
+
+        for y in 0..8 {
+            let uv_y = (y >> 1) | (t & 2) << 1;
+            let uv_x = (t & 1) << 2;
+
+            for x in 0..8 {
+                let uv_x = uv_x + (x >> 1);
+
+                let l = self.block_y[y * 8 + x];
+                let u = self.block_u[uv_y * 8 + uv_x];
+                let v = self.block_v[uv_y * 8 + uv_x];
+
+                let (r, g, b) = yuv_to_rgb(l, u, v);
+
+                self.output_fifo.push(r ^ xor_mask);
+                self.output_fifo.push(g ^ xor_mask);
+                self.output_fifo.push(b ^ xor_mask);
             }
         }
     }
@@ -531,6 +555,16 @@ impl Command {
             OutputDepth::D4 | OutputDepth::D8 => true,
             _ => false,
         }
+    }
+
+    /// Returns the value that should be written to the MSB when outputting 15bpp
+    fn d15_msb(self) -> bool {
+        (self.0 >> 25) & 1 != 0
+    }
+
+    /// True if the output should be signed
+    fn output_signed(self) -> bool {
+        (self.0 >> 26) & 1 != 0
     }
 }
 
@@ -685,7 +719,7 @@ fn quantize(coef: u16, quantization: u8, qscale: Option<u8>) -> i16 {
     }
 }
 
-fn sign_extend_9bits(v: i32) -> i8 {
+fn sign_extend_9bits_clamp_8bits(v: i32) -> i8 {
     let v = v as u16;
     let v = v << (16 - 9);
     let v = (v as i16) >> (16 - 9);
@@ -699,18 +733,20 @@ fn sign_extend_9bits(v: i32) -> i8 {
         v as i8
     }
 }
+
 fn yuv_to_rgb(y: i8, u: i8, v: i8) -> (u8, u8, u8) {
+    // XXX Taken from mednafen, not completely accurate.
     let y = y as i32;
     let u = u as i32;
     let v = v as i32;
 
     let r = y + (((359 * v) + 0x80) >> 8);
-    let g = y + ((((-88 * u) & !0x1F) + ((-183 * v) & !0x07) + 0x80) >> 8);
+    let g = y + ((((-88 * u) & !0x1f) + ((-183 * v) & !0x07) + 0x80) >> 8);
     let b = y + (((454 * u) + 0x80) >> 8);
 
-    let r = sign_extend_9bits(r) as u8 ^ 0x80;
-    let g = sign_extend_9bits(g) as u8 ^ 0x80;
-    let b = sign_extend_9bits(b) as u8 ^ 0x80;
+    let r = sign_extend_9bits_clamp_8bits(r) as u8 ^ 0x80;
+    let g = sign_extend_9bits_clamp_8bits(g) as u8 ^ 0x80;
+    let b = sign_extend_9bits_clamp_8bits(b) as u8 ^ 0x80;
 
     (r, g, b)
 }
