@@ -55,6 +55,12 @@ pub struct Spu {
     audio_buffer: [i16; 2048],
     /// Write pointer into the audio_buffer
     audio_buffer_index: u32,
+    /// First of the two LFSR counters
+    noise_counter1: u16,
+    /// Second of the two LFSR counters
+    noise_counter2: u8,
+    /// Noise Linear Feedback Shift Register
+    noise_lfsr: u16,
 }
 
 impl Spu {
@@ -102,6 +108,9 @@ impl Spu {
             ram: [0; SPU_RAM_SIZE],
             audio_buffer: [0; 2048],
             audio_buffer_index: 0,
+            noise_counter1: 0,
+            noise_counter2: 0,
+            noise_lfsr: 0,
         }
     }
 
@@ -174,6 +183,35 @@ impl Spu {
     fn is_voice_reverberated(&self, voice: u8) -> bool {
         self.voice_reverb & (1 << voice) != 0
     }
+
+    /// Advance the noise state machine. Should be called at 44.1kHz
+    fn run_noise_cycle(&mut self) {
+        let ctrl = self.control();
+        let freq_shift = (ctrl >> 10) & 0xf;
+        let freq_step = (ctrl >> 8) & 3;
+
+        // XXX This algorithm is taken from Mednafen. No$ has a slightly different implementation.
+        let (counter1_inc, counter2_inc) = if freq_shift == 0xf {
+            (0x8000, 8)
+        } else {
+            (2 << freq_shift, (freq_step + 4) as u8)
+        };
+
+        self.noise_counter1 = self.noise_counter1.wrapping_add(counter1_inc);
+        if self.noise_counter1 & 0x8000 != 0 {
+            self.noise_counter1 = 0;
+
+            self.noise_counter2 = self.noise_counter2.wrapping_add(counter2_inc);
+            if self.noise_counter2 & 8 != 0 {
+                self.noise_counter2 &= 7;
+
+                // Advance the LFSR
+                let lfsr = self.noise_lfsr;
+                let carry = (lfsr >> 15) ^ (lfsr >> 12) ^ (lfsr >> 11) ^ (lfsr >> 10) ^ 1;
+                self.noise_lfsr = (lfsr << 1) | (carry & 1);
+            }
+        }
+    }
 }
 
 impl Index<u8> for Spu {
@@ -237,9 +275,10 @@ fn run_cycle(psx: &mut Psx) {
     // Sum of the left and right voice volume levels
     let mut left_mix = 0;
     let mut right_mix = 0;
+    let mut sweep_factor = 0;
 
     for voice in 0..24 {
-        let (left, right) = run_voice_cycle(psx, voice);
+        let (left, right) = run_voice_cycle(psx, voice, &mut sweep_factor);
 
         left_mix += left;
         right_mix += right;
@@ -248,6 +287,8 @@ fn run_cycle(psx: &mut Psx) {
             unimplemented!()
         }
     }
+
+    psx.spu.run_noise_cycle();
 
     // Voice start/stop should've been processed by `run_voice_cycle`
     psx.spu.voice_start = 0;
@@ -284,15 +325,14 @@ fn run_cycle(psx: &mut Psx) {
 }
 
 /// Run `voice` for one cycle and return a pair of stereo samples
-fn run_voice_cycle(psx: &mut Psx, voice: u8) -> (i32, i32) {
+fn run_voice_cycle(psx: &mut Psx, voice: u8, sweep_factor: &mut i32) -> (i32, i32) {
     // There's no "enable" flag for the voices, they're effectively always running. Unused voices
     // are just muted. Beyond that the ADPCM decoder is always running, even when the voice is in
     // "noise" mode and the output isn't used. This is important when the SPU interrupt is enabled.
     run_voice_decoder(psx, voice);
 
     let raw_sample = if psx.spu.is_noise(voice) {
-        // TODO: implement noise LFSR
-        unimplemented!()
+        (psx.spu.noise_lfsr as i16) as i32
     } else {
         psx.spu[voice].next_raw_sample()
     };
@@ -316,13 +356,18 @@ fn run_voice_cycle(psx: &mut Psx, voice: u8) -> (i32, i32) {
     } else {
         psx.spu[voice].run_envelope_cycle();
 
-        let step = u32::from(psx.spu[voice].step_length);
+        let mut step = u32::from(psx.spu[voice].step_length);
 
         if psx.spu.is_frequency_modulated(voice) {
             // Voice 0 cannot be frequency modulated
             debug_assert!(voice != 0);
 
-            unimplemented!();
+            let mut s = step as i32;
+
+            s += (s * *sweep_factor) >> 15;
+
+            // XXX What happens if s is negative here?
+            step = s as u32;
         }
 
         let step = if step > 0x3fff { 0x3fff } else { step as u16 };
@@ -344,6 +389,9 @@ fn run_voice_cycle(psx: &mut Psx, voice: u8) -> (i32, i32) {
         psx.spu[voice].release();
         psx.spu[voice].mute();
     }
+
+    // Save sweep factor for the next voice
+    *sweep_factor = sample;
 
     (left, right)
 }
