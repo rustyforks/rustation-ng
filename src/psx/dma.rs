@@ -135,7 +135,7 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
             match reg {
                 0 => psx.dma[port].base = val & 0xff_ffff,
                 4 => psx.dma[port].set_block_control(val),
-                8 => set_channel_control(psx, port, val),
+                8 => set_channel_control(psx, port, ChannelControl::new(val)),
                 _ => unimplemented!("Write to channel {:?} register {:x}: {:x}", port, reg, val),
             }
         }
@@ -157,28 +157,30 @@ pub fn store<T: Addressable>(psx: &mut Psx, offset: u32, val: T) {
     }
 }
 
-fn set_channel_control(psx: &mut Psx, port: Port, mut ctrl: u32) {
+fn set_channel_control(psx: &mut Psx, port: Port, mut ctrl: ChannelControl) {
     if port == Port::Otc {
         // Since the OTC's port sole raison d'être is to initialize the GPU linked list in RAM it
         // doesn't support all the DMA control options
-        ctrl &= 0x5100_0000;
+        ctrl.0 &= 0x5100_0000;
         // OTC is always backwards
-        ctrl |= 2;
+        ctrl.0 |= 2;
     }
 
     let was_enabled = psx.dma[port].control.is_enabled();
-
-    psx.dma[port].control.set(ctrl);
-
-    let is_enabled = psx.dma[port].control.is_enabled();
+    let is_enabled = ctrl.is_enabled();
 
     if was_enabled ^ is_enabled {
         // Channel was started or stopped
         if is_enabled {
+            psx.dma[port].control = ctrl;
             start(psx, port);
         } else {
-            unimplemented!("Force stop DMA channel {:?}", port);
+            psx.dma[port].control.disable();
+            run_channel(psx, port, 128 * 16);
+            psx.dma[port].control = ctrl;
         }
+    } else {
+        psx.dma[port].control = ctrl;
     }
 
     refresh_cpu_halt(psx);
@@ -344,7 +346,7 @@ fn run_channel(psx: &mut Psx, port: Port, cycles: CycleCount) {
 
         if psx.dma[port].remaining_words == 0 {
             if !control.is_enabled() {
-                unimplemented!();
+                break;
             }
 
             let end_of_dma = match sync_mode {
@@ -520,7 +522,7 @@ struct Channel {
 impl Channel {
     fn new() -> Channel {
         Channel {
-            control: ChannelControl::new(),
+            control: ChannelControl::new(0),
             base: 0,
             cur_address: 0,
             block_size: 0,
@@ -548,13 +550,8 @@ impl Channel {
 struct ChannelControl(u32);
 
 impl ChannelControl {
-    fn new() -> ChannelControl {
-        ChannelControl(0)
-    }
-
-    fn set(&mut self, v: u32) {
-        // Many bits are RO
-        self.0 = v & 0x7177_0703
+    fn new(v: u32) -> ChannelControl {
+        ChannelControl(v)
     }
 
     fn get(self) -> u32 {
@@ -564,6 +561,11 @@ impl ChannelControl {
     /// Returns true if the 'enable' bit is set
     fn is_enabled(self) -> bool {
         self.0 & (1 << 24) != 0
+    }
+
+    /// Clear the enable bit
+    fn disable(&mut self) {
+        self.0 &= !(1 << 24);
     }
 
     /// Returns true if the 'start' bit is set
