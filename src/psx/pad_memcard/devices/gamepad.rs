@@ -155,8 +155,9 @@ pub struct DualShock {
     rumble: (u8, u8),
     /// Full rumble configuration as set by command 0x4d
     rumble_config: [u8; 6],
-    /// If true we can control the rumble motors through command 0x42
-    rumble_unlocked: bool,
+    /// Byte offset of the read input command that contain the big and small motor rumble
+    /// setting. If rumble is deactivated it's set to (0xff, 0xff).
+    rumble_pos: (u8, u8),
     /// Value used in various ways internally by some commands.
     command_internal: u8,
 }
@@ -176,7 +177,7 @@ impl DualShock {
             watchdog: None,
             rumble: (0, 0),
             rumble_config: [0xff; 6],
-            rumble_unlocked: false,
+            rumble_pos: (0xff, 0xff),
             command_internal: 0,
             analog_pressed: false,
         }
@@ -199,13 +200,27 @@ impl DualShock {
                 self.dualshock_mode = false;
                 self.rumble = (0, 0);
                 self.rumble_config = [0xff; 6];
-                self.rumble_unlocked = false;
+                self.rumble_pos = (0xff, 0xff);
                 self.watchdog = None;
             }
         }
     }
 
     fn handle_read_input(&mut self, seq: u8, cmd: u8) -> (u8, bool) {
+        if self.access_type == DsAccessType::ReadInput {
+            if seq == self.rumble_pos.0 {
+                // We should be receiving the rumble command for the big motor in the left handle
+                self.rumble.0 = cmd;
+            }
+            if seq == self.rumble_pos.1 {
+                // We receive the configuration command for the small rumble motor in the right
+                // handle here. It's got only two states, on or off, driven by the bit 1
+                let small_motor_on = (cmd & 1) != 0;
+
+                self.rumble.1 = if small_motor_on { 0xff } else { 0x00 };
+            }
+        }
+
         match seq {
             // First button state byte: direction cross, start and select.
             3 => {
@@ -216,24 +231,10 @@ impl DualShock {
                     response |= 0x6;
                 }
 
-                if self.access_type == DsAccessType::ReadInput && self.rumble_unlocked {
-                    // We receive the configuration command for the small rumble motor in the right
-                    // handle here. It's got only two states, on or off, driven by the bit 1
-                    let small_motor_on = (cmd & 1) != 0;
-
-                    self.rumble.1 = if small_motor_on { 0xff } else { 0x00 };
-                }
-
                 (response, true)
             }
             // 2nd button state byte: shoulder buttons and "shape" buttons
             4 => {
-                if self.access_type == DsAccessType::ReadInput && self.rumble_unlocked {
-                    // We receive the configuration command for the big rumble motor in the left
-                    // handle here.
-                    self.rumble.0 = cmd;
-                }
-
                 // We don't assert DSR in non-analog mode since that's the end of the transaction,
                 // unless Dual Shock mode is activated in which case we always return the analog
                 // input
@@ -452,23 +453,23 @@ impl DualShock {
             true
         } else {
             // Last byte received, check config
-            self.rumble_unlocked = match self.rumble_config {
-                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff] => false,
-                // Standard command to activate the rumble
-                [0x00, 0x01, 0xff, 0xff, 0xff, 0xff] => true,
+            self.rumble_pos = match self.rumble_config {
+                // Standard command to deactivate the rumble. I've checked on real hardware that
+                // sending this command does *not* stop the motors if they're currently active.
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff] => (0xff, 0xff),
+                // Standard command to activate the rumble: we receive the commands for the small
+                // and big motor on bytes 3 and 4 respectively
+                [0x00, 0x01, 0xff, 0xff, 0xff, 0xff] => (4, 3),
+                // Command used by FFVIII: same as above but one byte later
+                [0xff, 0x00, 0x01, 0xff, 0xff, 0xff] => (5, 4),
                 _ => {
                     error!("Unsupported rumble config {:x?}", self.rumble_config);
                     // XXX There are many, many possible configurations for this command. You can
                     // unlock only one engine, swap their config, make them share the config etc...
                     // Since we don't know what this configuration does, we disable rumble
-                    false
+                    (0xff, 0xff)
                 }
             };
-
-            if !self.rumble_unlocked {
-                // Make sure we don't stay stuck with motors activated
-                self.rumble = (0, 0);
-            }
 
             false
         };
