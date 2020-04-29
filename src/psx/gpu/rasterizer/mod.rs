@@ -4,6 +4,8 @@
 
 mod draw;
 
+pub use draw::Pixel;
+
 use draw::Rasterizer;
 use std::sync::mpsc;
 use std::thread;

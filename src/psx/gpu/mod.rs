@@ -5,7 +5,7 @@ mod rasterizer;
 use super::cpu::CPU_FREQ_HZ;
 use super::{irq, sync, timers, AccessWidth, Addressable, CycleCount, Psx};
 use commands::{Command, Position};
-pub use rasterizer::{Frame, RasterizerOption};
+pub use rasterizer::{Frame, Pixel, RasterizerOption};
 
 const GPUSYNC: sync::SyncToken = sync::SyncToken::Gpu;
 
@@ -1051,23 +1051,49 @@ impl DisplayMode {
 }
 
 /// Wrapper around the Mask Setting register value (set by GP0[0xe6])
-struct MaskSettings(u32);
+struct MaskSettings {
+    /// Raw register value
+    raw: u32,
+    /// Pixel value that should be ORed on write
+    or_mask: Pixel,
+}
 
 impl MaskSettings {
     fn new() -> MaskSettings {
-        MaskSettings(0)
+        MaskSettings {
+            raw: 0,
+            or_mask: Pixel::from_mbgr1555(0),
+        }
     }
 
     fn set(&mut self, v: u32) {
-        self.0 = v & 3
+        self.raw = v & 3;
+
+        let p = if self.draw_with_mask_bit() { 0x8000 } else { 0 };
+
+        self.or_mask = Pixel::from_mbgr1555(p);
     }
 
     fn draw_with_mask_bit(&self) -> bool {
-        self.0 & 1 != 0
+        self.raw & 1 != 0
     }
 
     fn check_mask_bit(&self) -> bool {
-        self.0 & (1 << 1) != 0
+        self.raw & (1 << 1) != 0
+    }
+
+    fn can_draw_to(&self, p: Pixel) -> bool {
+        if self.check_mask_bit() {
+            !p.mask()
+        } else {
+            true
+        }
+    }
+
+    fn mask(&self, mut p: Pixel) -> Pixel {
+        p.0 |= self.or_mask.0;
+
+        p
     }
 }
 

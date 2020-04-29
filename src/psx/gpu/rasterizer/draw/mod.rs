@@ -185,8 +185,10 @@ impl Rasterizer {
                                 for &p in [p0, p1].iter() {
                                     let vram_off = store.target_vram_offset();
 
-                                    // XXX handle mask bit
-                                    self.vram[vram_off] = p;
+                                    let target = &mut self.vram[vram_off];
+                                    if self.mask_settings.can_draw_to(*target) {
+                                        *target = self.mask_settings.mask(p);
+                                    }
 
                                     if store.next().is_none() {
                                         // End of store
@@ -566,9 +568,10 @@ impl Rasterizer {
         self.vram[vram_off as usize]
     }
 
-    fn draw_pixel<Transparency>(&mut self, x: i32, y: i32, mut color: Pixel)
+    fn draw_pixel<Transparency, Texture>(&mut self, x: i32, y: i32, mut color: Pixel)
     where
         Transparency: TransparencyMode,
+        Texture: TextureMode,
     {
         debug_assert!(x >= 0 && x < 1024, "x out of bounds ({})", x);
         debug_assert!(y >= 0 && y < 1024, "y out of bounds ({})", y);
@@ -581,11 +584,15 @@ impl Rasterizer {
 
         let vram_pixel = &mut self.vram[vram_off as usize];
 
-        // If the draw command is semi-transparent and the mask bit is set, this is a transparent
-        // pixel
-        let is_transparent = Transparency::is_transparent() && color.mask();
+        if !self.mask_settings.can_draw_to(*vram_pixel) {
+            // Masked
+            return;
+        }
 
-        // XXX implement masking
+        // If the draw command is semi-transparent and the texture mask bit is set, this is a
+        // transparent pixel. If the draw command is not textured all pixels are transparent.
+        let is_transparent =
+            Transparency::is_transparent() && (!Texture::is_textured() || color.mask());
 
         if is_transparent {
             let bg_pixel = *vram_pixel;
@@ -595,11 +602,18 @@ impl Rasterizer {
             // get accurate result in 15bpp. It's unlikely to make a significant difference
             // however.
             color.apply_transparency(bg_pixel, mode);
+
+            if Texture::is_textured() {
+                // XXX Not entirely sure about this.
+                color.set_mask();
+            }
         } else if self.force_transparency {
             let bg_pixel = *vram_pixel;
 
             color.apply_transparency(bg_pixel, TransparencyFunction::Average);
         }
+
+        color = self.mask_settings.mask(color);
 
         *vram_pixel = color;
     }
@@ -966,12 +980,12 @@ impl Rasterizer {
                     if Texture::is_raw_texture() {
                         // No need to worry about truncation here since textures are always 555
                         // anyway
-                        self.draw_pixel::<Transparency>(x, y, texel);
+                        self.draw_pixel::<Transparency, Texture>(x, y, texel);
                     } else {
                         // Texture blending: the final color is a combination of the texel and
                         // the computed gouraud color
                         let blend = self.blend_and_dither(x, y, texel, vars.color());
-                        self.draw_pixel::<Transparency>(x, y, blend);
+                        self.draw_pixel::<Transparency, Texture>(x, y, blend);
                     }
                 }
             } else {
@@ -984,16 +998,9 @@ impl Rasterizer {
                     b = self.dither(x, y, b as u32);
                 }
 
-                let mut color = Pixel::from_rgb(r, g, b);
+                let color = Pixel::from_rgb(r, g, b);
 
-                // We have to set the mask bit since it's used to test if the pixel should be
-                // transparent, and non-textured transparent draw calls are always fully
-                // transparent.
-                if Transparency::is_transparent() {
-                    color.set_mask();
-                }
-
-                self.draw_pixel::<Transparency>(x, y, color);
+                self.draw_pixel::<Transparency, Texture>(x, y, color);
             }
             vars.translate_right::<Texture, Shading>(deltas);
         }
@@ -1065,10 +1072,6 @@ impl Rasterizer {
             color = self.truncate_color(color);
         }
 
-        if Transparency::is_transparent() {
-            color.set_mask();
-        }
-
         for y in y_start..y_end {
             if !self.can_draw_to_line(y) {
                 v = v.wrapping_add(v_inc as u8);
@@ -1082,17 +1085,17 @@ impl Rasterizer {
                     // If the pixel is equal to 0 (including mask bit) then we don't draw it
                     if !texel.is_nul() {
                         if Texture::is_raw_texture() {
-                            self.draw_pixel::<Transparency>(x, y, texel);
+                            self.draw_pixel::<Transparency, Texture>(x, y, texel);
                         } else {
                             // Texture blending: the final color is a combination of the texel and
                             // the solid color. Rect are never dithered.
                             let blend = self.blend(texel, origin.color);
-                            self.draw_pixel::<Transparency>(x, y, blend);
+                            self.draw_pixel::<Transparency, Texture>(x, y, blend);
                         }
                     }
                 } else {
                     // No texture
-                    self.draw_pixel::<Transparency>(x, y, color);
+                    self.draw_pixel::<Transparency, Texture>(x, y, color);
                 }
                 u = u.wrapping_add(u_inc as u8);
             }
@@ -1208,15 +1211,9 @@ impl Rasterizer {
             let g = self.dither(x, y, g as u32);
             let b = self.dither(x, y, b as u32);
 
-            let mut color = Pixel::from_rgb(r, g, b);
+            let color = Pixel::from_rgb(r, g, b);
 
-            // We have to set the mask bit since it's used to test if the pixel should be
-            // transparent, and non-textured transparent draw calls are always fully transparent.
-            if Transparency::is_transparent() {
-                color.set_mask();
-            }
-
-            self.draw_pixel::<Transparency>(x, y, color);
+            self.draw_pixel::<Transparency, NoTexture>(x, y, color);
         }
     }
 
@@ -1646,20 +1643,20 @@ impl TextureMapper {
 /// pixels. Internal representation is a single `u32` containing the values as 8888xRGB, meaning
 /// that it can normally be passed straight to the frontend without conversion
 #[derive(Copy, Clone, PartialEq, Eq)]
-struct Pixel(u32);
+pub struct Pixel(pub u32);
 
 impl Pixel {
-    fn black() -> Pixel {
+    pub fn black() -> Pixel {
         Pixel(0)
     }
 
     /// For texels this method returns true if the pixel is all zeroes (which means that the pixel
     /// shouldn't be drawn)
-    fn is_nul(self) -> bool {
+    pub fn is_nul(self) -> bool {
         self.0 == 0
     }
 
-    fn from_mbgr1555(mbgr: u16) -> Pixel {
+    pub fn from_mbgr1555(mbgr: u16) -> Pixel {
         let r = (mbgr & 0x1f) as u32;
         let g = ((mbgr >> 5) & 0x1f) as u32;
         let b = ((mbgr >> 10) & 0x1f) as u32;
@@ -1674,7 +1671,7 @@ impl Pixel {
         Pixel(b | (g << 8) | (r << 16) | (m << 24))
     }
 
-    fn from_rgb(r: u8, g: u8, b: u8) -> Pixel {
+    pub fn from_rgb(r: u8, g: u8, b: u8) -> Pixel {
         let r = r as u32;
         let g = g as u32;
         let b = b as u32;
@@ -1690,11 +1687,11 @@ impl Pixel {
         Pixel(b | (g << 8) | (r << 16))
     }
 
-    fn to_rgb888(self) -> u32 {
+    pub fn to_rgb888(self) -> u32 {
         self.0 & 0xff_ff_ff
     }
 
-    fn to_mbgr1555(self) -> u16 {
+    pub fn to_mbgr1555(self) -> u16 {
         let m = self.mask() as u16;
         let r = (self.red() >> 3) as u16;
         let g = (self.green() >> 3) as u16;
@@ -1703,24 +1700,24 @@ impl Pixel {
         (m << 15) | (b << 10) | (g << 5) | r
     }
 
-    fn red(self) -> u8 {
+    pub fn red(self) -> u8 {
         (self.0 >> 16) as u8
     }
 
-    fn green(self) -> u8 {
+    pub fn green(self) -> u8 {
         (self.0 >> 8) as u8
     }
 
-    fn blue(self) -> u8 {
+    pub fn blue(self) -> u8 {
         (self.0 & 0xff) as u8
     }
 
-    fn mask(self) -> bool {
+    pub fn mask(self) -> bool {
         (self.0 >> 24) != 0
     }
 
-    fn set_mask(&mut self) {
-        self.0 |= 0x0100_0000;
+    pub fn set_mask(&mut self) {
+        self.0 |= 1 << 24;
     }
 
     /// Blend `self` (the foreground pixel) and `bg_pixel` using the provided transparency mode
@@ -2239,7 +2236,7 @@ fn cmd_vram_copy(rasterizer: &mut Rasterizer, params: &[u32]) {
 
             let p = rasterizer.read_pixel(sx, sy);
             // VRAM copy respects mask bit settings
-            rasterizer.draw_pixel::<Opaque>(dx, dy, p);
+            rasterizer.draw_pixel::<Opaque, NoTexture>(dx, dy, p);
         }
     }
 }
@@ -2343,7 +2340,7 @@ fn cmd_draw_offset(rasterizer: &mut Rasterizer, params: &[u32]) {
 fn cmd_mask_settings(rasterizer: &mut Rasterizer, params: &[u32]) {
     let mask_settings = params[0] & 0x3f_ffff;
 
-    rasterizer.mask_settings.set(mask_settings)
+    rasterizer.mask_settings.set(mask_settings);
 }
 
 fn cmd_clear_cache(_rasterizer: &mut Rasterizer, _params: &[u32]) {
